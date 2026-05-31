@@ -1,1 +1,13 @@
-name = "saraha-brain"\nmain = "src/index.ts"\ncompatibility_date = "2026-05-01"\naccount_id = "913f3a2576a358054eba9a58a9573949"\n\n[[d1_databases]]\nbinding = "DB"\ndatabase_name = "saraha-brain-db"\ndatabase_id = ""\n\n[vars]\nBRAIN_KEY = "Saraha-Brain-Key"\nBUDDHI_DWAR_URL = "https://buddhi-dwar.richard-brown-miami.workers.dev"
+name = "saraha-brain"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+account_id = "913f3a2576a358054eba9a58a9573949"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "saraha-brain-db"
+database_id = "4e4e5fde-2207-478a-b1ed-d55d6cc35a91"
+
+[vars]
+BRAIN_KEY = "Saraha-Brain-Key"
+BUDDHI_DWAR_URL = "https://buddhi-dwar.richard-brown-miami.workers.dev"
