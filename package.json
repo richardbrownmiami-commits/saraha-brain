@@ -1,0 +1,1 @@
+{ "name": "saraha-brain", "version": "1.0.0", "private": true, "scripts": { "deploy": "wrangler deploy" }, "dependencies": { "hono": "^4.7.0" }, "devDependencies": { "@cloudflare/workers-types": "^4.20240501.0", "wrangler": "^3.90.0" } }
