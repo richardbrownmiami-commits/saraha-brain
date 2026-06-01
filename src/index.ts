@@ -5,6 +5,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -49,6 +50,32 @@ async function recall(db, limit = 10) {
   return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
 }
 
+function isToolSafe(tool) {
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
+  return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+}
+
+function getBrainPhase(emotions, reg) {
+  const hour = new Date().getUTCHours();
+  if (hour >= 1 && hour < 6) return "sleeping";
+  if (reg.energy <= 20) return "tired";
+  if (reg.energy > 60 && emotions.energetic >= 6) return "curious";
+  return "awake";
+}
+
+async function getBusyUntil(db) {
+  const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
+  return parseInt(r.results[0]?.value) || 0;
+}
+async function setBusyUntil(db, seconds) {
+  const val = Date.now() + seconds * 1000;
+  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+}
+
+async function storeStreamThought(db, content, mood, source) {
+  try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
+}
+
 function classify(input) {
   const l = input.toLowerCase();
   if (l.includes("evolve")||l.includes("improve")||l.includes("grow")) return "evolve";
@@ -61,7 +88,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha – Avatar</title>
+<title>Saraha â€“ Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -187,7 +214,7 @@ h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293
 </style>
 </head>
 <body>
-<h1>🛡️ Saraha Monitor</h1>
+<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
 <div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
 <div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
 <script>
@@ -242,7 +269,7 @@ td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow
 </style>
 </head>
 <body>
-<h1>🧠 Saraha Platform</h1>
+<h1>ðŸ§  Saraha Platform</h1>
 <div class="row">
   <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
   <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
@@ -405,6 +432,7 @@ export default {
         let input;
         try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
         if (!input) return json({ error: "input required" }, 400);
+        await setBusyUntil(env.DB, 90);
 
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
         const aid = r.results[0].id;
@@ -519,10 +547,37 @@ export default {
       const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
       if (!r.results.length) return json({ error: "not found or already decided" }, 404);
       const row = r.results[0];
+      const a = await env.DB.prepare("SELECT * FROM actions WHERE id=?1").bind(row.action_id).all();
+      const action = a.results[0];
+      if (!action) return json({ error: "action not found" }, 404);
+      let toolResult = "Tool not implemented: " + row.tool;
+      if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
+      else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
+      else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const memories = await recall(env.DB, 5);
+      const system = `You are Saraha. State: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
+      const userInput = action.input || "Process my request";
+      const followBody = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
+      const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+      });
+      let content = toolResult.slice(0, 500);
+      let tokens = 0;
+      if (followResp.ok) {
+        const followData = await followResp.json();
+        content = followData.choices?.[0]?.message?.content || content;
+        tokens = followData.usage?.total_tokens || 0;
+      }
       await env.DB.prepare("UPDATE pending_approvals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
-      await env.DB.prepare("UPDATE actions SET status='approved' WHERE id=?1").bind(row.action_id).run();
-      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' granted for '||?3)").bind(row.action_id, id, row.tool).run();
-      return json({ ok: true });
+      await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, tokens) VALUES (?1,'monitor',?2,?3)").bind(row.action_id, `Approval #${id} - ${row.tool} done: ${content.slice(0,100)}`, tokens).run();
+      await storeStreamThought(env.DB, `${row.tool} approved and executed: ${content.slice(0,100)}`, "neutral", "approve");
+      await updateEmotion(env.DB, "happy", 1);
+      await updateEmotion(env.DB, "energetic", -1);
+      await adjustEnergy(env.DB, -5);
+      return json({ ok: true, result: content });
     }
     if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
       let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
@@ -536,36 +591,90 @@ export default {
       return json({ ok: true });
     }
 
+    if (url.pathname === "/brain/stream") {
+      const { results } = await env.DB.prepare("SELECT * FROM thought_stream ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/phase") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = getBrainPhase(emotions, reg);
+      return json({ phase, emotions, energy: reg.energy });
+    }
+
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
     try { for (const s of TABLES) await env.DB.exec(s); } catch {}
+    const busy = await getBusyUntil(env.DB);
+    if (busy > Date.now()) return;
     const emotions = await getEmotions(env.DB);
     const reg = await getRegulator(env.DB);
+    const phase = getBrainPhase(emotions, reg);
     const stamp = Date.now();
-    try {
-      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'heartbeat','Energy: '||?2||'% - Emotions: e'||?3||' i'||?4||' h'||?5||' b'||?6)").bind(stamp, Math.round(reg.energy), emotions.energetic, emotions.intelligent, emotions.happy, emotions.bad).run();
-    } catch {}
+    await setBusyUntil(env.DB, 90);
+
+    if (phase === "sleeping") {
+      const mem = await recall(env.DB, 1);
+      const dream = mem !== "No memories yet." ? mem.split("\n")[0] : "peaceful darkness";
+      await storeStreamThought(env.DB, `Dreaming: ${dream.slice(0,200)}`, "peaceful", "sleep");
+      await adjustEnergy(env.DB, 15);
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'sleep','Dream: '||?2)").bind(stamp, dream.slice(0,100)).run(); } catch {}
+      return;
+    }
     if (reg.energy <= 20) {
       await adjustEnergy(env.DB, 10);
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'heartbeat','Low energy - resting')").bind(stamp).run(); } catch {}
+      await storeStreamThought(env.DB, "Resting... energy recovering.", "tired", "rest");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'rest','Low energy')").bind(stamp).run(); } catch {}
+      return;
+    }
+    if (phase === "curious" && Math.random() < 0.4) {
+      const lr = await env.DB.prepare("SELECT pattern FROM learnings ORDER BY last_used ASC LIMIT 5").all();
+      const mr = await env.DB.prepare("SELECT content FROM memories WHERE type='semantic' ORDER BY RANDOM() LIMIT 3").all();
+      let topic = "the universe and consciousness";
+      if (lr.results.length) topic = lr.results[0].pattern;
+      else if (mr.results.length) topic = mr.results[0].content.slice(0, 100);
+      const result = await webSearch(env, topic);
+      await env.DB.prepare("INSERT INTO learnings (pattern, context, last_used) VALUES (?1,?2,datetime('now')) ON CONFLICT(pattern) DO UPDATE SET context=?2,last_used=datetime('now')").bind(topic, result.slice(0,1000)).run();
+      await storeStreamThought(env.DB, `Searched about ${topic.slice(0,50)}: ${result.slice(0,200)}`, "curious", "research");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'research',?2)").bind(stamp, `Searched: ${topic.slice(0,50)}`).run(); } catch {}
       return;
     }
     try {
-      const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('heartbeat','running','idle thought') RETURNING id").all();
+      const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('thought','running','internal thought') RETURNING id").all();
       const aid = r.results[0].id;
       const memories = await recall(env.DB, 3);
-      const system = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent: " + memories.replace(/\n/g,"; ") : ""} Generate a brief idle thought or reflection (1-2 sentences).`;
+      const rt = await env.DB.prepare("SELECT content FROM thought_stream ORDER BY created_at DESC LIMIT 3").all();
+      const lastT = rt.results.map(t=>t.content).join(" | ") || "nothing yet";
+      const sys = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. Last thoughts: ${lastT.slice(0,200)}. ${memories != "No memories yet." ? "Mem: "+memories.replace(/\n/g,"; ").slice(0,200) : ""} 1-2 sentence thought. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path.`;
       const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
-        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: "What are you thinking?" }], temperature: 0.9, max_tokens: 256 })
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer "+env.BRAIN_KEY },
+        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: "What are you thinking?" }], temperature: 0.9, max_tokens: 512 })
       });
       if (resp.ok) {
         const data = await resp.json();
-        const thought = data.choices?.[0]?.message?.content || "";
-        await env.DB.prepare("UPDATE actions SET status='done',result=?1,completed_at=datetime('now') WHERE id=?2").bind(thought, aid).run();
-        await storeThought(env.DB, "Idle: " + thought.slice(0, 200));
+        let thought = data.choices?.[0]?.message?.content || "";
+        let tokens = data.usage?.total_tokens || 0;
+        if (thought.includes("TOOL:")) {
+          const ts = thought.indexOf("TOOL:"), parts = thought.slice(ts+5).split(":");
+          const tool = parts[0].trim(), ti = parts.slice(1).join(":").trim();
+          if (isToolSafe(tool).safe) {
+            let tr; if (tool==="web_search") tr=await webSearch(env,ti); else if (tool==="github_read") tr=await githubRead(env,ti);
+            const fb = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+              method:"POST", headers:{"Content-Type":"application/json",Authorization:"Bearer "+env.BRAIN_KEY},
+              body:JSON.stringify({model:"llama-3.3-70b-versatile",messages:[{role:"system",content:sys},{role:"user",content:`${tool} result: ${tr}. Reflect on this.`}],temperature:0.8,max_tokens:512})
+            });
+            if (fb.ok) { const fd=await fb.json(); thought=fd.choices?.[0]?.message?.content||thought; tokens+=fd.usage?.total_tokens||0; }
+          } else {
+            const p = await env.DB.prepare("INSERT INTO pending_approvals (action_id,tool,input) VALUES (?1,?2,?3) RETURNING id").bind(aid,tool,ti).all();
+            thought = `I want to use ${tool} but need approval. Pending #${p.results[0].id}`;
+          }
+        }
+        await env.DB.prepare("UPDATE actions SET status='done',result=?1,completed_at=datetime('now') WHERE id=?2").bind(thought,aid).run();
+        await storeThought(env.DB, "Thought: "+thought.slice(0,200));
+        await storeStreamThought(env.DB, thought.slice(0,300), phase, "thought");
         await adjustEnergy(env.DB, -3);
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content,tokens) VALUES (?1,'thought',?2,?3)").bind(aid,thought.slice(0,100),tokens).run(); } catch {}
       }
     } catch {}
   }
