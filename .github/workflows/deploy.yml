@@ -2,7 +2,7 @@ name: Deploy saraha-brain
 on:
   push:
     branches: [main]
-    paths: ["src/**", "wrangler.toml", "package.json", ".github/workflows/**"]
+    paths: ["src/**", "wrangler.toml", "package.json"]
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -11,7 +11,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npx wrangler@3.90.0 deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}
