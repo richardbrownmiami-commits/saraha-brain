@@ -120,6 +120,11 @@ setTimeout(()=>startTalking("Hello! I'm Saraha."),1000);
 </body>
 </html>`;
 
+import { getEmotions, updateEmotion } from "./limbic/emotions";
+import { getRegulator, adjustEnergy } from "./limbic/regulator";
+import { storeThought } from "./limbic/memory";
+import { recall } from "./limbic/memory";
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -148,39 +153,55 @@ export default {
         const { input } = await req.json();
         if (!input) return json({ error: "input required" }, 400);
 
-        // Create action record
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
         const aid = r.results[0].id;
-        await logStep(aid, "thalamus", `Input classified as "${classify(input)}": ${input.slice(0,100)}`);
+        await logStep(aid, "thalamus", `Classified: ${classify(input)}`);
 
-        // Build identity context
-        const rows = await env.DB.prepare("SELECT key, value FROM identity LIMIT 10").all();
+        // Gather context: identity, emotions, energy, memories
+        const rows = await env.DB.prepare("SELECT key, value FROM identity LIMIT 20").all();
         const identity = {};
         for (const r of rows.results) identity[r.key] = r.value;
-        const system = `You are Saraha, an AI with human-brain architecture.` + (identity.name ? ` You are ${identity.name}.` : "") + (identity.personality ? ` Personality: ${identity.personality}` : "") + ` You are curious, thoughtful, and honest. Answer concisely.`;
-        await logStep(aid, "intellect", `System prompt assembled (${system.length} chars)`);
+        const emotions = await getEmotions(env.DB);
+        const reg = await getRegulator(env.DB);
+        const memories = await recall(env.DB, 5);
 
-        // LLM call
+        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} Current state: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally.`;
+        await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
+
         const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
-        await logStep(aid, "planner", `Calling ${body.model} with temperature ${body.temperature}`);
+        await logStep(aid, "planner", `Calling ${body.model}`);
         const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
         });
-        if (!resp.ok) { await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502); }
+        if (!resp.ok) {
+          await updateEmotion(env.DB, "bad", 1);
+          await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
+        }
         const data = await resp.json();
         const content = data.choices?.[0]?.message?.content || "";
         const tokens = data.usage?.total_tokens || 0;
-        await logStep(aid, "executor", `LLM responded (${content.length} chars)`, data.model, tokens);
-        await logStep(aid, "result", content, data.model, tokens);
+        await logStep(aid, "executor", `Got response (${content.length} chars)`, data.model, tokens);
 
-        // Update action
+        // Update emotions and store memory
+        await updateEmotion(env.DB, "happy", 1);
+        await updateEmotion(env.DB, "energetic", -1);
+        await adjustEnergy(env.DB, -5);
+        await storeThought(env.DB, `User asked: ${input} - I replied: ${content.slice(0, 200)}`);
+
         await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
-        return json({ result: content, model: data.model, usage: data.usage, action_id: aid });
+        await logStep(aid, "result", content, data.model, tokens);
+        return json({ result: content, model: data.model, usage: data.usage, action_id: aid, emotions: await getEmotions(env.DB) });
       } catch (e) { return json({ error: e.message }, 500); }
     }
 
     if (url.pathname === "/evolve" && req.method === "POST") {
       return json({ error: "Evolve requires human approval. Use Monitor dashboard." }, 501);
+    }
+
+    if (url.pathname === "/brain/emotions") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      return json({ emotions, energy: reg.energy, confidence: reg.confidence });
     }
 
     if (url.pathname === "/brain/activity") {
