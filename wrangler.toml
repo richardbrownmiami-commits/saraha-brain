@@ -22,4 +22,4 @@ BRAVE_API_KEY = ""
 GITHUB_TOKEN = ""
 
 [[triggers]]
-crons = ["*/5 * * * *"]
+crons = ["*/2 * * * *"]

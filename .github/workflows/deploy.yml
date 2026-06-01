@@ -2,7 +2,8 @@ name: Deploy saraha-brain
 on:
   push:
     branches: [main]
-    paths: ["src/**", "wrangler.toml", "package.json"]
+    paths: ["src/**", "wrangler.toml", "package.json", ".github/workflows/**"]
+  workflow_dispatch:
 jobs:
   deploy:
     runs-on: ubuntu-latest
