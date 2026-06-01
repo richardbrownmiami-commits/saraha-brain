@@ -6,6 +6,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, what_diff TEXT, how_diff TEXT, resource_type TEXT NOT NULL, risk_pct INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', research_sources TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT, executed_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -113,7 +116,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha – Avatar</title>
+<title>Saraha â€“ Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -239,7 +242,7 @@ h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293
 </style>
 </head>
 <body>
-<h1>🛡️ Saraha Monitor</h1>
+<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
 <div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
 <div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
 <script>
@@ -294,7 +297,7 @@ td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow
 </style>
 </head>
 <body>
-<h1>🧠 Saraha Platform</h1>
+<h1>ðŸ§  Saraha Platform</h1>
 <div class="row">
   <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
   <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
@@ -627,6 +630,46 @@ export default {
       const reg = await getRegulator(env.DB);
       const phase = getBrainPhase(emotions, reg);
       return json({ phase, emotions, energy: reg.energy });
+    }
+
+    if (url.pathname === "/brain/proposals") {
+      const { results } = await env.DB.prepare("SELECT * FROM proposals ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname.startsWith("/brain/proposals/")) {
+      const id = parseInt(url.pathname.split("/")[3]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1").bind(id).all();
+      if (!p.results.length) return json({ error: "not found" }, 404);
+      const r = await env.DB.prepare("SELECT * FROM authority_receipts WHERE proposal_id=?1 ORDER BY created_at DESC").bind(id).all();
+      return json({ proposal: p.results[0], receipts: r.results });
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/approve/")) {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id, approved_by, outcome) VALUES (?1,'human','pending')").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/deny/")) {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+    }
+
+    if (url.pathname === "/brain/authority-receipts") {
+      const { results } = await env.DB.prepare("SELECT r.*, p.title as proposal_title FROM authority_receipts r LEFT JOIN proposals p ON r.proposal_id=p.id ORDER BY r.created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/anti-patterns") {
+      const { results } = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 50").all();
+      return json({ entries: results });
     }
 
     return json({ error: "not found" }, 404);
