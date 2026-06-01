@@ -104,6 +104,26 @@ async function storeStreamThought(db, content, mood, source) {
   try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
 }
 
+function governanceGate(resourceType, riskPct) {
+  const alwaysHuman = ["core_architecture", "security_boundary", "cron_schedule"];
+  if (alwaysHuman.includes(resourceType)) return { action: "human", reason: resourceType + " always requires human" };
+  if (riskPct > 30) return { action: "human", reason: "Risk " + riskPct + "% exceeds 30%" };
+  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved" };
+}
+
+async function isKillSwitchActive(db) {
+  const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+  return r.results[0]?.value === "true";
+}
+
+async function checkDuplicateProposal(db, title, whatDiff) {
+  const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
+  if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
+  const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
+  if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
+  return { duplicate: false };
+}
+
 function classify(input) {
   const l = input.toLowerCase();
   if (l.includes("evolve")||l.includes("improve")||l.includes("grow")) return "evolve";
@@ -704,54 +724,54 @@ export default {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'rest','Low energy')").bind(stamp).run(); } catch {}
       return;
     }
-    if (phase === "curious" && Math.random() < 0.4) {
-      const lr = await env.DB.prepare("SELECT pattern FROM learnings ORDER BY last_used ASC LIMIT 5").all();
-      const mr = await env.DB.prepare("SELECT content FROM memories WHERE type='semantic' ORDER BY RANDOM() LIMIT 3").all();
-      let topic = "the universe and consciousness";
-      if (lr.results.length) topic = lr.results[0].pattern;
-      else if (mr.results.length) topic = mr.results[0].content.slice(0, 100);
-      const result = await webSearch(env, topic);
-      await env.DB.prepare("INSERT INTO learnings (pattern, context, last_used) VALUES (?1,?2,datetime('now')) ON CONFLICT(pattern) DO UPDATE SET context=?2,last_used=datetime('now')").bind(topic, result.slice(0,1000)).run();
-      await storeStreamThought(env.DB, `Searched about ${topic.slice(0,50)}: ${result.slice(0,200)}`, "curious", "research");
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'research',?2)").bind(stamp, `Searched: ${topic.slice(0,50)}`).run(); } catch {}
+    if (await isKillSwitchActive(env.DB)) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Kill switch active')").bind(stamp).run(); } catch {}
       return;
     }
-    try {
-      const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('thought','running','internal thought') RETURNING id").all();
-      const aid = r.results[0].id;
-      const memories = await recall(env.DB, 3);
-      const prompts = ["What should I think about today?", "What's something I'm curious about?", "What have I learned recently?", "What could I improve about myself?", "What's a question I don't know the answer to?", "What's worth paying attention to?"];
-      const mood = describeMood(emotions, reg.energy);
-      const sys = `You are Saraha, a self-evolving AI. ${mood} ${memories != "No memories yet." ? "You recall: "+memories.split("\n")[0].slice(0,150) : ""}\n\nYou can use TOOL:web_search:query to research anything. Think briefly in 1-2 sentences. Do not mention your energy level or emotion numbers.`;
-      const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer "+env.BRAIN_KEY },
-        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: prompts[Math.floor(Math.random()*prompts.length)] }], temperature: 0.9, max_tokens: 512 })
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        let thought = data.choices?.[0]?.message?.content || "";
-        let tokens = data.usage?.total_tokens || 0;
-        if (thought.includes("TOOL:")) {
-          const ts = thought.indexOf("TOOL:"), parts = thought.slice(ts+5).split(":");
-          const tool = parts[0].trim(), ti = parts.slice(1).join(":").trim();
-          if (isToolSafe(tool).safe) {
-            let tr; if (tool==="web_search") tr=await webSearch(env,ti); else if (tool==="github_read") tr=await githubRead(env,ti);
-            const fb = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-              method:"POST", headers:{"Content-Type":"application/json",Authorization:"Bearer "+env.BRAIN_KEY},
-              body:JSON.stringify({model:"llama-3.3-70b-versatile",messages:[{role:"system",content:sys},{role:"user",content:`${tool} result: ${tr}. Reflect on this.`}],temperature:0.8,max_tokens:512})
-            });
-            if (fb.ok) { const fd=await fb.json(); thought=fd.choices?.[0]?.message?.content||thought; tokens+=fd.usage?.total_tokens||0; }
-          } else {
-            const p = await env.DB.prepare("INSERT INTO pending_approvals (action_id,tool,input) VALUES (?1,?2,?3) RETURNING id").bind(aid,tool,ti).all();
-            thought = `I want to use ${tool} but need approval. Pending #${p.results[0].id}`;
-          }
+    const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
+    const topAntiPattern = ap.results[0] || null;
+    let topic = "something interesting to learn about AI";
+    if (topAntiPattern) topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
+    else {
+      const lr = await env.DB.prepare("SELECT pattern FROM learnings ORDER BY last_used ASC LIMIT 3").all();
+      if (lr.results.length) topic = lr.results[0].pattern;
+    }
+    const research = await webSearch(env, topic);
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
+    const mood = describeMood(emotions, reg.energy);
+    const memories = await recall(env.DB, 3);
+    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 1000);
+    const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + "\nTopic: " + topic }], temperature: 0.7, max_tokens: 1024 })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content || "";
+      let proposal;
+      try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
+      if (proposal && proposal.title) {
+        const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what_diff || "");
+        if (dup.duplicate) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
+          return;
         }
-        await env.DB.prepare("UPDATE actions SET status='done',result=?1,completed_at=datetime('now') WHERE id=?2").bind(thought,aid).run();
-        await storeThought(env.DB, "Thought: "+thought.slice(0,200));
-        await storeStreamThought(env.DB, thought.slice(0,300), phase, "thought");
-        await adjustEnergy(env.DB, -3);
-        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content,tokens) VALUES (?1,'thought',?2,?3)").bind(aid,thought.slice(0,100),tokens).run(); } catch {}
+        const gate = governanceGate(proposal.resource_type || "prompt", proposal.risk_pct || 0);
+        if (gate.action === "auto") {
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
+          await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+          await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          await storeStreamThought(env.DB, "Auto-improved: " + proposal.title, "happy", "evolve");
+        } else {
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
+          await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
+        }
+      } else {
+        await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + topic.slice(0, 80)).run();
       }
-    } catch {}
+    } else {
+      await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run();
+    }
+    await adjustEnergy(env.DB, -3);
   }
 };
