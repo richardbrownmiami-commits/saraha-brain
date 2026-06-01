@@ -12,7 +12,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+      - run: npm install
       - run: npx wrangler@3.90.0 deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}
