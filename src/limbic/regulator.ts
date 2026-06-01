@@ -1,7 +1,12 @@
-import { getMood } from "./emotions";
+import { getEmotions } from "./emotions";
 
 export async function getEmotion(db: D1Database): Promise<string> {
-  return await getMood(db);
+  const e = await getEmotions(db);
+  return `energetic ${e.energetic}/10, intelligent ${e.intelligent}/10, happy ${e.happy}/10, bad ${e.bad}/3`;
+}
+
+export async function getEmotionNumbers(db: D1Database) {
+  return await getEmotions(db);
 }
 
 export async function getRegulator(db: D1Database): Promise<{ energy: number; confidence: number }> {
