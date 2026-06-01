@@ -2,7 +2,7 @@ name: Deploy saraha-brain
 on:
   push:
     branches: [main]
-    paths: ["src/**", "wrangler.toml", "package.json"]
+    paths: ["src/**", "wrangler.toml", "package.json", ".github/workflows/**"]
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -11,7 +11,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
       - run: npm install
       - run: npx wrangler@3.90.0 deploy
         env:
