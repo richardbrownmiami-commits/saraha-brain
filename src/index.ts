@@ -163,7 +163,7 @@ export default {
         // LLM call
         const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
         await logStep(aid, "planner", `Calling ${body.model} with temperature ${body.temperature}`);
-        const resp = await fetch(env.BUDDHI_DWAR_URL + "/v1/chat/completions", {
+        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
         });
         if (!resp.ok) { await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502); }

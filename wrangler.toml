@@ -8,6 +8,9 @@ binding = "DB"
 database_name = "saraha-brain-db"
 database_id = "4e4e5fde-2207-478a-b1ed-d55d6cc35a91"
 
+[[services]]
+binding = "BUDDHI_DWAR"
+service = "buddhi-dwar"
+
 [vars]
 BRAIN_KEY = "Saraha-Brain-Key"
-BUDDHI_DWAR_URL = "https://buddhi-dwar.richard-brown-miami.workers.dev"
