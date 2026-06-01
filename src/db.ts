@@ -56,23 +56,23 @@ CREATE TABLE IF NOT EXISTS identity (
 );
 `;
 
-export async function initDB(db: D1Database): Promise<void> {
+export async function initDB(db) {
   await db.exec(SCHEMA);
 }
 
-export async function addMemory(db: D1Database, content: string, type = "episodic", tags: string[] = []): Promise<void> {
+export async function addMemory(db, content, type = "episodic", tags = []) {
   await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, ?2, ?3)").bind(content, type, JSON.stringify(tags)).run();
 }
 
-export async function recentMemories(db: D1Database, limit = 10): Promise<any[]> {
+export async function recentMemories(db, limit = 10) {
   return (await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all()).results;
 }
 
-export async function addAction(db: D1Database, type: string, input: string): Promise<number> {
+export async function addAction(db, type, input) {
   const r = await db.prepare("INSERT INTO actions (type, input) VALUES (?1, ?2) RETURNING id").bind(type, input).first();
-  return (r as any).id;
+  return r.id;
 }
 
-export async function updateAction(db: D1Database, id: number, status: string, result?: string, error?: string): Promise<void> {
+export async function updateAction(db, id, status, result, error) {
   await db.prepare("UPDATE actions SET status = ?1, result = ?2, error = ?3, completed_at = datetime('now') WHERE id = ?4").bind(status, result || null, error || null, id).run();
 }
