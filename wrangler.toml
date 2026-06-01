@@ -21,5 +21,5 @@ BRAIN_KEY = "Saraha-Brain-Key"
 BRAVE_API_KEY = ""
 GITHUB_TOKEN = ""
 
-[[triggers]]
+[triggers]
 crons = ["*/2 * * * *"]
