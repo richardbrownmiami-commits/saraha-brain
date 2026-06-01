@@ -61,7 +61,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha – Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -187,7 +187,7 @@ h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293
 </style>
 </head>
 <body>
-<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
+<h1>🛡️ Saraha Monitor</h1>
 <div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
 <div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
 <script>
@@ -242,7 +242,7 @@ td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow
 </style>
 </head>
 <body>
-<h1>ðŸ§  Saraha Platform</h1>
+<h1>🧠 Saraha Platform</h1>
 <div class="row">
   <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
   <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
@@ -291,15 +291,10 @@ async function webSearch(env, query) {
     } catch {}
   }
   try {
-    const resp = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000) });
+    const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
     const html = await resp.text();
-    const links = [...html.matchAll(/class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g)].slice(0, 5);
-    const snippets = [...html.matchAll(/class="result__snippet"[^>]*>(.*?)<\/(?:a|span|div)>/g)].slice(0, 5);
-    const results = [];
-    for (let i = 0; i < links.length; i++) {
-      results.push((links[i][2]?.replace(/<[^>]*>/g,"")||"") + ": " + (snippets[i]?.[1]?.replace(/<[^>]*>/g,"")||""));
-    }
-    if (results.length) return results.join("\n");
+    const rows = [...html.matchAll(/class="result-link"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result-snippet"[^>]*>([\s\S]*?)<\//g)].slice(0, 5);
+    if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
   } catch {}
   return "No results for: " + query;
 }
@@ -520,6 +515,7 @@ export default {
     }
     if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
       let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
       const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
       if (!r.results.length) return json({ error: "not found or already decided" }, 404);
       const row = r.results[0];
@@ -530,6 +526,7 @@ export default {
     }
     if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
       let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
       const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
       if (!r.results.length) return json({ error: "not found or already decided" }, 404);
       const row = r.results[0];
@@ -540,5 +537,36 @@ export default {
     }
 
     return json({ error: "not found" }, 404);
+  },
+  async scheduled(event, env, ctx) {
+    try { for (const s of TABLES) await env.DB.exec(s); } catch {}
+    const emotions = await getEmotions(env.DB);
+    const reg = await getRegulator(env.DB);
+    const stamp = Date.now();
+    try {
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'heartbeat','Energy: '||?2||'% - Emotions: e'||?3||' i'||?4||' h'||?5||' b'||?6)").bind(stamp, Math.round(reg.energy), emotions.energetic, emotions.intelligent, emotions.happy, emotions.bad).run();
+    } catch {}
+    if (reg.energy <= 20) {
+      await adjustEnergy(env.DB, 10);
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'heartbeat','Low energy - resting')").bind(stamp).run(); } catch {}
+      return;
+    }
+    try {
+      const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('heartbeat','running','idle thought') RETURNING id").all();
+      const aid = r.results[0].id;
+      const memories = await recall(env.DB, 3);
+      const system = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent: " + memories.replace(/\n/g,"; ") : ""} Generate a brief idle thought or reflection (1-2 sentences).`;
+      const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: "What are you thinking?" }], temperature: 0.9, max_tokens: 256 })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const thought = data.choices?.[0]?.message?.content || "";
+        await env.DB.prepare("UPDATE actions SET status='done',result=?1,completed_at=datetime('now') WHERE id=?2").bind(thought, aid).run();
+        await storeThought(env.DB, "Idle: " + thought.slice(0, 200));
+        await adjustEnergy(env.DB, -3);
+      }
+    } catch {}
   }
 };
