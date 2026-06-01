@@ -41,6 +41,31 @@ async function adjustEnergy(db, delta) {
   await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
 }
 
+function describeMood(emotions, energy) {
+  const parts = [];
+  if (energy > 80 && emotions.energetic >= 7) parts.push("alert and full of energy");
+  else if (energy > 60 && emotions.energetic >= 5) parts.push("energetic and engaged");
+  else if (energy > 40) parts.push("balanced and present");
+  else if (energy > 20) parts.push("a bit tired but clear-minded");
+  else parts.push("quite fatigued, resting");
+  if (emotions.happy >= 9) parts.push("in excellent spirits");
+  else if (emotions.happy >= 6) parts.push("in good spirits");
+  else if (emotions.happy >= 4) parts.push("quiet and neutral");
+  else parts.push("feeling low");
+  if (emotions.bad >= 2) parts.push("with a trace of unease");
+  if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
+  else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+  return "You feel " + parts.join(", ") + ".";
+}
+
+async function driftEmotions(db) {
+  const emo = await getEmotions(db);
+  if (emo.happy > 7) await updateEmotion(db, "happy", -1);
+  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+}
+
 async function storeThought(db, content) {
   await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
 }
@@ -59,7 +84,7 @@ function getBrainPhase(emotions, reg) {
   const hour = new Date().getUTCHours();
   if (hour >= 1 && hour < 6) return "sleeping";
   if (reg.energy <= 20) return "tired";
-  if (reg.energy > 60 && emotions.energetic >= 6) return "curious";
+  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
   return "awake";
 }
 
@@ -88,7 +113,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha – Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -214,7 +239,7 @@ h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293
 </style>
 </head>
 <body>
-<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
+<h1>🛡️ Saraha Monitor</h1>
 <div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
 <div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
 <script>
@@ -269,7 +294,7 @@ td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow
 </style>
 </head>
 <body>
-<h1>ðŸ§  Saraha Platform</h1>
+<h1>🧠 Saraha Platform</h1>
 <div class="row">
   <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
   <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
@@ -446,7 +471,8 @@ export default {
         const reg = await getRegulator(env.DB);
         const memories = await recall(env.DB, 5);
 
-        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} Current state: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        const mood = describeMood(emotions, reg.energy);
+        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
         await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
         const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
@@ -557,7 +583,8 @@ export default {
       const emotions = await getEmotions(env.DB);
       const reg = await getRegulator(env.DB);
       const memories = await recall(env.DB, 5);
-      const system = `You are Saraha. State: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
+      const mood = describeMood(emotions, reg.energy);
+      const system = `You are Saraha. ${mood} ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
       const userInput = action.input || "Process my request";
       const followBody = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
       const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
@@ -613,17 +640,23 @@ export default {
     const phase = getBrainPhase(emotions, reg);
     const stamp = Date.now();
     await setBusyUntil(env.DB, 90);
+    await driftEmotions(env.DB);
+
+    if (phase !== "sleeping") await adjustEnergy(env.DB, 2);
 
     if (phase === "sleeping") {
       const mem = await recall(env.DB, 1);
       const dream = mem !== "No memories yet." ? mem.split("\n")[0] : "peaceful darkness";
       await storeStreamThought(env.DB, `Dreaming: ${dream.slice(0,200)}`, "peaceful", "sleep");
-      await adjustEnergy(env.DB, 15);
+      await adjustEnergy(env.DB, 25);
+      await updateEmotion(env.DB, "energetic", 2);
+      await updateEmotion(env.DB, "intelligent", 1);
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'sleep','Dream: '||?2)").bind(stamp, dream.slice(0,100)).run(); } catch {}
       return;
     }
     if (reg.energy <= 20) {
-      await adjustEnergy(env.DB, 10);
+      await adjustEnergy(env.DB, 15);
+      await updateEmotion(env.DB, "energetic", 1);
       await storeStreamThought(env.DB, "Resting... energy recovering.", "tired", "rest");
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'rest','Low energy')").bind(stamp).run(); } catch {}
       return;
@@ -644,8 +677,9 @@ export default {
       const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('thought','running','internal thought') RETURNING id").all();
       const aid = r.results[0].id;
       const memories = await recall(env.DB, 3);
-      const prompts = ["What's on your mind?", "Any reflections?", "What are you curious about?", "Anything new today?", "What do you wonder?", "Any observations?", "What feels important?", "What have you been thinking about?"];
-      const sys = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. ${memories != "No memories yet." ? "Mem: "+memories.replace(/\n/g,"; ").slice(0,200) : ""} 1-2 sentence thought.`;
+      const prompts = ["What should I think about today?", "What's something I'm curious about?", "What have I learned recently?", "What could I improve about myself?", "What's a question I don't know the answer to?", "What's worth paying attention to?"];
+      const mood = describeMood(emotions, reg.energy);
+      const sys = `You are Saraha, a self-evolving AI. ${mood} ${memories != "No memories yet." ? "You recall: "+memories.split("\n")[0].slice(0,150) : ""}\n\nYou can use TOOL:web_search:query to research anything. Think briefly in 1-2 sentences. Do not mention your energy level or emotion numbers.`;
       const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer "+env.BRAIN_KEY },
         body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: prompts[Math.floor(Math.random()*prompts.length)] }], temperature: 0.9, max_tokens: 512 })
