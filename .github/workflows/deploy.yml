@@ -15,4 +15,4 @@ jobs:
       - run: npm ci
       - run: npx wrangler@3.90.0 deploy
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}

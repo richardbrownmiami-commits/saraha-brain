@@ -4,7 +4,50 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
 ];
+
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
+
+async function getEmotions(db) {
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+  const result = { ...EMO_DEFAULTS };
+  for (const r of rows.results) {
+    const key = r.key.replace("emotion_", "");
+    if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+  }
+  return result;
+}
+async function updateEmotion(db, name, delta) {
+  const emotions = await getEmotions(db);
+  const [min, max] = RANGES[name];
+  const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
+  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
+  return newVal;
+}
+
+async function getRegulator(db) {
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
+  const vals = { energy: 100, confidence: 50 };
+  for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
+  return { energy: vals.energy, confidence: vals.confidence };
+}
+async function adjustEnergy(db, delta) {
+  const { energy } = await getRegulator(db);
+  const newVal = Math.max(0, Math.min(100, energy + delta));
+  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+}
+
+async function storeThought(db, content) {
+  await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+}
+async function recall(db, limit = 10) {
+  const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
+  if (!rows.results.length) return "No memories yet.";
+  return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+}
 
 function classify(input) {
   const l = input.toLowerCase();
@@ -120,10 +163,221 @@ setTimeout(()=>startTalking("Hello! I'm Saraha."),1000);
 </body>
 </html>`;
 
-import { getEmotions, updateEmotion } from "./limbic/emotions";
-import { getRegulator, adjustEnergy } from "./limbic/regulator";
-import { storeThought } from "./limbic/memory";
-import { recall } from "./limbic/memory";
+const MONITOR_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Saraha Monitor</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0F172A;color:#E2E8F0;font-family:sans-serif;padding:20px;max-width:800px;margin:0 auto}
+h1{color:#38BDF8;margin-bottom:20px;font-size:24px}
+h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293B;padding-bottom:4px}
+.card{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #334155}
+.pending-item{border-left:3px solid #F59E0B;padding:10px 12px;margin:8px 0;background:#0F172A;border-radius:0 8px 8px 0}
+.pending-item.approved{border-left-color:#10B981}
+.pending-item.denied{border-left-color:#EF4444}
+.tool-name{color:#38BDF8;font-weight:bold;font-size:14px}
+.tool-input{color:#94A3B8;font-size:12px;margin:4px 0}
+.tool-date{color:#64748B;font-size:11px}
+.btn{padding:6px 16px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:bold;margin-right:6px;margin-top:6px}
+.btn-approve{background:#10B981;color:#fff}.btn-approve:hover{background:#34D399}
+.btn-deny{background:#EF4444;color:#fff}.btn-deny:hover{background:#F87171}
+.empty{color:#64748B;text-align:center;padding:20px;font-size:14px}
+</style>
+</head>
+<body>
+<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
+<div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
+<div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
+<script>
+async function load(){
+  try{const r=await(await fetch("/monitor/api/pending")).json();renderPending(r.pending||[]);renderHistory(r.history||[])}catch(e){document.getElementById("pending").innerHTML='<div class="card"><div class="empty">Error: '+e.message+'</div></div>'}
+}
+function renderPending(items){
+  const el=document.getElementById("pending");
+  if(!items.length){el.innerHTML='<div class="card"><div class="empty">No pending approvals</div></div>';return}
+  el.innerHTML='<div class="card"><h2>Pending ('+items.length+')</h2>'+items.map(i=>'<div class="pending-item" id="p-'+i.id+'"><div class="tool-name">'+i.tool+'</div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div><button class="btn btn-approve" onclick="decide('+i.id+',\'approve\')">Approve</button><button class="btn btn-deny" onclick="decide('+i.id+',\'deny\')">Deny</button></div>').join("")+'</div>';
+}
+function renderHistory(items){
+  const el=document.getElementById("history").querySelector(".card");
+  if(!items.length){el.innerHTML='<div class="empty">No history yet</div>';return}
+  el.innerHTML=items.map(i=>'<div class="pending-item '+i.status+'"><div class="tool-name">'+i.tool+' <span style="color:'+(i.status==='approved'?'#10B981':'#EF4444')+';font-size:11px">('+i.status+')</span></div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div></div>').join("");
+}
+async function decide(id,action){
+  const btns=document.querySelectorAll("#p-"+id+" .btn");btns.forEach(b=>b.disabled=true);
+  try{await fetch("/monitor/api/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});load()}catch(e){btns.forEach(b=>b.disabled=false)}
+}
+load();setInterval(load,15000);
+</script>
+</body>
+</html>`;
+
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Saraha Platform</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0F172A;color:#E2E8F0;font-family:sans-serif;padding:20px;max-width:900px;margin:0 auto}
+h1{color:#38BDF8;margin-bottom:20px;font-size:24px}
+h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293B;padding-bottom:4px}
+.card{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #334155}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.bar-wrap{margin:6px 0}
+.bar-label{display:flex;justify-content:space-between;font-size:13px;margin-bottom:2px}
+.bar-track{height:20px;background:#0F172A;border-radius:10px;overflow:hidden}
+.bar-fill{height:100%;border-radius:10px;transition:width .5s ease}
+.bar-fill.bad{background:#EF4444}.bar-fill.energetic{background:#F59E0B}.bar-fill.intelligent{background:#3B82F6}.bar-fill.happy{background:#10B981}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:#64748B;padding:6px 4px;border-bottom:1px solid #334155}
+td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.status-done{background:#10B981}.status-running{background:#F59E0B}.status-failed{background:#EF4444}
+.energy-gauge{height:24px;background:#0F172A;border-radius:12px;overflow:hidden;margin:4px 0}
+.energy-fill{height:100%;border-radius:12px;transition:width .5s ease;background:linear-gradient(90deg,#EF4444,#F59E0B,#10B981)}
+.meta{color:#64748B;font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<h1>ðŸ§  Saraha Platform</h1>
+<div class="row">
+  <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
+  <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
+</div>
+<div class="card"><h2>Recent Activity</h2><table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Input</th><th>Result</th><th>Time</th></tr></thead><tbody id="activity"></tbody></table></div>
+<div class="card"><h2>Recent Memories</h2><div id="memories"></div></div>
+<div class="meta" id="meta"></div>
+<script>
+async function load(){
+  try{const e=await(await fetch("/brain/emotions")).json();renderEmotions(e)}catch{}
+  try{const a=await(await fetch("/brain/activity")).json();renderActivity(a.entries)}catch{}
+  try{const l=await(await fetch("/brain/logs?limit=10")).json();renderLogs(l.entries)}catch{}
+}
+function renderEmotions(e){
+  const emo=e.emotions||{},el=document.getElementById("emotions");
+  el.innerHTML=["energetic","intelligent","happy","bad"].map(k=>'<div class="bar-wrap"><div class="bar-label"><span>'+k+'</span><span>'+(emo[k]||0)+'/10</span></div><div class="bar-track"><div class="bar-fill '+k+'" style="width:'+(emo[k]||0)*10+'%"></div></div></div>').join("")+'<div class="bar-wrap"><div class="bar-label"><span>energy</span><span>'+(e.energy||0)+'%</span></div><div class="energy-gauge"><div class="energy-fill" style="width:'+(e.energy||0)+'%"></div></div></div><div class="bar-label"><span>confidence</span><span>'+(e.confidence||0)+'%</span></div>';
+}
+function renderActivity(entries){
+  const tbody=document.getElementById("activity");
+  if(!entries||!entries.length){tbody.innerHTML='<tr><td colspan="6" style="color:#64748B;text-align:center">No activity yet</td></tr>';return}
+  tbody.innerHTML=entries.map(e=>'<tr><td>'+e.id+'</td><td>'+e.type+'</td><td><span class="status-dot status-'+e.status+'"></span>'+e.status+'</td><td>'+(e.input||'').slice(0,40)+'</td><td>'+(e.result||'').slice(0,40)+'</td><td>'+(e.created_at||'').slice(0,10)+'</td></tr>').join("");
+}
+function renderLogs(entries){
+  const el=document.getElementById("memories");
+  if(!entries||!entries.length){el.innerHTML='<div class="meta">No logs yet</div>';return}
+  el.innerHTML=entries.slice(0,5).map(e=>'<div class="bar-wrap"><div class="bar-label"><span>'+e.step+'</span><span style="color:#64748B;font-size:11px">'+(e.created_at||'').slice(0,19)+'</span></div><div style="font-size:12px;color:#94A3B8">'+(e.content||'').slice(0,80)+'</div></div>').join("");
+  document.getElementById("meta").textContent="Total logs: "+entries.length;
+}
+load();setInterval(load,10000);
+</script>
+</body>
+</html>`;
+
+async function webSearch(env, query) {
+  if (env.BRAVE_API_KEY) {
+    try {
+      const resp = await fetch("https://api.search.brave.com/res/v1/web/search?q=" + encodeURIComponent(query) + "&count=5", {
+        headers: { "X-Subscription-Token": env.BRAVE_API_KEY, "Accept": "application/json" },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const results = data.web?.results || [];
+        if (results.length) return results.map(r => r.title + ": " + (r.description || "")).join("\n");
+      }
+    } catch {}
+  }
+  try {
+    const resp = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(10000) });
+    const html = await resp.text();
+    const links = [...html.matchAll(/class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/g)].slice(0, 5);
+    const snippets = [...html.matchAll(/class="result__snippet"[^>]*>(.*?)<\/(?:a|span|div)>/g)].slice(0, 5);
+    const results = [];
+    for (let i = 0; i < links.length; i++) {
+      results.push((links[i][2]?.replace(/<[^>]*>/g,"")||"") + ": " + (snippets[i]?.[1]?.replace(/<[^>]*>/g,"")||""));
+    }
+    if (results.length) return results.join("\n");
+  } catch {}
+  return "No results for: " + query;
+}
+
+async function githubRead(env, input) {
+  const parts = input.split("/");
+  const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
+  if (!owner || !repo || !path) return "Invalid format. Use: owner/repo/path/to/file";
+  const token = env.GITHUB_TOKEN; if (!token) return "GitHub token not configured";
+  try {
+    const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
+      headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
+    const text = await resp.text();
+    return text.slice(0, 2000) + (text.length > 2000 ? "\n... (truncated)" : "");
+  } catch (e) { return "GitHub error: " + e.message; }
+}
+
+async function githubWrite(env, input) {
+  const parts = input.split("|");
+  const pathParts = parts[0].split("/"), owner = pathParts[0], repo = pathParts[1], path = pathParts.slice(2).join("/");
+  const msg = parts[1] || "Update via Saraha", content = parts.slice(2).join("|");
+  if (!owner || !repo || !path || !content) return "Invalid format. Use: owner/repo/path|commit msg|content";
+  const token = env.GITHUB_TOKEN; if (!token) return "GitHub token not configured";
+  try {
+    const getResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
+      headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
+      signal: AbortSignal.timeout(10000)
+    });
+    let sha = null;
+    if (getResp.ok) { const existing = await getResp.json(); sha = existing.sha; }
+    const body = { message: msg, content: btoa(content) };
+    if (sha) body.sha = sha;
+    const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
+      method: "PUT", headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
+    });
+    if (!resp.ok) return "GitHub write error: " + resp.status + " " + (await resp.text()).slice(0, 200);
+    const data = await resp.json();
+    return "Written to " + path + " (commit: " + (data.commit?.sha || "unknown").slice(0, 7) + ")";
+  } catch (e) { return "GitHub error: " + e.message; }
+}
+
+async function runTool(env, actionId, tool, input) {
+  const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
+  let resp;
+  if (env.SENTINEL) {
+    resp = await env.SENTINEL.fetch("https://sentinel/check", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
+    });
+  } else {
+    resp = await fetch(sentinelUrl + "/check", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
+    });
+  }
+  const decision = await resp.json();
+  if (!decision.safe) {
+    const p = await env.DB.prepare("INSERT INTO pending_approvals (action_id, tool, input) VALUES (?1,?2,?3) RETURNING id").bind(actionId, tool, input).all();
+    await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Stored pending approval #'||?2||' for '||?3||': '||?4)").bind(actionId, p.results[0].id, tool, input).run();
+    return { ok: false, pending: true, id: p.results[0].id, error: decision.reason };
+  }
+
+  if (tool === "web_search") {
+    const data = await webSearch(env, input);
+    return { ok: true, data: data.slice(0, 1500) };
+  }
+  if (tool === "github_read") {
+    const data = await githubRead(env, input);
+    return { ok: true, data: data.slice(0, 2000) };
+  }
+  if (tool === "github_write") {
+    const data = await githubWrite(env, input);
+    return { ok: true, data: data.slice(0, 1500) };
+  }
+  return { ok: false, error: "Tool not implemented: " + tool };
+}
 
 export default {
   async fetch(req, env) {
@@ -141,6 +395,9 @@ export default {
     if (url.pathname === "/avatar") {
       return new Response(AVATAR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
+    if (url.pathname === "/platform") {
+      return new Response(DASHBOARD_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
 
     if (url.pathname === "/status") {
       let dbOk = false;
@@ -150,7 +407,8 @@ export default {
 
     if (url.pathname === "/think" && req.method === "POST") {
       try {
-        const { input } = await req.json();
+        let input;
+        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
         if (!input) return json({ error: "input required" }, 400);
 
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
@@ -165,7 +423,7 @@ export default {
         const reg = await getRegulator(env.DB);
         const memories = await recall(env.DB, 5);
 
-        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} Current state: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally.`;
+        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} Current state: energetic ${emotions.energetic}/10, intelligent ${emotions.intelligent}/10, happy ${emotions.happy}/10, energy ${reg.energy}%. ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
         await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
         const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
@@ -178,19 +436,52 @@ export default {
           await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
         }
         const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        const tokens = data.usage?.total_tokens || 0;
-        await logStep(aid, "executor", `Got response (${content.length} chars)`, data.model, tokens);
+        let content = data.choices?.[0]?.message?.content || "";
+        let tokens = data.usage?.total_tokens || 0;
+        let finalModel = data.model;
+        await logStep(aid, "executor", `Got response (${content.length} chars)`, finalModel, tokens);
 
-        // Update emotions and store memory
+        if (content.includes("TOOL:")) {
+          const toolStart = content.indexOf("TOOL:");
+          const afterTool = content.slice(toolStart + 5);
+          const parts = afterTool.split(":");
+          const tool = parts[0].trim();
+          const toolInput = parts.slice(1).join(":").trim();
+          await logStep(aid, "planner", `Tool requested: ${tool}(${toolInput})`);
+          const result = await runTool(env, aid, tool, toolInput);
+          if (result.pending) {
+            content = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
+            await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
+          } else if (!result.ok) {
+            content = `I tried to use ${tool} but got: ${result.error}`;
+          } else {
+            const followBody = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+              method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+            });
+            if (followResp.ok) {
+              const followData = await followResp.json();
+              content = followData.choices?.[0]?.message?.content || content;
+              tokens += followData.usage?.total_tokens || 0;
+              finalModel = followData.model;
+              if (followData.choices && !followData.choices[0]?.message?.content) {
+                await logStep(aid, "executor", `Follow-up: no content in response: ${JSON.stringify(followData).slice(0,300)}`, finalModel, tokens);
+              }
+            } else {
+              await logStep(aid, "executor", `Follow-up LLM returned ${followResp.status}`, finalModel, tokens);
+            }
+            await logStep(aid, "executor", `Tool executed: ${tool}, final ${content.length} chars`, finalModel, tokens);
+          }
+        }
+
         await updateEmotion(env.DB, "happy", 1);
         await updateEmotion(env.DB, "energetic", -1);
         await adjustEnergy(env.DB, -5);
         await storeThought(env.DB, `User asked: ${input} - I replied: ${content.slice(0, 200)}`);
 
         await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
-        await logStep(aid, "result", content, data.model, tokens);
-        return json({ result: content, model: data.model, usage: data.usage, action_id: aid, emotions: await getEmotions(env.DB) });
+        await logStep(aid, "result", content, finalModel, tokens);
+        return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
       } catch (e) { return json({ error: e.message }, 500); }
     }
 
@@ -217,6 +508,35 @@ export default {
       }
       const { results } = await env.DB.prepare("SELECT * FROM brain_logs ORDER BY created_at DESC LIMIT 50").all();
       return json({ entries: results });
+    }
+
+    if (url.pathname === "/monitor") {
+      return new Response(MONITOR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
+    if (url.pathname === "/monitor/api/pending") {
+      const p = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC").all();
+      const h = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status!='pending' ORDER BY decided_at DESC LIMIT 20").all();
+      return json({ pending: p.results, history: h.results });
+    }
+    if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      await env.DB.prepare("UPDATE pending_approvals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='approved' WHERE id=?1").bind(row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' granted for '||?3)").bind(row.action_id, id, row.tool).run();
+      return json({ ok: true });
+    }
+    if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      await env.DB.prepare("UPDATE pending_approvals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='denied' WHERE id=?1").bind(row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' denied for '||?3)").bind(row.action_id, id, row.tool).run();
+      return json({ ok: true });
     }
 
     return json({ error: "not found" }, 404);

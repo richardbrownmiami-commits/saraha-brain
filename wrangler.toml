@@ -12,5 +12,11 @@ database_id = "4e4e5fde-2207-478a-b1ed-d55d6cc35a91"
 binding = "BUDDHI_DWAR"
 service = "buddhi-dwar"
 
+[[services]]
+binding = "SENTINEL"
+service = "saraha-sentinel"
+
 [vars]
 BRAIN_KEY = "Saraha-Brain-Key"
+BRAVE_API_KEY = ""
+GITHUB_TOKEN = ""
