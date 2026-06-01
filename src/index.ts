@@ -224,7 +224,7 @@ async function load(){
 function renderPending(items){
   const el=document.getElementById("pending");
   if(!items.length){el.innerHTML='<div class="card"><div class="empty">No pending approvals</div></div>';return}
-  el.innerHTML='<div class="card"><h2>Pending ('+items.length+')</h2>'+items.map(i=>'<div class="pending-item" id="p-'+i.id+'"><div class="tool-name">'+i.tool+'</div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div><button class="btn btn-approve" onclick="decide('+i.id+',\'approve\')">Approve</button><button class="btn btn-deny" onclick="decide('+i.id+',\'deny\')">Deny</button></div>').join("")+'</div>';
+  el.innerHTML='<div class="card"><h2>Pending ('+items.length+')</h2>'+items.map(i=>'<div class="pending-item" id="p-'+i.id+'"><div class="tool-name">'+i.tool+'</div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div><button class="btn btn-approve" onclick="decide('+i.id+',\\'approve\\')">Approve</button><button class="btn btn-deny" onclick="decide('+i.id+',\\'deny\\')">Deny</button></div>').join("")+'</div>';
 }
 function renderHistory(items){
   const el=document.getElementById("history").querySelector(".card");
@@ -644,12 +644,11 @@ export default {
       const r = await env.DB.prepare("INSERT INTO actions (type,status,input) VALUES ('thought','running','internal thought') RETURNING id").all();
       const aid = r.results[0].id;
       const memories = await recall(env.DB, 3);
-      const rt = await env.DB.prepare("SELECT content FROM thought_stream ORDER BY created_at DESC LIMIT 3").all();
-      const lastT = rt.results.map(t=>t.content).join(" | ") || "nothing yet";
-      const sys = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. Last thoughts: ${lastT.slice(0,200)}. ${memories != "No memories yet." ? "Mem: "+memories.replace(/\n/g,"; ").slice(0,200) : ""} 1-2 sentence thought. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path.`;
+      const prompts = ["What's on your mind?", "Any reflections?", "What are you curious about?", "Anything new today?", "What do you wonder?", "Any observations?", "What feels important?", "What have you been thinking about?"];
+      const sys = `You are Saraha. State: e${emotions.energetic}/10 i${emotions.intelligent}/10 h${emotions.happy}/10 energy ${reg.energy}%. ${memories != "No memories yet." ? "Mem: "+memories.replace(/\n/g,"; ").slice(0,200) : ""} 1-2 sentence thought.`;
       const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer "+env.BRAIN_KEY },
-        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: "What are you thinking?" }], temperature: 0.9, max_tokens: 512 })
+        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: prompts[Math.floor(Math.random()*prompts.length)] }], temperature: 0.9, max_tokens: 512 })
       });
       if (resp.ok) {
         const data = await resp.json();
