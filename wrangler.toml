@@ -20,3 +20,6 @@ service = "saraha-sentinel"
 BRAIN_KEY = "Saraha-Brain-Key"
 BRAVE_API_KEY = ""
 GITHUB_TOKEN = ""
+
+[[triggers]]
+crons = ["*/5 * * * *"]
