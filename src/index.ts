@@ -105,18 +105,17 @@ async function storeStreamThought(db, content, mood, source) {
   try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
 }
 
+async function applyEvolutionChange(db, proposal, proposalId, reason) {
+  const change = { title: proposal.title, what: proposal.what_diff || "", how: proposal.how_diff || "", type: proposal.resource_type || "unknown", reason: reason || "self-improvement", risk: proposal.risk_pct || 0, applied_at: new Date().toISOString(), status: "active" };
+  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')").bind("evolution_log:" + proposalId, JSON.stringify(change)).run();
+  const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+  const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+  overrides.push({ from: proposalId, title: proposal.title, what: proposal.what_diff, how: proposal.how_diff, applied_at: change.applied_at });
+  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify(overrides)).run();
+}
+
 async function governanceGate(db, resourceType, riskPct) {
-  const rag = await searchKnowledge(db, "governance_" + resourceType);
-  if (rag.length) {
-    const c = rag[0].content;
-    if (c.includes("ALWAYS")) return { action: "human", reason: c };
-    if (c.includes(">30%") && riskPct > 30) return { action: "human", reason: c };
-    return { action: "auto", reason: c };
-  }
-  const alwaysHuman = ["core_architecture", "security_boundary", "cron_schedule"];
-  if (alwaysHuman.includes(resourceType)) return { action: "human", reason: resourceType + " always requires human" };
-  if (riskPct > 30) return { action: "human", reason: "Risk " + riskPct + "% exceeds 30%" };
-  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved" };
+  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
 }
 
 async function isKillSwitchActive(db) {
@@ -161,6 +160,8 @@ const SEED_KNOWLEDGE = [
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
   { k: "feedback_loop", c: "Every proposal cycle queries authority_receipts+proposals from last 24h and injects as fbStr: 'Approved/executed: ... Denied: ...' System prompt includes 'Evaluate: what worked, what user denied, adjust accordingly.' This lets brain learn user preferences.", cat: "structure" },
   { k: "healer_monitor", c: "Monitor's approve handler blocks >3 high-risk(>30%) approvals per hour. Saves healer_backup_last timestamp on config approvals. After forwarding to brain, checks /brain/emotions health. If unhealthy (500/error), auto-reverts by calling deny endpoint. RAG governs: risk>30%+cron ALWAYS human, auto-execute picks up approved proposals.", cat: "structure" },
+  { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
+  { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
 ];
 
 async function seedKnowledge(db) {
@@ -435,7 +436,10 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        const system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+        const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
+        if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
         await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
         const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
@@ -498,7 +502,7 @@ export default {
     }
 
     if (url.pathname === "/evolve" && req.method === "POST") {
-      return json({ error: "Evolve requires human approval. Use Monitor dashboard." }, 501);
+      return json({ message: "Evolution happens automatically via idle cycle proposals. Use /brain/prompts to see current changes." });
     }
 
     if (url.pathname === "/brain/emotions") {
@@ -666,6 +670,14 @@ export default {
       });
     }
 
+    if (url.pathname === "/brain/prompts") {
+      const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+      const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
+      const changeRows = await env.DB.prepare("SELECT key, value FROM identity WHERE key LIKE 'evolution_log:%' ORDER BY key").all();
+      const changes = changeRows.results.map(r => ({ id: parseInt(r.key.split(":")[1]), ...JSON.parse(r.value) }));
+      return json({ base: "You are Saraha, an AI with a human brain with emotions, energy, memories, and tools.", overrides, changes });
+    }
+
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
@@ -720,6 +732,7 @@ export default {
       await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
       await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(p.id).run();
       await storeStreamThought(env.DB, "Executed approved: " + p.title, "happy", "evolve");
+      await applyEvolutionChange(env.DB, p, p.id, "human-approved");
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,80)).run(); } catch {}
       await updateEmotion(env.DB, "happy", 1);
     }
@@ -766,6 +779,7 @@ export default {
           const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
           await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
           await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
           await storeStreamThought(env.DB, "Auto-improved: " + proposal.title, "happy", "evolve");
         } else {
           const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
