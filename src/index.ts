@@ -9,6 +9,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, what_diff TEXT, how_diff TEXT, resource_type TEXT NOT NULL, risk_pct INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', research_sources TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT, executed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -104,7 +105,14 @@ async function storeStreamThought(db, content, mood, source) {
   try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
 }
 
-function governanceGate(resourceType, riskPct) {
+async function governanceGate(db, resourceType, riskPct) {
+  const rag = await searchKnowledge(db, "governance_" + resourceType);
+  if (rag.length) {
+    const c = rag[0].content;
+    if (c.includes("ALWAYS")) return { action: "human", reason: c };
+    if (c.includes(">30%") && riskPct > 30) return { action: "human", reason: c };
+    return { action: "auto", reason: c };
+  }
   const alwaysHuman = ["core_architecture", "security_boundary", "cron_schedule"];
   if (alwaysHuman.includes(resourceType)) return { action: "human", reason: resourceType + " always requires human" };
   if (riskPct > 30) return { action: "human", reason: "Risk " + riskPct + "% exceeds 30%" };
@@ -124,6 +132,34 @@ async function checkDuplicateProposal(db, title, whatDiff) {
   return { duplicate: false };
 }
 
+const SEED_KNOWLEDGE = [
+  { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
+  { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
+  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information. The query should be a search string.", cat: "tools" },
+  { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub repos.", cat: "tools" },
+  { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|message|content to write or update files on GitHub.", cat: "tools" },
+  { k: "governance_prompt", c: "Prompt changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
+  { k: "governance_config", c: "Config changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
+  { k: "governance_tool_code", c: "Tool code changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
+  { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
+  { k: "governance_security", c: "Security boundary changes ALWAYS require human approval regardless of risk.", cat: "governance" },
+  { k: "governance_cron", c: "Cron schedule changes ALWAYS require human approval regardless of risk.", cat: "governance" },
+];
+
+async function seedKnowledge(db) {
+  for (const item of SEED_KNOWLEDGE) {
+    try { await db.prepare("INSERT OR IGNORE INTO brain_knowledge (key, content, category) VALUES (?1, ?2, ?3)").bind(item.k, item.c, item.cat).run(); } catch {}
+  }
+}
+
+async function searchKnowledge(db, query, limit = 5) {
+  try {
+    const safe = (query || "").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const r = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
+    return r.results;
+  } catch { return []; }
+}
+
 function classify(input) {
   const l = input.toLowerCase();
   if (l.includes("evolve")||l.includes("improve")||l.includes("grow")) return "evolve";
@@ -136,7 +172,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha – Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -262,7 +298,7 @@ h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293
 </style>
 </head>
 <body>
-<h1>ðŸ›¡ï¸ Saraha Monitor</h1>
+<h1>🛡️ Saraha Monitor</h1>
 <div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
 <div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
 <script>
@@ -288,68 +324,6 @@ load();setInterval(load,15000);
 </body>
 </html>`;
 
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha Platform</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0F172A;color:#E2E8F0;font-family:sans-serif;padding:20px;max-width:900px;margin:0 auto}
-h1{color:#38BDF8;margin-bottom:20px;font-size:24px}
-h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293B;padding-bottom:4px}
-.card{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #334155}
-.row{display:flex;gap:12px;flex-wrap:wrap}
-.bar-wrap{margin:6px 0}
-.bar-label{display:flex;justify-content:space-between;font-size:13px;margin-bottom:2px}
-.bar-track{height:20px;background:#0F172A;border-radius:10px;overflow:hidden}
-.bar-fill{height:100%;border-radius:10px;transition:width .5s ease}
-.bar-fill.bad{background:#EF4444}.bar-fill.energetic{background:#F59E0B}.bar-fill.intelligent{background:#3B82F6}.bar-fill.happy{background:#10B981}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th{text-align:left;color:#64748B;padding:6px 4px;border-bottom:1px solid #334155}
-td{padding:6px 4px;border-bottom:1px solid #1E293B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
-.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-.status-done{background:#10B981}.status-running{background:#F59E0B}.status-failed{background:#EF4444}
-.energy-gauge{height:24px;background:#0F172A;border-radius:12px;overflow:hidden;margin:4px 0}
-.energy-fill{height:100%;border-radius:12px;transition:width .5s ease;background:linear-gradient(90deg,#EF4444,#F59E0B,#10B981)}
-.meta{color:#64748B;font-size:12px;margin-top:4px}
-</style>
-</head>
-<body>
-<h1>ðŸ§  Saraha Platform</h1>
-<div class="row">
-  <div class="card" style="flex:1;min-width:200px"><h2>Emotions</h2><div id="emotions"></div></div>
-  <div class="card" style="flex:1;min-width:200px"><h2>Regulator</h2><div id="regulator"></div></div>
-</div>
-<div class="card"><h2>Recent Activity</h2><table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Input</th><th>Result</th><th>Time</th></tr></thead><tbody id="activity"></tbody></table></div>
-<div class="card"><h2>Recent Memories</h2><div id="memories"></div></div>
-<div class="meta" id="meta"></div>
-<script>
-async function load(){
-  try{const e=await(await fetch("/brain/emotions")).json();renderEmotions(e)}catch{}
-  try{const a=await(await fetch("/brain/activity")).json();renderActivity(a.entries)}catch{}
-  try{const l=await(await fetch("/brain/logs?limit=10")).json();renderLogs(l.entries)}catch{}
-}
-function renderEmotions(e){
-  const emo=e.emotions||{},el=document.getElementById("emotions");
-  el.innerHTML=["energetic","intelligent","happy","bad"].map(k=>'<div class="bar-wrap"><div class="bar-label"><span>'+k+'</span><span>'+(emo[k]||0)+'/10</span></div><div class="bar-track"><div class="bar-fill '+k+'" style="width:'+(emo[k]||0)*10+'%"></div></div></div>').join("")+'<div class="bar-wrap"><div class="bar-label"><span>energy</span><span>'+(e.energy||0)+'%</span></div><div class="energy-gauge"><div class="energy-fill" style="width:'+(e.energy||0)+'%"></div></div></div><div class="bar-label"><span>confidence</span><span>'+(e.confidence||0)+'%</span></div>';
-}
-function renderActivity(entries){
-  const tbody=document.getElementById("activity");
-  if(!entries||!entries.length){tbody.innerHTML='<tr><td colspan="6" style="color:#64748B;text-align:center">No activity yet</td></tr>';return}
-  tbody.innerHTML=entries.map(e=>'<tr><td>'+e.id+'</td><td>'+e.type+'</td><td><span class="status-dot status-'+e.status+'"></span>'+e.status+'</td><td>'+(e.input||'').slice(0,40)+'</td><td>'+(e.result||'').slice(0,40)+'</td><td>'+(e.created_at||'').slice(0,10)+'</td></tr>').join("");
-}
-function renderLogs(entries){
-  const el=document.getElementById("memories");
-  if(!entries||!entries.length){el.innerHTML='<div class="meta">No logs yet</div>';return}
-  el.innerHTML=entries.slice(0,5).map(e=>'<div class="bar-wrap"><div class="bar-label"><span>'+e.step+'</span><span style="color:#64748B;font-size:11px">'+(e.created_at||'').slice(0,19)+'</span></div><div style="font-size:12px;color:#94A3B8">'+(e.content||'').slice(0,80)+'</div></div>').join("");
-  document.getElementById("meta").textContent="Total logs: "+entries.length;
-}
-load();setInterval(load,10000);
-</script>
-</body>
-</html>`;
 
 async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
@@ -453,6 +427,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     try { for (const s of TABLES) await env.DB.exec(s); } catch {}
+    try { await seedKnowledge(env.DB); } catch {}
 
     const json = (body, status = 200) => new Response(JSON.stringify(body), {
       status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
@@ -465,10 +440,6 @@ export default {
     if (url.pathname === "/avatar") {
       return new Response(AVATAR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
-    if (url.pathname === "/platform") {
-      return new Response(DASHBOARD_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
-    }
-
     if (url.pathname === "/status") {
       let dbOk = false;
       try { await env.DB.prepare("SELECT 1").run(); dbOk = true; } catch {}
@@ -652,6 +623,22 @@ export default {
       return json({ phase, emotions, energy: reg.energy });
     }
 
+    if (url.pathname === "/brain/knowledge") {
+      const q = url.searchParams.get("q");
+      const cat = url.searchParams.get("category");
+      let results;
+      if (q) {
+        results = await searchKnowledge(env.DB, q);
+      } else if (cat) {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge WHERE category=?1 ORDER BY key LIMIT 20").bind(cat).all();
+        results = r.results;
+      } else {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 50").all();
+        results = r.results;
+      }
+      return json({ entries: results });
+    }
+
     if (url.pathname === "/brain/proposals") {
       const { results } = await env.DB.prepare("SELECT * FROM proposals ORDER BY created_at DESC LIMIT 50").all();
       return json({ entries: results });
@@ -666,6 +653,7 @@ export default {
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/api/proposals/approve/")) {
+      try {
       const id = parseInt(url.pathname.split("/")[4]);
       if (!id) return json({ error: "invalid id" }, 400);
       const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
@@ -673,14 +661,17 @@ export default {
       await env.DB.prepare("UPDATE proposals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
       await env.DB.prepare("INSERT INTO authority_receipts (proposal_id, approved_by, outcome) VALUES (?1,'human','pending')").bind(id).run();
       return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
     }
     if (req.method === "POST" && url.pathname.startsWith("/api/proposals/deny/")) {
+      try {
       const id = parseInt(url.pathname.split("/")[4]);
       if (!id) return json({ error: "invalid id" }, 400);
       const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
       if (!p.results.length) return json({ error: "not found or already decided" }, 404);
       await env.DB.prepare("UPDATE proposals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
       return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
     }
 
     if (url.pathname === "/brain/authority-receipts") {
@@ -696,6 +687,8 @@ export default {
   },
   async scheduled(event, env, ctx) {
     try { for (const s of TABLES) await env.DB.exec(s); } catch {}
+    try { await seedKnowledge(env.DB); } catch {}
+    try {
     const busy = await getBusyUntil(env.DB);
     if (busy > Date.now()) return;
     const emotions = await getEmotions(env.DB);
@@ -740,7 +733,9 @@ export default {
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
     const mood = describeMood(emotions, reg.energy);
     const memories = await recall(env.DB, 3);
-    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 1000);
+    const ragCtx = await searchKnowledge(env.DB, topic.split(" ").slice(0, 6).join(" "));
+    const ragStr = ragCtx.length ? "\nRelevant knowledge:\n" + ragCtx.map(r => "- " + r.key + ": " + r.content).join("\n") : "";
+    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 800) + ragStr;
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
       body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + "\nTopic: " + topic }], temperature: 0.7, max_tokens: 1024 })
@@ -756,7 +751,7 @@ export default {
           try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
           return;
         }
-        const gate = governanceGate(proposal.resource_type || "prompt", proposal.risk_pct || 0);
+        const gate = await governanceGate(env.DB, proposal.resource_type || "prompt", proposal.risk_pct || 0);
         if (gate.action === "auto") {
           const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
           await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
@@ -773,5 +768,8 @@ export default {
       await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run();
     }
     await adjustEnergy(env.DB, -3);
+    } catch (e) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error',?2)").bind(Date.now(), "Scheduled error: " + (e.message || e)).run(); } catch {}
+    }
   }
 };
