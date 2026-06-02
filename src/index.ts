@@ -344,7 +344,7 @@ async function githubRead(env, input) {
     });
     if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
     const text = await resp.text();
-    return text.slice(0, 2000) + (text.length > 2000 ? "\n... (truncated)" : "");
+    return text.slice(0, 50000) + (text.length > 50000 ? "\n... (truncated)" : "");
   } catch (e) { return "GitHub error: " + e.message; }
 }
 
@@ -765,6 +765,33 @@ export default {
         return;
       }
     }
+    const pendCount = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
+    const pendN = pendCount.results[0]?.c || 0;
+    let sourceCode = "";
+    const gToken = env.GITHUB_TOKEN;
+    if (gToken) {
+      try {
+        const sc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+          headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (sc.ok) sourceCode = (await sc.text()).slice(0, 30000);
+      } catch {}
+    }
+    if (pendN >= 5) {
+      const old = await env.DB.prepare("SELECT id, title FROM proposals WHERE status='pending' ORDER BY created_at ASC LIMIT 3").all();
+      for (const o of old.results) {
+        await env.DB.prepare("UPDATE proposals SET status='cancelled', decided_at=datetime('now') WHERE id=?1").bind(o.id).run();
+        await storeStreamThought(env.DB, "Cancelled stale: " + o.title, "neutral", "evolve");
+      }
+      const mc = await getMasterCronInterval(env.DB);
+      if (!mc || mc < 10) {
+        await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('master_cron_minutes','10',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='10',updated_at=datetime('now')").run();
+      }
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'refine','5+ pending, cancelled '||?2||' stale, cron 10min')").bind(stamp, old.results.length.toString()).run(); } catch {}
+      await updateLastCycleTime(env.DB);
+      return;
+    }
     const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
     const topAntiPattern = ap.results[0] || null;
     let topic = "";
@@ -788,7 +815,8 @@ export default {
       if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
-    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\nChoose ONE area from the list below and generate a concrete proposal.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly.";
+    const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\nAbove is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\nFormat: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
       body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention?") }], temperature: 0.7, max_tokens: 1024 })
@@ -799,20 +827,22 @@ export default {
       let proposal;
       try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
       if (proposal && proposal.title) {
-        const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what_diff || "");
+        const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what || proposal.why || "");
         if (dup.duplicate) {
           try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
           return;
         }
+        const whatStr = "Why: " + (proposal.why||"") + "\nWhat: " + (proposal.what||"") + (proposal.code_snippet ? "\nCode: " + proposal.code_snippet.slice(0,300) : "");
+        const howStr = "How: " + (proposal.how||"") + "\nBenefit: " + (proposal.benefit||"");
         const gate = await governanceGate(env.DB, proposal.resource_type || "prompt", proposal.risk_pct || 0);
         if (gate.action === "auto") {
-          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
           await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
           await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
           await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
           await storeStreamThought(env.DB, "Auto-improved: " + proposal.title, "happy", "evolve");
         } else {
-          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, proposal.what_diff||"", proposal.how_diff||"", proposal.resource_type, proposal.risk_pct).all();
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
           await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
         }
       } else {
