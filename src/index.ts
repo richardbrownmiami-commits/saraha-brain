@@ -156,8 +156,8 @@ const SEED_KNOWLEDGE = [
   { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_TOKEN.", cat: "structure" },
   { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
-  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_TOKEN plain_text. Cron */2 * * * * (0verridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
-  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am, dream +25 energy), tired(energy<=20, rest +15), curious if energy>60+energetic>=6, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
+  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_TOKEN plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
+  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
   { k: "feedback_loop", c: "Every proposal cycle queries authority_receipts+proposals from last 24h and injects as fbStr: 'Approved/executed: ... Denied: ...' System prompt includes 'Evaluate: what worked, what user denied, adjust accordingly.' This lets brain learn user preferences.", cat: "structure" },
   { k: "healer_monitor", c: "Monitor's approve handler blocks >3 high-risk(>30%) approvals per hour. Saves healer_backup_last timestamp on config approvals. After forwarding to brain, checks /brain/emotions health. If unhealthy (500/error), auto-reverts by calling deny endpoint. RAG governs: risk>30%+cron ALWAYS human, auto-execute picks up approved proposals.", cat: "structure" },
@@ -291,55 +291,7 @@ setTimeout(()=>startTalking("Hello! I'm Saraha."),1000);
 </body>
 </html>`;
 
-const MONITOR_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha Monitor</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0F172A;color:#E2E8F0;font-family:sans-serif;padding:20px;max-width:800px;margin:0 auto}
-h1{color:#38BDF8;margin-bottom:20px;font-size:24px}
-h2{color:#94A3B8;font-size:16px;margin:16px 0 8px;border-bottom:1px solid #1E293B;padding-bottom:4px}
-.card{background:#1E293B;border-radius:12px;padding:16px;margin-bottom:16px;border:1px solid #334155}
-.pending-item{border-left:3px solid #F59E0B;padding:10px 12px;margin:8px 0;background:#0F172A;border-radius:0 8px 8px 0}
-.pending-item.approved{border-left-color:#10B981}
-.pending-item.denied{border-left-color:#EF4444}
-.tool-name{color:#38BDF8;font-weight:bold;font-size:14px}
-.tool-input{color:#94A3B8;font-size:12px;margin:4px 0}
-.tool-date{color:#64748B;font-size:11px}
-.btn{padding:6px 16px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:bold;margin-right:6px;margin-top:6px}
-.btn-approve{background:#10B981;color:#fff}.btn-approve:hover{background:#34D399}
-.btn-deny{background:#EF4444;color:#fff}.btn-deny:hover{background:#F87171}
-.empty{color:#64748B;text-align:center;padding:20px;font-size:14px}
-</style>
-</head>
-<body>
-<h1>🛡️ Saraha Monitor</h1>
-<div id="pending"><div class="card"><div class="empty">Loading...</div></div></div>
-<div id="history"><h2>History</h2><div class="card"><div class="empty">Loading...</div></div></div>
-<script>
-async function load(){
-  try{const r=await(await fetch("/monitor/api/pending")).json();renderPending(r.pending||[]);renderHistory(r.history||[])}catch(e){document.getElementById("pending").innerHTML='<div class="card"><div class="empty">Error: '+e.message+'</div></div>'}
-}
-function renderPending(items){
-  const el=document.getElementById("pending");
-  if(!items.length){el.innerHTML='<div class="card"><div class="empty">No pending approvals</div></div>';return}
-  el.innerHTML='<div class="card"><h2>Pending ('+items.length+')</h2>'+items.map(i=>'<div class="pending-item" id="p-'+i.id+'"><div class="tool-name">'+i.tool+'</div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div><button class="btn btn-approve" onclick="decide('+i.id+',\\'approve\\')">Approve</button><button class="btn btn-deny" onclick="decide('+i.id+',\\'deny\\')">Deny</button></div>').join("")+'</div>';
-}
-function renderHistory(items){
-  const el=document.getElementById("history").querySelector(".card");
-  if(!items.length){el.innerHTML='<div class="empty">No history yet</div>';return}
-  el.innerHTML=items.map(i=>'<div class="pending-item '+i.status+'"><div class="tool-name">'+i.tool+' <span style="color:'+(i.status==='approved'?'#10B981':'#EF4444')+';font-size:11px">('+i.status+')</span></div><div class="tool-input">'+(i.input||'').slice(0,100)+'</div><div class="tool-date">Action #'+i.action_id+' &middot; '+(i.created_at||'')+'</div></div>').join("");
-}
-async function decide(id,action){
-  const btns=document.querySelectorAll("#p-"+id+" .btn");btns.forEach(b=>b.disabled=true);
-  try{await fetch("/monitor/api/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});load()}catch(e){btns.forEach(b=>b.disabled=false)}
-}
-load();setInterval(load,15000);
-</script>
-</body>
-</html>`;
+
 
 
 async function webSearch(env, query) {
@@ -570,9 +522,6 @@ export default {
       return json({ entries: results });
     }
 
-    if (url.pathname === "/monitor") {
-      return new Response(MONITOR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
-    }
     if (url.pathname === "/monitor/api/pending") {
       const p = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC").all();
       const h = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status!='pending' ORDER BY decided_at DESC LIMIT 20").all();
