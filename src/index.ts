@@ -180,7 +180,7 @@ const SEED_KNOWLEDGE = [
 
 async function seedKnowledge(db) {
   for (const item of SEED_KNOWLEDGE) {
-    try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category) VALUES (?1, ?2, ?3)").bind(item.k, item.c, item.cat).run(); } catch {}
+    try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run(); } catch {}
   }
 }
 
