@@ -750,13 +750,29 @@ export default {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,80)).run(); } catch {}
       await updateEmotion(env.DB, "happy", 1);
     }
+    if (reg.energy <= 30) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Energy too low for LLM call')").bind(stamp).run(); } catch {}
+      await adjustEnergy(env.DB, 5);
+      await updateLastCycleTime(env.DB);
+      return;
+    }
+    const lastP = await env.DB.prepare("SELECT created_at FROM proposals ORDER BY created_at DESC LIMIT 1").all();
+    if (lastP.results[0]?.created_at) {
+      const lastMin = Date.now() - new Date(lastP.results[0].created_at.replace(" ","T") + "Z").getTime();
+      if (!isNaN(lastMin) && lastMin < 300000) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Last proposal <5min ago')").bind(stamp).run(); } catch {}
+        await updateLastCycleTime(env.DB);
+        return;
+      }
+    }
     const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
     const topAntiPattern = ap.results[0] || null;
+    let topic = "";
     const sbCtx = await searchKnowledge(env.DB, "self_improve");
     const sbStr = sbCtx.length ? "\n\nSelf-improvement areas:\n" + sbCtx.map(r => "- " + r.key.replace("self_improve_","") + ": " + r.content).join("\n") : "";
     let research = "";
     if (topAntiPattern) {
-      const topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
+      topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
       research = await webSearch(env, topic);
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
     } else {
@@ -800,7 +816,8 @@ export default {
           await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
         }
       } else {
-        await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + topic.slice(0, 80)).run();
+        const errTopic = topic || (topAntiPattern ? topAntiPattern.pattern : "no anti-pattern");
+        await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + errTopic.slice(0, 80)).run();
       }
     } else {
       await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run();
