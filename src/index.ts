@@ -124,6 +124,14 @@ async function isKillSwitchActive(db) {
   return r.results[0]?.value === "true";
 }
 
+async function getMasterCronInterval(db) {
+  const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+  const v = r.results[0]?.value;
+  return v ? parseInt(v) : 0;
+}
+async function updateLastCycleTime(db) {
+  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+}
 async function checkDuplicateProposal(db, title, whatDiff) {
   const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
   if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
@@ -135,20 +143,29 @@ async function checkDuplicateProposal(db, title, whatDiff) {
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
-  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information. The query should be a search string.", cat: "tools" },
-  { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub repos.", cat: "tools" },
-  { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|message|content to write or update files on GitHub.", cat: "tools" },
-  { k: "governance_prompt", c: "Prompt changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
-  { k: "governance_config", c: "Config changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
-  { k: "governance_tool_code", c: "Tool code changes with risk ≤30% auto-approved. Risk >30% needs human approval.", cat: "governance" },
+  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
+  { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
+  { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|msg|content to write files on GitHub.", cat: "tools" },
+  { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
+  { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
+  { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
   { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
-  { k: "governance_security", c: "Security boundary changes ALWAYS require human approval regardless of risk.", cat: "governance" },
-  { k: "governance_cron", c: "Cron schedule changes ALWAYS require human approval regardless of risk.", cat: "governance" },
+  { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
+  { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
+  { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
+  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
+  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_TOKEN.", cat: "structure" },
+  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
+  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_TOKEN plain_text. Cron */2 * * * * (0verridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
+  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am, dream +25 energy), tired(energy<=20, rest +15), curious if energy>60+energetic>=6, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
+  { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
+  { k: "feedback_loop", c: "Every proposal cycle queries authority_receipts+proposals from last 24h and injects as fbStr: 'Approved/executed: ... Denied: ...' System prompt includes 'Evaluate: what worked, what user denied, adjust accordingly.' This lets brain learn user preferences.", cat: "structure" },
+  { k: "healer_monitor", c: "Monitor's approve handler blocks >3 high-risk(>30%) approvals per hour. Saves healer_backup_last timestamp on config approvals. After forwarding to brain, checks /brain/emotions health. If unhealthy (500/error), auto-reverts by calling deny endpoint. RAG governs: risk>30%+cron ALWAYS human, auto-execute picks up approved proposals.", cat: "structure" },
 ];
 
 async function seedKnowledge(db) {
   for (const item of SEED_KNOWLEDGE) {
-    try { await db.prepare("INSERT OR IGNORE INTO brain_knowledge (key, content, category) VALUES (?1, ?2, ?3)").bind(item.k, item.c, item.cat).run(); } catch {}
+    try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category) VALUES (?1, ?2, ?3)").bind(item.k, item.c, item.cat).run(); } catch {}
   }
 }
 
@@ -683,6 +700,23 @@ export default {
       return json({ entries: results });
     }
 
+    if (url.pathname === "/brain/feedback") {
+      const hApp = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE approved_by='human' AND outcome='success' AND created_at > datetime('now','-1 day')").all();
+      const hDen = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day')").all();
+      const evo = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE outcome='success'").all();
+      const kill = await env.DB.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+      const mc = await env.DB.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+      const recent = await env.DB.prepare("SELECT id, title, status, decided_at FROM proposals WHERE decided_at IS NOT NULL ORDER BY decided_at DESC LIMIT 5").all();
+      return json({
+        approvals24h: hApp.results[0]?.c || 0,
+        denials24h: hDen.results[0]?.c || 0,
+        evolutionCount: evo.results[0]?.c || 0,
+        killSwitch: kill.results[0]?.value === "true",
+        masterCron: mc.results[0]?.value ? { active: true, interval: parseInt(mc.results[0].value) } : { active: false },
+        recentDecisions: recent.results
+      });
+    }
+
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
@@ -721,6 +755,25 @@ export default {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Kill switch active')").bind(stamp).run(); } catch {}
       return;
     }
+    const mc = await getMasterCronInterval(env.DB);
+    if (mc > 0) {
+      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
+      if (lr.results[0]?.value) {
+        const lastMs = new Date(lr.results[0].value + "Z").getTime();
+        if (!isNaN(lastMs) && (Date.now() - lastMs < mc * 60 * 1000)) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Master cron: '||?2||'min')").bind(stamp, mc.toString()).run(); } catch {}
+          return;
+        }
+      }
+    }
+    const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 5").all();
+    for (const p of approvedP.results) {
+      await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(p.id).run();
+      await storeStreamThought(env.DB, "Executed approved: " + p.title, "happy", "evolve");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,80)).run(); } catch {}
+      await updateEmotion(env.DB, "happy", 1);
+    }
     const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
     const topAntiPattern = ap.results[0] || null;
     let topic = "something interesting to learn about AI";
@@ -735,7 +788,15 @@ export default {
     const memories = await recall(env.DB, 3);
     const ragCtx = await searchKnowledge(env.DB, topic.split(" ").slice(0, 6).join(" "));
     const ragStr = ragCtx.length ? "\nRelevant knowledge:\n" + ragCtx.map(r => "- " + r.key + ": " + r.content).join("\n") : "";
-    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 800) + ragStr;
+    const fbCtx = await env.DB.prepare("SELECT r.approved_by, r.outcome, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE r.created_at > datetime('now','-1 day') ORDER BY r.created_at DESC LIMIT 5").all();
+    const denCtx = await env.DB.prepare("SELECT title FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day') ORDER BY decided_at DESC LIMIT 3").all();
+    let fbStr = "";
+    if (fbCtx.results.length || denCtx.results.length) {
+      fbStr = "\nRecent user decisions:\n";
+      if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
+      if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
+    }
+    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 600) + ragStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly.";
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
       body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + "\nTopic: " + topic }], temperature: 0.7, max_tokens: 1024 })
@@ -768,6 +829,7 @@ export default {
       await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run();
     }
     await adjustEnergy(env.DB, -3);
+    await updateLastCycleTime(env.DB);
     } catch (e) {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error',?2)").bind(Date.now(), "Scheduled error: " + (e.message || e)).run(); } catch {}
     }
