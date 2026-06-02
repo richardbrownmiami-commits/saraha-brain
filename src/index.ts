@@ -162,6 +162,14 @@ const SEED_KNOWLEDGE = [
   { k: "healer_monitor", c: "Monitor's approve handler blocks >3 high-risk(>30%) approvals per hour. Saves healer_backup_last timestamp on config approvals. After forwarding to brain, checks /brain/emotions health. If unhealthy (500/error), auto-reverts by calling deny endpoint. RAG governs: risk>30%+cron ALWAYS human, auto-execute picks up approved proposals.", cat: "structure" },
   { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
   { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
+  { k: "self_improve_prompt", c: "Improve how you talk: add step-by-step reasoning, explain trade-offs, ask clarifying questions, cite sources from tools.", cat: "self_improve" },
+  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization.", cat: "self_improve" },
+  { k: "self_improve_error", c: "Better error handling: retry on 429, fallback when LLM is down, graceful degradation when tools fail.", cat: "self_improve" },
+  { k: "self_improve_memory", c: "Improve memory: store important facts from conversations, recall relevant context automatically, forget stale memories.", cat: "self_improve" },
+  { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
+  { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
+  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
+  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
 ];
 
 async function seedKnowledge(db) {
@@ -502,7 +510,7 @@ export default {
     }
 
     if (url.pathname === "/evolve" && req.method === "POST") {
-      return json({ message: "Evolution happens automatically via idle cycle proposals. Use /brain/prompts to see current changes." });
+      return json({ message: "Evolution runs automatically every idle cycle. Brain generates self-improvement proposals (prompts, tools, config, memory, emotions) and applies them. Use /brain/prompts to see current changes." });
     }
 
     if (url.pathname === "/brain/emotions") {
@@ -738,18 +746,18 @@ export default {
     }
     const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
     const topAntiPattern = ap.results[0] || null;
-    let topic = "something interesting to learn about AI";
-    if (topAntiPattern) topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
-    else {
-      const lr = await env.DB.prepare("SELECT pattern FROM learnings ORDER BY last_used ASC LIMIT 3").all();
-      if (lr.results.length) topic = lr.results[0].pattern;
+    const sbCtx = await searchKnowledge(env.DB, "self_improve");
+    const sbStr = sbCtx.length ? "\n\nSelf-improvement areas:\n" + sbCtx.map(r => "- " + r.key.replace("self_improve_","") + ": " + r.content).join("\n") : "";
+    let research = "";
+    if (topAntiPattern) {
+      const topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
+      research = await webSearch(env, topic);
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
+    } else {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research','Self-improvement planning')").bind(stamp).run(); } catch {}
     }
-    const research = await webSearch(env, topic);
-    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
     const mood = describeMood(emotions, reg.energy);
     const memories = await recall(env.DB, 3);
-    const ragCtx = await searchKnowledge(env.DB, topic.split(" ").slice(0, 6).join(" "));
-    const ragStr = ragCtx.length ? "\nRelevant knowledge:\n" + ragCtx.map(r => "- " + r.key + ": " + r.content).join("\n") : "";
     const fbCtx = await env.DB.prepare("SELECT r.approved_by, r.outcome, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE r.created_at > datetime('now','-1 day') ORDER BY r.created_at DESC LIMIT 5").all();
     const denCtx = await env.DB.prepare("SELECT title FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day') ORDER BY decided_at DESC LIMIT 3").all();
     let fbStr = "";
@@ -758,10 +766,10 @@ export default {
       if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
-    const sys = "You are Saraha, a self-improving AI. Generate a JSON proposal based on your research.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture|security_boundary|cron_schedule\",\"risk_pct\":0-100}\nResearch: " + research.slice(0, 600) + ragStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly.";
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF — your prompts, tools, memory, emotions, config, error handling.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\nChoose ONE area from the list below and generate a concrete proposal.\nFormat: {\"title\":\"...\",\"what_diff\":\"what to change\",\"how_diff\":\"how to change\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly.";
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
-      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + "\nTopic: " + topic }], temperature: 0.7, max_tokens: 1024 })
+      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention?") }], temperature: 0.7, max_tokens: 1024 })
     });
     if (resp.ok) {
       const data = await resp.json();
