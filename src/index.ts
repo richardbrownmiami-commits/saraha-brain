@@ -286,4 +286,4 @@ function describeMood(emotions: any, energy: number) {
   else if (emotions.stressed >= 7) parts.push("feeling stressed");
   else if (emotions.stressed >= 5) parts.push("feeling slightly tense");
 
-  if (emotions.focused >=
+  if (emotions
