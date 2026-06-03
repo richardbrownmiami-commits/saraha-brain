@@ -30,6 +30,114 @@ const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored"
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5 };
 
+// Enhanced error classification system
+type ErrorClassification = {
+  type: 'database' | 'network' | 'validation' | 'timeout' | 'unknown';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  context?: string;
+};
+
+class EnhancedError extends Error {
+  classification: ErrorClassification;
+  timestamp: string;
+  recoveryAttempts: number;
+
+  constructor(message: string, classification: ErrorClassification) {
+    super(message);
+    this.name = 'EnhancedError';
+    this.classification = classification;
+    this.timestamp = new Date().toISOString();
+    this.recoveryAttempts = 0;
+  }
+}
+
+async function classifyError(error: unknown): Promise<ErrorClassification> {
+  if (error instanceof Error) {
+    if (error.message.includes('database') || error.message.includes('SQL')) {
+      return { type: 'database', severity: 'high', context: error.message };
+    } else if (error.message.includes('network') || error.message.includes('fetch')) {
+      return { type: 'network', severity: 'high', context: error.message };
+    } else if (error.message.includes('validation') || error.message.includes('invalid')) {
+      return { type: 'validation', severity: 'medium', context: error.message };
+    } else if (error.message.includes('timeout')) {
+      return { type: 'timeout', severity: 'critical', context: error.message };
+    }
+  }
+  return { type: 'unknown', severity: 'low', context: error instanceof Error ? error.message : 'Unknown error' };
+}
+
+async function handleError(db: Database, error: unknown, context: string = 'general'): Promise<void> {
+  const classification = await classifyError(error);
+  classification.context = `${context}: ${classification.context}`;
+
+  try {
+    await db.prepare(`
+      INSERT INTO error_patterns (pattern, context, severity, resolution, last_seen)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+      ON CONFLICT(pattern) DO UPDATE SET
+        context = excluded.context,
+        severity = CASE
+          WHEN excluded.severity > error_patterns.severity THEN excluded.severity
+          ELSE error_patterns.severity
+        END,
+        resolution = excluded.resolution,
+        last_seen = datetime('now')
+    `)
+    .bind(
+      classification.context,
+      classification.context,
+      classification.severity === 'critical' ? 5 :
+      classification.severity === 'high' ? 4 :
+      classification.severity === 'medium' ? 3 : 2,
+      `Automatic recovery attempted for ${classification.type} error`
+    )
+    .run();
+  } catch (dbError) {
+    console.error('Failed to log error to database:', dbError);
+  }
+
+  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUpperCase()} Error (${context}):`, error);
+}
+
+async function recoverFromError(db: Database, error: EnhancedError): Promise<boolean> {
+  error.recoveryAttempts++;
+
+  try {
+    switch (error.classification.type) {
+      case 'database':
+        // Attempt database recovery
+        await db.prepare("SELECT 1").run();
+        return true;
+
+      case 'network':
+        // Network errors might need retry logic
+        if (error.recoveryAttempts < 3) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * error.recoveryAttempts));
+          return true;
+        }
+        return false;
+
+      case 'validation':
+        // Validation errors might need input correction
+        return false;
+
+      case 'timeout':
+        // Critical errors that might need system reset
+        if (error.recoveryAttempts === 1) {
+          // Attempt graceful degradation
+          return true;
+        }
+        return false;
+
+      default:
+        return false;
+    }
+  } catch (recoveryError) {
+    await handleError(db, recoveryError, `recovery_attempt_${error.classification.type}`);
+    return false;
+  }
+}
+
 async function getEmotions(db: Database) {
   try {
     const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
@@ -40,10 +148,16 @@ async function getEmotions(db: Database) {
     }
     return result;
   } catch (error) {
-    console.error('Error fetching emotions:', error);
+    const enhancedError = new EnhancedError('Error fetching emotions', {
+      type: 'database',
+      severity: 'high',
+      context: 'emotion_retrieval'
+    });
+    await handleError(db, enhancedError);
     return { ...EMO_DEFAULTS };
   }
 }
+
 async function getState(db: Database) {
   try {
     const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
@@ -59,10 +173,16 @@ async function getState(db: Database) {
     }
     return { emotions, reg };
   } catch (error) {
-    console.error('Error fetching state:', error);
+    const enhancedError = new EnhancedError('Error fetching state', {
+      type: 'database',
+      severity: 'high',
+      context: 'state_retrieval'
+    });
+    await handleError(db, enhancedError);
     return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
   }
 }
+
 async function updateEmotion(db: Database, name: string, delta: number) {
   try {
     const emotions = await getEmotions(db);
@@ -71,8 +191,13 @@ async function updateEmotion(db: Database, name: string, delta: number) {
     await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
     return newVal;
   } catch (error) {
-    console.error(`Error updating emotion ${name}:`, error);
-    throw error;
+    const enhancedError = new EnhancedError(`Error updating emotion ${name}`, {
+      type: 'database',
+      severity: 'high',
+      context: `emotion_update_${name}`
+    });
+    await handleError(db, enhancedError);
+    throw enhancedError;
   }
 }
 
@@ -83,18 +208,29 @@ async function getRegulator(db: Database) {
     for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
     return { energy: vals.energy, confidence: vals.confidence };
   } catch (error) {
-    console.error('Error fetching regulator values:', error);
+    const enhancedError = new EnhancedError('Error fetching regulator values', {
+      type: 'database',
+      severity: 'high',
+      context: 'regulator_retrieval'
+    });
+    await handleError(db, enhancedError);
     return { energy: 100, confidence: 50 };
   }
 }
+
 async function adjustEnergy(db: Database, delta: number) {
   try {
     const { energy } = await getRegulator(db);
     const newVal = Math.max(0, Math.min(100, energy + delta));
     await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
   } catch (error) {
-    console.error('Error adjusting energy:', error);
-    throw error;
+    const enhancedError = new EnhancedError('Error adjusting energy', {
+      type: 'database',
+      severity: 'high',
+      context: 'energy_adjustment'
+    });
+    await handleError(db, enhancedError);
+    throw enhancedError;
   }
 }
 
@@ -144,8 +280,13 @@ async function driftEmotions(db: Database) {
         } catch (error) {
           retries++;
           if (retries >= MAX_RETRIES) {
-            console.error(`Failed to update emotion ${emotion} after ${MAX_RETRIES} attempts:`, error);
-            throw error;
+            const enhancedError = new EnhancedError(`Failed to update emotion ${emotion} after ${MAX_RETRIES} attempts`, {
+              type: 'database',
+              severity: 'high',
+              context: `emotion_decay_${emotion}`
+            });
+            await handleError(db, enhancedError);
+            throw enhancedError;
           }
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         }
@@ -164,116 +305,11 @@ async function driftEmotions(db: Database) {
         } catch (error) {
           retries++;
           if (retries >= MAX_RETRIES) {
-            console.error(`Failed to decay negative emotion after ${MAX_RETRIES} attempts:`, error);
-            throw error;
+            const enhancedError = new EnhancedError(`Failed to decay negative emotion after ${MAX_RETRIES} attempts`, {
+              type: 'database',
+              severity: 'high',
+              context: 'negative_emotion_decay'
+            });
+            await handleError(db, enhancedError);
+            throw enhancedError;
           }
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        }
-      }
-    }
-
-    // Natural fluctuations for positive emotions with retry logic
-    const positiveEmotions = [
-      { name: "happy", chance: 0.3, threshold: 9 },
-      { name: "energetic", chance: 0.2, threshold: 9 },
-      { name: "curious", chance: 0.25, threshold: 9 },
-      { name: "excited", chance: 0.15, threshold: 9 }
-    ];
-
-    for (const { name, chance, threshold } of positiveEmotions) {
-      if (Math.random() < chance && emo[name] < threshold) {
-        let retries = 0;
-        let success = false;
-
-        while (retries < MAX_RETRIES && !success) {
-          try {
-            await updateEmotion(db, name, 1);
-            success = true;
-          } catch (error) {
-            retries++;
-            if (retries >= MAX_RETRIES) {
-              console.error(`Failed to increase positive emotion ${name} after ${MAX_RETRIES} attempts:`, error);
-              throw error;
-            }
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        }
-      }
-    }
-
-  } catch (error) {
-    console.error('Error drifting emotions:', error);
-
-    // Fallback strategy with retry logic
-    let retries = 0;
-    let fallbackSuccess = false;
-
-    while (retries < MAX_RETRIES && !fallbackSuccess) {
-      try {
-        for (const emotion of EMOTIONS) {
-          await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')")
-            .bind("emotion_" + emotion, EMO_DEFAULTS[emotion].toString())
-            .run();
-        }
-        fallbackSuccess = true;
-      } catch (fallbackError) {
-        retries++;
-        if (retries >= MAX_RETRIES) {
-          console.error(`Fallback emotion reset failed after ${MAX_RETRIES} attempts:`, fallbackError);
-          throw fallbackError;
-        }
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-      }
-    }
-  }
-}
-
-async function storeThought(db: Database, content: string) {
-  try {
-    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
-  } catch (error) {
-    console.error('Error storing thought:', error);
-    throw error;
-  }
-}
-async function recall(db: Database, limit = 10) {
-  try {
-    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-    if (!rows.results.length) return "No memories yet.";
-    return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
-  } catch (error) {
-    console.error('Error recalling memories:', error);
-    return "Error retrieving memories.";
-  }
-}
-
-function isToolSafe(tool: string) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
-  return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
-}
-
-function getBrainPhase(emotions: any, reg: any) {
-  const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-  if (reg.energy <= 20) return "tired";
-  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-  if (emotions.bored >= 8) return "resting";
-  if (emotions.excited >= 7) return "active";
-  return "awake";
-}
-
-async function getBusyUntil(db: Database) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-    return parseInt(r.results[0]?.value) || 0;
-  } catch (error) {
-    console.error('Error fetching busy_until:', error);
-    return 0;
-  }
-}
-async function setBusyUntil(db: Database, seconds: number) {
-  try {
-    const val = Date.now() + seconds * 1000;
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
-  } catch (error) {
-    console.error('Error setting busy_until:', error);
-    throw error
