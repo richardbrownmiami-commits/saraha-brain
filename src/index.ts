@@ -28,9 +28,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS coreference_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, clusters TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited", "frustrated", "hopeful", "anxious", "content", "nostalgic"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10], frustrated: [1, 10], hopeful: [1, 10], anxious: [1, 10], content: [1, 10], nostalgic: [1, 10] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, frustrated: 3, hopeful: 5, anxious: 3, content: 5, nostalgic: 3 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited", "frustrated", "hopeful", "anxious", "content", "nostalgic", "relaxed", "focused", "motivated", "calm", "stressed"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10], frustrated: [1, 10], hopeful: [1, 10], anxious: [1, 10], content: [1, 10], nostalgic: [1, 10], relaxed: [1, 10], focused: [1, 10], motivated: [1, 10], calm: [1, 10], stressed: [1, 10] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, frustrated: 3, hopeful: 5, anxious: 3, content: 5, nostalgic: 3, relaxed: 5, focused: 5, motivated: 5, calm: 5, stressed: 3 };
 
 // Enhanced error classification system
 type ErrorClassification = {
@@ -98,7 +98,7 @@ async function handleError(db: Database, error: unknown, context: string = 'gene
     console.error('Failed to log error to database:', dbError);
   }
 
-  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUpperCase()} Error (${context}):`, error);
+  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUPCASE()} Error (${context}):`, error);
 }
 
 async function recoverFromError(db: Database, error: EnhancedError): Promise<boolean> {
@@ -243,38 +243,35 @@ function describeMood(emotions: any, energy: number) {
   else if (energy > 40) parts.push("balanced and present");
   else if (energy > 20) parts.push("a bit tired but clear-minded");
   else parts.push("quite fatigued, resting");
+
+  if (emotions.relaxed >= 7) parts.push("feeling deeply relaxed");
+  else if (emotions.relaxed >= 5) parts.push("feeling calm");
+  else if (emotions.stressed >= 7) parts.push("feeling stressed");
+  else if (emotions.stressed >= 5) parts.push("feeling slightly tense");
+
+  if (emotions.focused >= 7) parts.push("mind feeling sharp and focused");
+  else if (emotions.focused >= 5) parts.push("feeling attentive");
+  else if (emotions.focused <= 3) parts.push("mind feeling scattered");
+
+  if (emotions.motivated >= 7) parts.push("feeling highly motivated");
+  else if (emotions.motivated >= 5) parts.push("feeling ready to take action");
+  else if (emotions.motivated <= 3) parts.push("feeling uninspired");
+
   if (emotions.happy >= 9) parts.push("in excellent spirits");
   else if (emotions.happy >= 6) parts.push("in good spirits");
   else if (emotions.happy >= 4) parts.push("quiet and neutral");
   else parts.push("feeling low");
+
   if (emotions.bad >= 2) parts.push("with a trace of unease");
+
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
   else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+
   if (emotions.curious >= 7) parts.push("deeply curious");
   else if (emotions.curious <= 3) parts.push("feeling indifferent");
+
   if (emotions.excited >= 8) parts.push("feeling excited");
   else if (emotions.excited <= 3) parts.push("feeling calm");
+
   if (emotions.bored >= 8) parts.push("feeling bored");
-  else if (emotions.bored <= 3) parts.push("feeling engaged");
-  if (emotions.frustrated >= 7) parts.push("feeling frustrated");
-  else if (emotions.frustrated <= 3) parts.push("feeling patient");
-  if (emotions.hopeful >= 8) parts.push("feeling hopeful");
-  else if (emotions.hopeful <= 3) parts.push("feeling uncertain");
-  if (emotions.anxious >= 7) parts.push("feeling anxious");
-  else if (emotions.anxious <= 3) parts.push("feeling relaxed");
-  if (emotions.content >= 8) parts.push("feeling content");
-  else if (emotions.content <= 3) parts.push("feeling restless");
-  if (emotions.nostalgic >= 7) parts.push("feeling nostalgic");
-  else if (emotions.nostalgic <= 3) parts.push("feeling present");
-  return "You feel " + parts.join(", ") + ".";
-}
-
-async function driftEmotions(db: Database) {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 1000;
-
-  try {
-    const emo = await getEmotions(db);
-
-    // Decay mechanism for all emotions with retry logic
-    for (const emotion of EMOTION
+  else if (emotions
