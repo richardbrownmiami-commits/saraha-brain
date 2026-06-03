@@ -23,7 +23,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS hierarchical_learning_state (id INTEGER PRIMARY KEY AUTOINCREMENT, level INTEGER NOT NULL, state_data TEXT NOT NULL, last_updated TEXT DEFAULT (datetime('now')), UNIQUE(level))`,
   `CREATE TABLE IF NOT EXISTS graph_updates (id INTEGER PRIMARY KEY AUTOINCREMENT, update_type TEXT NOT NULL, entity_type TEXT, entity_id TEXT, changes TEXT, timestamp TEXT DEFAULT (datetime('now')), processed INTEGER DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS graph_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_hash TEXT UNIQUE, pattern_graph TEXT, frequency INTEGER DEFAULT 1, last_seen TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS gnn_model_state (id INTEGER PRIMARY KEY AUTOINCREMENT, model_version TEXT NOT NULL, state_data TEXT NOT NULL, performance_metrics TEXT, last_trained TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS gnn_model_state (id INTEGER PRIMARY KEY AUTOINCREMENT, model_version TEXT NOT NULL, state_data TEXT NOT NULL, performance_metrics TEXT, last_trained TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS semantic_role_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, roles TEXT, predicates TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS coreference_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, clusters TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -302,14 +304,3 @@ async function driftEmotions(db: Database) {
         try {
           await updateEmotion(db, "bad", -1);
           success = true;
-        } catch (error) {
-          retries++;
-          if (retries >= MAX_RETRIES) {
-            const enhancedError = new EnhancedError(`Failed to decay negative emotion after ${MAX_RETRIES} attempts`, {
-              type: 'database',
-              severity: 'high',
-              context: 'negative_emotion_decay'
-            });
-            await handleError(db, enhancedError);
-            throw enhancedError;
-          }
