@@ -20,7 +20,10 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS contextual_understanding_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, idiom_score REAL, sarcasm_score REAL, figurative_score REAL, context_analysis TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS meta_learning_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_hash TEXT UNIQUE, emotional_pattern TEXT, context_pattern TEXT, response_pattern TEXT, success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS emotion_context_mapping (id INTEGER PRIMARY KEY AUTOINCREMENT, emotion TEXT NOT NULL, context_type TEXT NOT NULL, context_value TEXT, strength REAL DEFAULT 1.0, last_seen TEXT DEFAULT (datetime('now')), UNIQUE(emotion, context_type, context_value))`,
-  `CREATE TABLE IF NOT EXISTS hierarchical_learning_state (id INTEGER PRIMARY KEY AUTOINCREMENT, level INTEGER NOT NULL, state_data TEXT NOT NULL, last_updated TEXT DEFAULT (datetime('now')), UNIQUE(level))`
+  `CREATE TABLE IF NOT EXISTS hierarchical_learning_state (id INTEGER PRIMARY KEY AUTOINCREMENT, level INTEGER NOT NULL, state_data TEXT NOT NULL, last_updated TEXT DEFAULT (datetime('now')), UNIQUE(level))`,
+  `CREATE TABLE IF NOT EXISTS graph_updates (id INTEGER PRIMARY KEY AUTOINCREMENT, update_type TEXT NOT NULL, entity_type TEXT, entity_id TEXT, changes TEXT, timestamp TEXT DEFAULT (datetime('now')), processed INTEGER DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS graph_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_hash TEXT UNIQUE, pattern_graph TEXT, frequency INTEGER DEFAULT 1, last_seen TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS gnn_model_state (id INTEGER PRIMARY KEY AUTOINCREMENT, model_version TEXT NOT NULL, state_data TEXT NOT NULL, performance_metrics TEXT, last_trained TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -273,18 +276,4 @@ async function setBusyUntil(db: Database, seconds: number) {
     await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
   } catch (error) {
     console.error('Error setting busy_until:', error);
-    throw error;
-  }
-}
-
-async function storeStreamThought(db: Database, content: string, mood?: string, source?: string) {
-  try {
-    await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run();
-  } catch (error) {
-    console.error('Error storing stream thought:', error);
-    throw error;
-  }
-}
-
-async function analyzeContextualUnderstanding(db: Database, text: string): Promise<{idiomScore: number, sarcasmScore: number, figurativeScore: number, contextAnalysis: string, confidence: number}> {
-  try {
+    throw error
