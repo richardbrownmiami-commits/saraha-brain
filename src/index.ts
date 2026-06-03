@@ -98,7 +98,7 @@ async function handleError(db: Database, error: unknown, context: string = 'gene
     console.error('Failed to log error to database:', dbError);
   }
 
-  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUpperCase()} Error (${context}):`, error);
+  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUPCASE()} Error (${context}):`, error);
 }
 
 async function recoverFromError(db: Database, error: EnhancedError): Promise<boolean> {
