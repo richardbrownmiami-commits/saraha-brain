@@ -28,9 +28,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS coreference_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, clusters TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited", "frustrated", "hopeful", "anxious", "content", "nostalgic"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10], frustrated: [1, 10], hopeful: [1, 10], anxious: [1, 10], content: [1, 10], nostalgic: [1, 10] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, frustrated: 3, hopeful: 5, anxious: 3, content: 5, nostalgic: 3 };
 
 // Enhanced error classification system
 type ErrorClassification = {
@@ -256,6 +256,16 @@ function describeMood(emotions: any, energy: number) {
   else if (emotions.excited <= 3) parts.push("feeling calm");
   if (emotions.bored >= 8) parts.push("feeling bored");
   else if (emotions.bored <= 3) parts.push("feeling engaged");
+  if (emotions.frustrated >= 7) parts.push("feeling frustrated");
+  else if (emotions.frustrated <= 3) parts.push("feeling patient");
+  if (emotions.hopeful >= 8) parts.push("feeling hopeful");
+  else if (emotions.hopeful <= 3) parts.push("feeling uncertain");
+  if (emotions.anxious >= 7) parts.push("feeling anxious");
+  else if (emotions.anxious <= 3) parts.push("feeling relaxed");
+  if (emotions.content >= 8) parts.push("feeling content");
+  else if (emotions.content <= 3) parts.push("feeling restless");
+  if (emotions.nostalgic >= 7) parts.push("feeling nostalgic");
+  else if (emotions.nostalgic <= 3) parts.push("feeling present");
   return "You feel " + parts.join(", ") + ".";
 }
 
@@ -267,40 +277,4 @@ async function driftEmotions(db: Database) {
     const emo = await getEmotions(db);
 
     // Decay mechanism for all emotions with retry logic
-    for (const emotion of EMOTIONS) {
-      let retries = 0;
-      let success = false;
-
-      while (retries < MAX_RETRIES && !success) {
-        try {
-          if (emo[emotion] > EMO_DEFAULTS[emotion]) {
-            await updateEmotion(db, emotion, -1);
-          } else if (emo[emotion] < EMO_DEFAULTS[emotion]) {
-            await updateEmotion(db, emotion, 1);
-          }
-          success = true;
-        } catch (error) {
-          retries++;
-          if (retries >= MAX_RETRIES) {
-            const enhancedError = new EnhancedError(`Failed to update emotion ${emotion} after ${MAX_RETRIES} attempts`, {
-              type: 'database',
-              severity: 'high',
-              context: `emotion_decay_${emotion}`
-            });
-            await handleError(db, enhancedError);
-            throw enhancedError;
-          }
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        }
-      }
-    }
-
-    // Specific decay for negative emotions with retry logic
-    if (emo.bad > 0) {
-      let retries = 0;
-      let success = false;
-
-      while (retries < MAX_RETRIES && !success) {
-        try {
-          await updateEmotion(db, "bad", -1);
-          success = true;
+    for (const emotion of EMOTION
