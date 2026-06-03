@@ -19,7 +19,7 @@ service = "saraha-sentinel"
 [vars]
 BRAIN_KEY = "Saraha-Brain-Key"
 BRAVE_API_KEY = ""
-GITHUB_TOKEN = ""
+GITHUB_PAT = ""
 
 [triggers]
 crons = ["*/2 * * * *"]
