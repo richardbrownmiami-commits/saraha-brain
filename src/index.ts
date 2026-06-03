@@ -153,9 +153,9 @@ const SEED_KNOWLEDGE = [
   { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
   { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
-  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_TOKEN.", cat: "structure" },
+  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
   { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
-  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_TOKEN plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
+  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
   { k: "feedback_loop", c: "Every proposal cycle queries authority_receipts+proposals from last 24h and injects as fbStr: 'Approved/executed: ... Denied: ...' System prompt includes 'Evaluate: what worked, what user denied, adjust accordingly.' This lets brain learn user preferences.", cat: "structure" },
@@ -170,12 +170,12 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
   { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
   { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself â€” prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
-  { k: "github_token_access", c: "You have GITHUB_TOKEN binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
+  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
   { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
   { k: "self_improve_dont_touch_rag", c: "RULE: NEVER modify brain_knowledge table, SEED_KNOWLEDGE data, or RAG content. RAG seeds are your source of truth about yourself. Only propose changes to your actual code (src/index.ts) or behavior (prompt overrides).", cat: "self_improve" },
-  { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_TOKEN can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
+  { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
 ];
 
 async function seedKnowledge(db) {
@@ -336,7 +336,7 @@ async function githubRead(env, input) {
   const parts = input.split("/");
   const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
   if (!owner || !repo || !path) return "Invalid format. Use: owner/repo/path/to/file";
-  const token = env.GITHUB_TOKEN; if (!token) return "GitHub token not configured";
+  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
   try {
     const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
       headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
@@ -353,7 +353,7 @@ async function githubWrite(env, input) {
   const pathParts = parts[0].split("/"), owner = pathParts[0], repo = pathParts[1], path = pathParts.slice(2).join("/");
   const msg = parts[1] || "Update via Saraha", content = parts.slice(2).join("|");
   if (!owner || !repo || !path || !content) return "Invalid format. Use: owner/repo/path|commit msg|content";
-  const token = env.GITHUB_TOKEN; if (!token) return "GitHub token not configured";
+  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
   try {
     const getResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
       headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
@@ -696,7 +696,7 @@ export default {
       const repo = url.searchParams.get("repo") || "richardbrownmiami-commits/saraha-brain";
       const path = url.searchParams.get("path") || "src/index.ts";
       const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
-        headers: { Authorization: "Bearer " + (env.GITHUB_TOKEN || ""), Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }
       });
       if (!r.ok) return json({ error: "GitHub API: " + r.status }, r.status);
       const d = await r.json();
@@ -710,7 +710,7 @@ export default {
       if (!body.content) return json({ error: "content required" }, 400);
       const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
         method: "PUT",
-        headers: { Authorization: "Bearer " + (env.GITHUB_TOKEN || ""), "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
         body: JSON.stringify({ message: body.message || "brain: github write", content: body.content, sha: body.sha })
       });
       const d = await r.json();
@@ -793,7 +793,7 @@ export default {
     const pendCount = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
     const pendN = pendCount.results[0]?.c || 0;
     let sourceCode = "";
-    const gToken = env.GITHUB_TOKEN;
+    const gToken = env.GITHUB_PAT;
     if (gToken) {
       try {
         const sc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
@@ -841,7 +841,7 @@ export default {
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
     const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
-    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\nAbove is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\nFormat: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\n" + (sourceCode ? "Above is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
       body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention?") }], temperature: 0.7, max_tokens: 1024 })
@@ -849,6 +849,16 @@ export default {
     if (resp.ok) {
       const data = await resp.json();
       const text = data.choices?.[0]?.message?.content || "";
+      if (text.includes("TOOL:github_write:")) {
+        const input = text.slice(text.indexOf("TOOL:github_write:") + 18).split("\n")[0].trim();
+        const result = await githubWrite(env, input);
+        await storeStreamThought(env.DB, "Auto code change: " + result.slice(0, 80), "happy", "evolve");
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+        const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'tool_code',0,'auto') RETURNING id").bind(result.slice(0,60), "Code change: " + result, result).all();
+        await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+        await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+        await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_code_change',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+      } else {
       let proposal;
       try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
       if (proposal && proposal.title) {
@@ -873,6 +883,7 @@ export default {
       } else {
         const errTopic = topic || (topAntiPattern ? topAntiPattern.pattern : "no anti-pattern");
         try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + errTopic.slice(0, 80)).run(); } catch {}
+      }
       }
     } else {
       try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run(); } catch {}
