@@ -17,7 +17,10 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS user_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, response_id INTEGER, feedback_type TEXT NOT NULL, content TEXT, sentiment_score REAL, processed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS feedback_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, emotion_impact TEXT, context_accuracy TEXT, improvement_suggestions TEXT, confidence_change REAL, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS emotional_resonance_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, emotional_context TEXT, subtext_analysis TEXT, confidence_score REAL, created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS contextual_understanding_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, idiom_score REAL, sarcasm_score REAL, figurative_score REAL, context_analysis TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS contextual_understanding_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, idiom_score REAL, sarcasm_score REAL, figurative_score REAL, context_analysis TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS meta_learning_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_hash TEXT UNIQUE, emotional_pattern TEXT, context_pattern TEXT, response_pattern TEXT, success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS emotion_context_mapping (id INTEGER PRIMARY KEY AUTOINCREMENT, emotion TEXT NOT NULL, context_type TEXT NOT NULL, context_value TEXT, strength REAL DEFAULT 1.0, last_seen TEXT DEFAULT (datetime('now')), UNIQUE(emotion, context_type, context_value))`,
+  `CREATE TABLE IF NOT EXISTS hierarchical_learning_state (id INTEGER PRIMARY KEY AUTOINCREMENT, level INTEGER NOT NULL, state_data TEXT NOT NULL, last_updated TEXT DEFAULT (datetime('now')), UNIQUE(level))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -190,7 +193,6 @@ async function driftEmotions(db: Database) {
               throw error;
             }
             await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-          }
         }
       }
     }
@@ -286,21 +288,3 @@ async function storeStreamThought(db: Database, content: string, mood?: string, 
 
 async function analyzeContextualUnderstanding(db: Database, text: string): Promise<{idiomScore: number, sarcasmScore: number, figurativeScore: number, contextAnalysis: string, confidence: number}> {
   try {
-    const textHash = require('crypto').createHash('sha256').update(text).digest('hex');
-
-    // Check cache first
-    const cacheRows = await db.prepare("SELECT * FROM contextual_understanding_cache WHERE text_hash = ?1").bind(textHash).all();
-    if (cacheRows.results.length > 0) {
-      const cached = cacheRows.results[0];
-      return {
-        idiomScore: cached.idiom_score,
-        sarcasmScore: cached.sarcasm_score,
-        figurativeScore: cached.figurative_score,
-        contextAnalysis: cached.context_analysis,
-        confidence: cached.confidence
-      };
-    }
-
-    // Simulate ML analysis (in a real implementation, this would call an ML model)
-    // For now, we'll use simple heuristics as a placeholder
-    const analysis = analyzeText
