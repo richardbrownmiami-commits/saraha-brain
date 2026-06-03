@@ -853,14 +853,16 @@ export default {
         }
         const titleStr = (p.title || "").slice(0, 100);
         const whatStr = (p.what_diff || "").slice(0, 800);
-        const implSys = "You are Saraha's code implementation engine. Modify src/index.ts to implement the approved proposal. Output ONLY the raw modified source code. NO markdown, NO backticks, NO explanations.";
+        const implSys = "You are Saraha's code implementation engine. Output the COMPLETE modified src/index.ts file. Do NOT explain. Do NOT wrap in markdown/backticks. Output the entire raw source code.";
         const codeSlice = currentCode ? currentCode.slice(0, 20000) : "(not available)";
-        const implPrompt = "Proposal: " + titleStr + "\n\nWhat:\n" + whatStr + "\n\nHow:\n" + howStr + "\n\nCurrent code:\n" + codeSlice + "\n\nOutput ONLY the complete modified src/index.ts content. No backticks.";
+        const implPrompt = "Proposal: " + titleStr + "\n\nWhat:\n" + whatStr + "\n\nHow:\n" + howStr + "\n\nCurrent code:\n" + codeSlice + "\n\nOutput ONLY the COMPLETE modified src/index.ts. No backticks.";
         try {
+          const enc = new TextEncoder();
+          const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
           const ir = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
             method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
-            body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: implSys }, { role: "user", content: implPrompt }], temperature: 0.3, max_tokens: 4096 }),
-            signal: AbortSignal.timeout(45000)
+            body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: implSys }, { role: "user", content: implPrompt }], temperature: 0.3, max_tokens: 8192 }),
+            signal: AbortSignal.timeout(60000)
           });
           try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm',?2)").bind(stamp, "#" + p.id + " status=" + ir.status).run(); } catch {}
           if (ir.ok) {
@@ -877,7 +879,7 @@ export default {
               const gw = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
                 method: "PUT",
                 headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
-                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: btoa(newCode), sha }),
+                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: b64(newCode), sha }),
                 signal: AbortSignal.timeout(15000)
               });
               try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_gw',?2)").bind(stamp, "#" + p.id + " status=" + gw.status).run(); } catch {}
