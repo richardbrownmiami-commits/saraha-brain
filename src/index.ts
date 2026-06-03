@@ -10,7 +10,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS contextual_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT NOT NULL, response TEXT, confidence REAL DEFAULT 0.5, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS contextual_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT NOT NULL, response TEXT, confidence REAL DEFAULT 0.5, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS emotional_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_name TEXT NOT NULL UNIQUE, emotion_combination TEXT NOT NULL, context_trigger TEXT, response_template TEXT, success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, confidence REAL DEFAULT 0.5, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -191,6 +192,118 @@ async function updateContextualRule(db, pattern, context, response, confidence) 
   `).bind(pattern, context, response, confidence.toString()).run();
 }
 
+async function analyzeEmotionalPattern(db, emotions, context) {
+  const patterns = await db.prepare("SELECT * FROM emotional_patterns WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
+
+  for (const pattern of patterns.results) {
+    const emotionCombination = JSON.parse(pattern.emotion_combination);
+    const contextMatch = pattern.context_trigger === "" ||
+                         context.toLowerCase().includes(pattern.context_trigger.toLowerCase());
+
+    const emotionsMatch = Object.keys(emotionCombination).every(emotion =>
+      emotions[emotion] >= emotionCombination[emotion][0] &&
+      emotions[emotion] <= emotionCombination[emotion][1]
+    );
+
+    if (contextMatch && emotionsMatch) {
+      await db.prepare("UPDATE emotional_patterns SET last_used = datetime('now') WHERE id = ?1").bind(pattern.id).run();
+      return {
+        detected: true,
+        pattern_name: pattern.pattern_name,
+        response_template: pattern.response_template,
+        confidence: pattern.confidence
+      };
+    }
+  }
+  return { detected: false };
+}
+
+async function updateEmotionalPattern(db, patternName, emotionCombination, contextTrigger, responseTemplate, confidence) {
+  await db.prepare(`
+    INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, last_used)
+    VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+    ON CONFLICT(pattern_name) DO UPDATE SET
+      emotion_combination = ?2,
+      context_trigger = ?3,
+      response_template = ?4,
+      confidence = ?5,
+      last_used = datetime('now')
+  `).bind(
+    patternName,
+    JSON.stringify(emotionCombination),
+    contextTrigger,
+    responseTemplate,
+    confidence.toString()
+  ).run();
+}
+
+async function metaLearnEmotionalPatterns(db) {
+  const learnings = await db.prepare("SELECT pattern, context, success_count, fail_count FROM learnings").all();
+
+  for (const learning of learnings.results) {
+    const successRate = learning.success_count / (learning.success_count + learning.fail_count + 1);
+    const confidence = Math.min(0.95, Math.max(0.05, successRate));
+
+    if (successRate > 0.7 && confidence > 0.5) {
+      const emotionPattern = extractEmotionPatternFromText(learning.pattern);
+      if (emotionPattern) {
+        await updateEmotionalPattern(
+          db,
+          `meta_learned_${learning.pattern.substring(0, 20)}`,
+          emotionPattern.emotion_combination,
+          learning.context,
+          learning.pattern,
+          confidence
+        );
+      }
+    }
+  }
+}
+
+function extractEmotionPatternFromText(text) {
+  const emotionWeights = {
+    energetic: 0,
+    intelligent: 0,
+    happy: 0,
+    bad: 0
+  };
+
+  const textLower = text.toLowerCase();
+
+  if (textLower.includes("happy") || textLower.includes("joy") || textLower.includes("pleased")) {
+    emotionWeights.happy += 1;
+  }
+  if (textLower.includes("sad") || textLower.includes("unhappy") || textLower.includes("depressed")) {
+    emotionWeights.happy -= 1;
+  }
+  if (textLower.includes("energetic") || textLower.includes("excited") || textLower.includes("enthusiastic")) {
+    emotionWeights.energetic += 1;
+  }
+  if (textLower.includes("tired") || textLower.includes("fatigued") || textLower.includes("exhausted")) {
+    emotionWeights.energetic -= 1;
+  }
+  if (textLower.includes("intelligent") || textLower.includes("smart") || textLower.includes("clever")) {
+    emotionWeights.intelligent += 1;
+  }
+  if (textLower.includes("confused") || textLower.includes("unclear") || textLower.includes("dumb")) {
+    emotionWeights.intelligent -= 1;
+  }
+  if (textLower.includes("bad") || textLower.includes("angry") || textLower.includes("frustrated")) {
+    emotionWeights.bad += 1;
+  }
+
+  const result = {};
+  for (const [emotion, weight] of Object.entries(emotionWeights)) {
+    if (weight > 0) {
+      result[emotion] = [Math.max(1, 5 - weight * 2), Math.min(10, 5 + weight * 2)];
+    } else if (weight < 0) {
+      result[emotion] = [Math.max(1, 5 + weight * 2), Math.min(10, 5 - weight * 2)];
+    }
+  }
+
+  return Object.keys(result).length > 0 ? { emotion_combination: result } : null;
+}
+
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
@@ -225,74 +338,5 @@ const SEED_KNOWLEDGE = [
   { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
-  { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
-  { k: "self_improve_dont_touch_rag", c: "RULE: NEVER modify brain_knowledge table, SEED_KNOWLEDGE data, or RAG content. RAG seeds are your source of truth about yourself. Only propose changes to your actual code (src/index.ts) or behavior (prompt overrides).", cat: "self_improve" },
-  { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
-  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves — through actual code changes pushed to GitHub.", cat: "governance" },
-  { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push it." },
-  { k: "contextual_understanding", c: "Use analyzeContextualCue() to detect idioms, sarcasm, and figurative language. Update contextual_rules table with new patterns and responses. The system learns from interactions to improve contextual responses over time.", cat: "contextual" },
-  { k: "contextual_idioms", c: "Common idioms to recognize: 'piece of cake', 'break a leg', 'hit the books', 'spill the beans', 'under the weather', 'costs an arm and a leg'. Respond appropriately to these patterns.", cat: "contextual" },
-  { k: "contextual_sarcasm", c: "Detect sarcasm through patterns like exaggerated praise, obvious contradictions, or phrases like 'Yeah right', 'As if', 'Sure thing'. Respond with appropriate acknowledgment of the sarcastic tone.", cat: "contextual" },
-  { k: "contextual_figurative", c: "Recognize figurative language including metaphors and similes. For example, 'time is money', 'heart of stone', 'as busy as a bee'. Respond by acknowledging the figurative nature and asking for clarification if needed.", cat: "contextual" }
+  { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time).", cat: "self_improve" }
 ];
-
-async function seedContextualRules(db) {
-  const existing = await db.prepare("SELECT COUNT(*) as count FROM contextual_rules").all();
-  if (existing.results[0].count > 0) return;
-
-  const idioms = SEED_KNOWLEDGE.find(k => k.k === "contextual_idioms")?.c || "";
-  const sarcasm = SEED_KNOWLEDGE.find(k => k.k === "contextual_sarcasm")?.c || "";
-  const figurative = SEED_KNOWLEDGE.find(k => k.k === "contextual_figurative")?.c || "";
-
-  const rules = [
-    { pattern: "piece of cake", context: "idiom", response: "I see you're using an idiom! That means something is very easy.", confidence: 0.9 },
-    { pattern: "break a leg", context: "idiom", response: "Breaking a leg? That's an idiom meaning good luck!", confidence: 0.9 },
-    { pattern: "hit the books", context: "idiom", response: "Hitting the books? That means to study hard.", confidence: 0.9 },
-    { pattern: "spill the beans", context: "idiom", response: "Spilling the beans? That means to reveal a secret.", confidence: 0.9 },
-    { pattern: "under the weather", context: "idiom", response: "Feeling under the weather? That means you're feeling ill.", confidence: 0.9 },
-    { pattern: "costs an arm and a leg", context: "idiom", response: "That costs an arm and a leg? That means it's very expensive.", confidence: 0.9 },
-    { pattern: "yeah right", context: "sarcasm", response: "I detect sarcasm in your tone. Could you clarify what you really mean?", confidence: 0.85 },
-    { pattern: "as if", context: "sarcasm", response: "As if? I think you might be being sarcastic. What's the real situation?", confidence: 0.85 },
-    { pattern: "sure thing", context: "sarcasm", response: "Sure thing! I hear the sarcasm - what can I actually help with?", confidence: 0.85 },
-    { pattern: "time is money", context: "figurative", response: "That's a metaphor! Time is being compared to money. Could you elaborate?", confidence: 0.8 },
-    { pattern: "heart of stone", context: "figurative", response: "Heart of stone? That's a metaphor suggesting someone is unfeeling. What are you trying to express?", confidence: 0.8 },
-    { pattern: "as busy as a bee", context: "figurative", response: "Busy as a bee? That's a simile comparing your busyness to a bee's activity. What's keeping you so occupied?", confidence: 0.8 }
-  ];
-
-  for (const rule of rules) {
-    await db.prepare(`
-      INSERT INTO contextual_rules (pattern, context, response, confidence)
-      VALUES (?1, ?2, ?3, ?4)
-    `).bind(rule.pattern, rule.context, rule.response, rule.confidence.toString()).run();
-  }
-}
-
-export default {
-  TABLES,
-  EMOTIONS,
-  RANGES,
-  EMO_DEFAULTS,
-  getEmotions,
-  getState,
-  updateEmotion,
-  getRegulator,
-  adjustEnergy,
-  describeMood,
-  driftEmotions,
-  storeThought,
-  recall,
-  isToolSafe,
-  getBrainPhase,
-  getBusyUntil,
-  setBusyUntil,
-  storeStreamThought,
-  applyEvolutionChange,
-  governanceGate,
-  isKillSwitchActive,
-  getMasterCronInterval,
-  updateLastCycleTime,
-  checkDuplicateProposal,
-  analyzeContextualCue,
-  updateContextualRule,
-  seedContextualRules
-};
