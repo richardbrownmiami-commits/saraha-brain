@@ -15,7 +15,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS semantic_analysis_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, srl_result TEXT, coref_result TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS error_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT, severity INTEGER DEFAULT 3, resolution TEXT, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS user_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, response_id INTEGER, feedback_type TEXT NOT NULL, content TEXT, sentiment_score REAL, processed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS feedback_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, emotion_impact TEXT, context_accuracy TEXT, improvement_suggestions TEXT, confidence_change REAL, created_at TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS feedback_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, emotion_impact TEXT, context_accuracy TEXT, improvement_suggestions TEXT, confidence_change REAL, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS emotional_resonance_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, emotional_context TEXT, subtext_analysis TEXT, confidence_score REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -316,7 +317,4 @@ async function recordUserFeedback(db: Database, responseId: number, feedbackType
     let retries = 0;
     let success = false;
 
-    while (retries < MAX_RETRIES && !success) {
-      try {
-        await db.prepare("INSERT INTO user_feedback (response_id, feedback_type, content, sentiment_score) VALUES (?1, ?2, ?3, ?4)")
-          .
+    while (ret
