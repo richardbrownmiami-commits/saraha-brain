@@ -25,6 +25,20 @@ async function getEmotions(db) {
   }
   return result;
 }
+async function getState(db) {
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+  const emotions = { ...EMO_DEFAULTS };
+  for (const r of rows.results) {
+    const key = r.key.replace("emotion_", "");
+    if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+  }
+  const reg = { energy: 100, confidence: 50 };
+  for (const r of rows.results) {
+    if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
+    if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+  }
+  return { emotions, reg };
+}
 async function updateEmotion(db, name, delta) {
   const emotions = await getEmotions(db);
   const [min, max] = RANGES[name];
@@ -169,7 +183,7 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
   { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
-  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself â€” prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
+  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself ??? prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
   { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
@@ -204,7 +218,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha ??? Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -456,7 +470,7 @@ export default {
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
         await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
-        const body = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
+        const body = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
         await logStep(aid, "planner", `Calling ${body.model}`);
         const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
@@ -485,7 +499,7 @@ export default {
           } else if (!result.ok) {
             content = `I tried to use ${tool} but got: ${result.error}`;
           } else {
-            const followBody = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
             const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
               method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
             });
@@ -564,7 +578,7 @@ export default {
       const mood = describeMood(emotions, reg.energy);
       const system = `You are Saraha. ${mood} ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
       const userInput = action.input || "Process my request";
-      const followBody = { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
+      const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
       const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
       });
@@ -730,13 +744,11 @@ export default {
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
-    try { for (const s of TABLES) await env.DB.exec(s); } catch {}
-    try { await seedKnowledge(env.DB); } catch {}
+    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=datetime('now')").run(); } } catch {}
     try {
     const busy = await getBusyUntil(env.DB);
     if (busy > Date.now()) return;
-    const emotions = await getEmotions(env.DB);
-    const reg = await getRegulator(env.DB);
+    const { emotions, reg } = await getState(env.DB);
     const phase = getBrainPhase(emotions, reg);
     const stamp = Date.now();
     await setBusyUntil(env.DB, 90);
@@ -804,13 +816,17 @@ export default {
     const pendN = pendCount.results[0]?.c || 0;
     let sourceCode = "";
     const gToken = env.GITHUB_PAT;
-    if (gToken) {
+    try {
+      const cached = await env.DB.prepare("SELECT value FROM identity WHERE key='cached_source'").all();
+      if (cached.results[0]?.value) sourceCode = cached.results[0].value;
+    } catch {}
+    if (!sourceCode && gToken) {
       try {
         const sc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
           headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
           signal: AbortSignal.timeout(10000)
         });
-        if (sc.ok) sourceCode = (await sc.text()).slice(0, 30000);
+        if (sc.ok) { sourceCode = (await sc.text()).slice(0, 30000); try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cached_source',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(sourceCode).run(); } catch {} }
       } catch {}
     }
     if (pendN >= 5) {
@@ -832,10 +848,8 @@ export default {
     let topic = "";
     const sbCtx = await searchKnowledge(env.DB, "self_improve");
     const sbStr = sbCtx.length ? "\n\nSelf-improvement areas:\n" + sbCtx.map(r => "- " + r.key.replace("self_improve_","") + ": " + r.content).join("\n") : "";
-    let research = "";
     if (topAntiPattern) {
       topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
-      research = await webSearch(env, topic);
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
     } else {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research','Self-improvement planning')").bind(stamp).run(); } catch {}
@@ -851,14 +865,18 @@ export default {
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
     const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
-    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\n" + (sourceCode ? "Above is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\n" + (research ? "Research: " + research.slice(0, 400) : "") + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF ??? your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\n" + (sourceCode ? "Above is your actual source code ??? read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
-      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention?") }], temperature: 0.7, max_tokens: 1024 })
+      body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention?") }], temperature: 0.7, max_tokens: 1024 }),
+      signal: AbortSignal.timeout(25000)
     });
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'post_llm','Got response status='||?2)").bind(stamp, resp.status.toString()).run(); } catch {}
     if (resp.ok) {
       const data = await resp.json();
       const text = data.choices?.[0]?.message?.content || "";
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'llm_diag',?2)").bind(stamp, text.slice(0,200).replace(/\n/g,"\\n")).run(); } catch {}
       if (text.includes("TOOL:github_write:")) {
         const input = text.slice(text.indexOf("TOOL:github_write:") + 18).split("\n")[0].trim();
         let backupText = null, backupSha = null;
@@ -924,10 +942,12 @@ export default {
     } else {
       try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run(); } catch {}
     }
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'end_cycle','Energy adjust done')").bind(stamp).run(); } catch {}
     await adjustEnergy(env.DB, -3);
     await updateLastCycleTime(env.DB);
+    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cpu_heartbeat',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run(); } catch {}
     } catch (e) {
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error',?2)").bind(Date.now(), "Scheduled error: " + (e.message || e)).run(); } catch {}
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error','Scheduled error: '||?2)").bind(Date.now(), (e.message||e).slice(0,200)).run(); } catch {}
     }
   }
 };
