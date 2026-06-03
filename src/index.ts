@@ -13,6 +13,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS semantic_analysis_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, srl_result TEXT, coref_result TEXT, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS error_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT, severity INTEGER DEFAULT 3, resolution TEXT, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS user_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, response_id INTEGER, feedback_type TEXT NOT NULL, content TEXT, sentiment_score REAL, processed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS feedback_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, emotion_impact TEXT, context_accuracy TEXT, improvement_suggestions TEXT, confidence_change REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -279,58 +282,41 @@ async function storeStreamThought(db: Database, content: string, mood?: string, 
   }
 }
 
-async function applyEvolutionChange(db: Database, proposal: any, proposalId: number, reason?: string) {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 1000;
-
+async function analyzeErrorContext(db: Database, errorMessage: string, context: string): Promise<{pattern: string, severity: number, resolution: string}> {
   try {
-    const change = {
-      title: proposal.title,
-      what: proposal.what_diff || "",
-      how: proposal.how_diff || "",
-      type: proposal.resource_type || "unknown",
-      reason: reason || "self-improvement",
-      risk: proposal.risk_pct || 0,
-      applied_at: new Date().toISOString(),
-      status: "active"
+    const rows = await db.prepare("SELECT pattern, severity, resolution FROM error_patterns WHERE pattern LIKE ?1 OR context LIKE ?1").bind(`%${errorMessage}%`).all();
+    if (rows.results.length > 0) {
+      const bestMatch = rows.results.reduce((prev, current) =>
+        (prev.severity > current.severity) ? prev : current
+      );
+      return {
+        pattern: bestMatch.pattern,
+        severity: bestMatch.severity,
+        resolution: bestMatch.resolution
+      };
+    }
+    return {
+      pattern: "unknown_error",
+      severity: 1,
+      resolution: "Basic troubleshooting recommended"
     };
+  } catch (error) {
+    console.error('Error analyzing error context:', error);
+    return {
+      pattern: "analysis_error",
+      severity: 5,
+      resolution: "Check error logs for details"
+    };
+  }
+}
 
-    // Retry logic for first operation
+async function recordUserFeedback(db: Database, responseId: number, feedbackType: string, content: string, sentimentScore?: number) {
+  try {
+    const MAX_RETRIES = 3;
     let retries = 0;
     let success = false;
 
     while (retries < MAX_RETRIES && !success) {
       try {
-        await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
-          .bind("evolution_log:" + proposalId, JSON.stringify(change))
-          .run();
-        success = true;
-      } catch (error) {
-        retries++;
-        if (retries >= MAX_RETRIES) {
-          console.error(`Failed to log evolution change after ${MAX_RETRIES} attempts:`, error);
-          throw error;
-        }
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-      }
-    }
-
-    // Retry logic for second operation
-    retries = 0;
-    success = false;
-
-    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-
-    overrides.push({
-      from: proposalId,
-      title: proposal.title,
-      what: proposal.what_diff,
-      how: proposal.how_diff,
-      applied_at: change.applied_at
-    });
-
-    while (retries < MAX_RETRIES && !success) {
-      try {
-        await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
-          .bind
+        await db.prepare("INSERT INTO user_feedback (response_id, feedback_type, content, sentiment_score) VALUES (?1, ?2, ?3, ?4)")
+          .
