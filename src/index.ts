@@ -894,7 +894,7 @@ export default {
         }
       }
       await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(p.id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,?2,'success')").bind(p.id, implemented ? "human-approved+implemented" : "human-approved").run();
       await applyEvolutionChange(env.DB, p, p.id, implemented ? "human-approved+implemented" : "human-approved");
       if (!implemented) await storeStreamThought(env.DB, "Executed approved (meta only): " + p.title, "happy", "evolve");
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3||' impl='||?4)").bind(stamp, p.id.toString(), p.title.slice(0,60), implemented ? "yes" : "no").run(); } catch {}
