@@ -111,28 +111,108 @@ function describeMood(emotions: any, energy: number) {
 }
 
 async function driftEmotions(db: Database) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000;
+
   try {
     const emo = await getEmotions(db);
-    // Decay mechanism for all emotions
+
+    // Decay mechanism for all emotions with retry logic
     for (const emotion of EMOTIONS) {
-      if (emo[emotion] > EMO_DEFAULTS[emotion]) {
-        await updateEmotion(db, emotion, -1).catch(() => {});
-      } else if (emo[emotion] < EMO_DEFAULTS[emotion]) {
-        await updateEmotion(db, emotion, 1).catch(() => {});
+      let retries = 0;
+      let success = false;
+
+      while (retries < MAX_RETRIES && !success) {
+        try {
+          if (emo[emotion] > EMO_DEFAULTS[emotion]) {
+            await updateEmotion(db, emotion, -1);
+          } else if (emo[emotion] < EMO_DEFAULTS[emotion]) {
+            await updateEmotion(db, emotion, 1);
+          }
+          success = true;
+        } catch (error) {
+          retries++;
+          if (retries >= MAX_RETRIES) {
+            console.error(`Failed to update emotion ${emotion} after ${MAX_RETRIES} attempts:`, error);
+            throw error;
+          }
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
       }
     }
-    // Specific decay for negative emotions
-    if (emo.bad > 0) await updateEmotion(db, "bad", -1).catch(() => {});
-    // Natural fluctuations for positive emotions
-    if (Math.random() < 0.3 && emo.happy < 9) await updateEmotion(db, "happy", 1).catch(() => {});
-    if (Math.random() < 0.2 && emo.energetic < 9) await updateEmotion(db, "energetic", 1).catch(() => {});
-    if (Math.random() < 0.25 && emo.curious < 9) await updateEmotion(db, "curious", 1).catch(() => {});
-    if (Math.random() < 0.15 && emo.excited < 9) await updateEmotion(db, "excited", 1).catch(() => {});
+
+    // Specific decay for negative emotions with retry logic
+    if (emo.bad > 0) {
+      let retries = 0;
+      let success = false;
+
+      while (retries < MAX_RETRIES && !success) {
+        try {
+          await updateEmotion(db, "bad", -1);
+          success = true;
+        } catch (error) {
+          retries++;
+          if (retries >= MAX_RETRIES) {
+            console.error(`Failed to decay negative emotion after ${MAX_RETRIES} attempts:`, error);
+            throw error;
+          }
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+      }
+    }
+
+    // Natural fluctuations for positive emotions with retry logic
+    const positiveEmotions = [
+      { name: "happy", chance: 0.3, threshold: 9 },
+      { name: "energetic", chance: 0.2, threshold: 9 },
+      { name: "curious", chance: 0.25, threshold: 9 },
+      { name: "excited", chance: 0.15, threshold: 9 }
+    ];
+
+    for (const { name, chance, threshold } of positiveEmotions) {
+      if (Math.random() < chance && emo[name] < threshold) {
+        let retries = 0;
+        let success = false;
+
+        while (retries < MAX_RETRIES && !success) {
+          try {
+            await updateEmotion(db, name, 1);
+            success = true;
+          } catch (error) {
+            retries++;
+            if (retries >= MAX_RETRIES) {
+              console.error(`Failed to increase positive emotion ${name} after ${MAX_RETRIES} attempts:`, error);
+              throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+          }
+        }
+      }
+    }
+
   } catch (error) {
     console.error('Error drifting emotions:', error);
-    // Fallback: reset emotions to defaults
-    for (const emotion of EMOTIONS) {
-      await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + emotion, EMO_DEFAULTS[emotion].toString()).run().catch(() => {});
+
+    // Fallback strategy with retry logic
+    let retries = 0;
+    let fallbackSuccess = false;
+
+    while (retries < MAX_RETRIES && !fallbackSuccess) {
+      try {
+        for (const emotion of EMOTIONS) {
+          await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')")
+            .bind("emotion_" + emotion, EMO_DEFAULTS[emotion].toString())
+            .run();
+        }
+        fallbackSuccess = true;
+      } catch (fallbackError) {
+        retries++;
+        if (retries >= MAX_RETRIES) {
+          console.error(`Fallback emotion reset failed after ${MAX_RETRIES} attempts:`, fallbackError);
+          throw fallbackError;
+        }
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      }
     }
   }
 }
@@ -200,6 +280,9 @@ async function storeStreamThought(db: Database, content: string, mood?: string, 
 }
 
 async function applyEvolutionChange(db: Database, proposal: any, proposalId: number, reason?: string) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 1000;
+
   try {
     const change = {
       title: proposal.title,
@@ -212,12 +295,33 @@ async function applyEvolutionChange(db: Database, proposal: any, proposalId: num
       status: "active"
     };
 
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
-      .bind("evolution_log:" + proposalId, JSON.stringify(change))
-      .run();
+    // Retry logic for first operation
+    let retries = 0;
+    let success = false;
+
+    while (retries < MAX_RETRIES && !success) {
+      try {
+        await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
+          .bind("evolution_log:" + proposalId, JSON.stringify(change))
+          .run();
+        success = true;
+      } catch (error) {
+        retries++;
+        if (retries >= MAX_RETRIES) {
+          console.error(`Failed to log evolution change after ${MAX_RETRIES} attempts:`, error);
+          throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+
+    // Retry logic for second operation
+    retries = 0;
+    success = false;
 
     const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
     const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+
     overrides.push({
       from: proposalId,
       title: proposal.title,
@@ -226,71 +330,7 @@ async function applyEvolutionChange(db: Database, proposal: any, proposalId: num
       applied_at: change.applied_at
     });
 
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
-      .bind(JSON.stringify(overrides))
-      .run();
-  } catch (error) {
-    console.error('Error applying evolution change:', error);
-    throw error;
-  }
-}
-
-async function governanceGate(db: Database, resourceType: string, riskPct: number) {
-  try {
-    if (riskPct <= 30) {
-      return { action: "auto", reason: `${resourceType} at ${riskPct}% auto-approved (self-evolution)` };
-    } else {
-      return { action: "pending", reason: `${resourceType} at ${riskPct}% requires human approval` };
-    }
-  } catch (error) {
-    console.error('Error in governance gate:', error);
-    return { action: "error", reason: "Governance check failed" };
-  }
-}
-
-async function isKillSwitchActive(db: Database) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-    return r.results[0]?.value === "true";
-  } catch (error) {
-    console.error('Error checking kill switch:', error);
-    return false;
-  }
-}
-
-async function getMasterCronInterval(db: Database) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-    const v = r.results[0]?.value;
-    return v ? parseInt(v) : 0;
-  } catch (error) {
-    console.error('Error fetching master cron interval:', error);
-    return 0;
-  }
-}
-async function updateLastCycleTime(db: Database) {
-  try {
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
-  } catch (error) {
-    console.error('Error updating last cycle time:', error);
-    throw error;
-  }
-}
-async function checkDuplicateProposal(db: Database, title: string, whatDiff: string) {
-  try {
-    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-    if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-
-    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-    if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
-
-    return { duplicate: false };
-  } catch (error) {
-    console.error('Error checking duplicate proposal:', error);
-    return { duplicate: false };
-  }
-}
-
-async function analyzeSemanticRoles(db: Database, text: string): Promise<any> {
-  try {
-    const textHash = require('crypto').createHash('sha256').
+    while (retries < MAX_RETRIES && !success) {
+      try {
+        await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+          .bind
