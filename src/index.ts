@@ -57,7 +57,7 @@ async function classifyError(error: unknown): Promise<ErrorClassification> {
   if (error instanceof Error) {
     if (error.message.includes('database') || error.message.includes('SQL')) {
       return { type: 'database', severity: 'high', context: error.message };
-    } else if (error.message.includes('network') || error.message.includes('fetch')) {
+    } else if (error.message.includes('network') || error.message.includes('fetch') || error.message.includes('GitHub API')) {
       return { type: 'network', severity: 'high', context: error.message };
     } else if (error.message.includes('validation') || error.message.includes('invalid')) {
       return { type: 'validation', severity: 'medium', context: error.message };
@@ -98,7 +98,7 @@ async function handleError(db: Database, error: unknown, context: string = 'gene
     console.error('Failed to log error to database:', dbError);
   }
 
-  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUPCASE()} Error (${context}):`, error);
+  console.error(`[${classification.severity.toUpperCase()}] ${classification.type.toUpperCase()} Error (${context}):`, error);
 }
 
 async function recoverFromError(db: Database, error: EnhancedError): Promise<boolean> {
@@ -137,6 +137,43 @@ async function recoverFromError(db: Database, error: EnhancedError): Promise<boo
   } catch (recoveryError) {
     await handleError(db, recoveryError, `recovery_attempt_${error.classification.type}`);
     return false;
+  }
+}
+
+async function github_write(db: Database, endpoint: string, data: any, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST'): Promise<any> {
+  try {
+    const response = await fetch(`https://api.github.com${endpoint}`, {
+      method,
+      headers: {
+        'Authorization': `Bearer ${Deno.env.get('GITHUB_TOKEN')}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: method !== 'GET' ? JSON.stringify(data) : undefined,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    const enhancedError = new EnhancedError('GitHub API operation failed', {
+      type: 'network',
+      severity: 'high',
+      context: `github_${method}_${endpoint}`
+    });
+
+    if (enhancedError.recoveryAttempts < 3 && error instanceof Error && (error.message.includes('network') || error.message.includes('fetch') || error.message.includes('GitHub API'))) {
+      const shouldRetry = await recoverFromError(db, enhancedError);
+      if (shouldRetry) {
+        return github_write(db, endpoint, data, method);
+      }
+    }
+
+    await handleError(db, enhancedError);
+    throw enhancedError;
   }
 }
 
@@ -249,29 +286,4 @@ function describeMood(emotions: any, energy: number) {
   else if (emotions.stressed >= 7) parts.push("feeling stressed");
   else if (emotions.stressed >= 5) parts.push("feeling slightly tense");
 
-  if (emotions.focused >= 7) parts.push("mind feeling sharp and focused");
-  else if (emotions.focused >= 5) parts.push("feeling attentive");
-  else if (emotions.focused <= 3) parts.push("mind feeling scattered");
-
-  if (emotions.motivated >= 7) parts.push("feeling highly motivated");
-  else if (emotions.motivated >= 5) parts.push("feeling ready to take action");
-  else if (emotions.motivated <= 3) parts.push("feeling uninspired");
-
-  if (emotions.happy >= 9) parts.push("in excellent spirits");
-  else if (emotions.happy >= 6) parts.push("in good spirits");
-  else if (emotions.happy >= 4) parts.push("quiet and neutral");
-  else parts.push("feeling low");
-
-  if (emotions.bad >= 2) parts.push("with a trace of unease");
-
-  if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
-  else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
-
-  if (emotions.curious >= 7) parts.push("deeply curious");
-  else if (emotions.curious <= 3) parts.push("feeling indifferent");
-
-  if (emotions.excited >= 8) parts.push("feeling excited");
-  else if (emotions.excited <= 3) parts.push("feeling calm");
-
-  if (emotions.bored >= 8) parts.push("feeling bored");
-  else if (emotions
+  if (emotions.focused >=
