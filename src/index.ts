@@ -14,9 +14,9 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5 };
 
 async function getEmotions(db: Database) {
   try {
@@ -100,16 +100,33 @@ function describeMood(emotions: any, energy: number) {
   if (emotions.bad >= 2) parts.push("with a trace of unease");
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
   else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+  if (emotions.curious >= 7) parts.push("deeply curious");
+  else if (emotions.curious <= 3) parts.push("feeling indifferent");
+  if (emotions.excited >= 8) parts.push("feeling excited");
+  else if (emotions.excited <= 3) parts.push("feeling calm");
+  if (emotions.bored >= 8) parts.push("feeling bored");
+  else if (emotions.bored <= 3) parts.push("feeling engaged");
   return "You feel " + parts.join(", ") + ".";
 }
 
 async function driftEmotions(db: Database) {
   try {
     const emo = await getEmotions(db);
-    if (emo.happy > 7) await updateEmotion(db, "happy", -1).catch(() => {});
-    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1).catch(() => {});
+    // Decay mechanism for all emotions
+    for (const emotion of EMOTIONS) {
+      if (emo[emotion] > EMO_DEFAULTS[emotion]) {
+        await updateEmotion(db, emotion, -1).catch(() => {});
+      } else if (emo[emotion] < EMO_DEFAULTS[emotion]) {
+        await updateEmotion(db, emotion, 1).catch(() => {});
+      }
+    }
+    // Specific decay for negative emotions
     if (emo.bad > 0) await updateEmotion(db, "bad", -1).catch(() => {});
-    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1).catch(() => {});
+    // Natural fluctuations for positive emotions
+    if (Math.random() < 0.3 && emo.happy < 9) await updateEmotion(db, "happy", 1).catch(() => {});
+    if (Math.random() < 0.2 && emo.energetic < 9) await updateEmotion(db, "energetic", 1).catch(() => {});
+    if (Math.random() < 0.25 && emo.curious < 9) await updateEmotion(db, "curious", 1).catch(() => {});
+    if (Math.random() < 0.15 && emo.excited < 9) await updateEmotion(db, "excited", 1).catch(() => {});
   } catch (error) {
     console.error('Error drifting emotions:', error);
     // Fallback: reset emotions to defaults
@@ -148,6 +165,8 @@ function getBrainPhase(emotions: any, reg: any) {
   if (utcMin >= 1170 || utcMin < 30) return "sleeping";
   if (reg.energy <= 20) return "tired";
   if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+  if (emotions.bored >= 8) return "resting";
+  if (emotions.excited >= 7) return "active";
   return "awake";
 }
 
@@ -273,13 +292,4 @@ async function checkDuplicateProposal(db: Database, title: string, whatDiff: str
 
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
-  { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
-  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
-  { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
-  { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
-  { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
-  { k: "governed_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
-  { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
-  { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
-  { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
-  { k: "governance_cron", c: "C
+  { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity"
