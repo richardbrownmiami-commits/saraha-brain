@@ -16,7 +16,8 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS error_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT, severity INTEGER DEFAULT 3, resolution TEXT, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS user_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, response_id INTEGER, feedback_type TEXT NOT NULL, content TEXT, sentiment_score REAL, processed INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS feedback_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id INTEGER, emotion_impact TEXT, context_accuracy TEXT, improvement_suggestions TEXT, confidence_change REAL, created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS emotional_resonance_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, emotional_context TEXT, subtext_analysis TEXT, confidence_score REAL, created_at TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS emotional_resonance_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, emotional_context TEXT, subtext_analysis TEXT, confidence_score REAL, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS contextual_understanding_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, text_hash TEXT UNIQUE, idiom_score REAL, sarcasm_score REAL, figurative_score REAL, context_analysis TEXT, confidence REAL, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
@@ -283,38 +284,23 @@ async function storeStreamThought(db: Database, content: string, mood?: string, 
   }
 }
 
-async function analyzeErrorContext(db: Database, errorMessage: string, context: string): Promise<{pattern: string, severity: number, resolution: string}> {
+async function analyzeContextualUnderstanding(db: Database, text: string): Promise<{idiomScore: number, sarcasmScore: number, figurativeScore: number, contextAnalysis: string, confidence: number}> {
   try {
-    const rows = await db.prepare("SELECT pattern, severity, resolution FROM error_patterns WHERE pattern LIKE ?1 OR context LIKE ?1").bind(`%${errorMessage}%`).all();
-    if (rows.results.length > 0) {
-      const bestMatch = rows.results.reduce((prev, current) =>
-        (prev.severity > current.severity) ? prev : current
-      );
+    const textHash = require('crypto').createHash('sha256').update(text).digest('hex');
+
+    // Check cache first
+    const cacheRows = await db.prepare("SELECT * FROM contextual_understanding_cache WHERE text_hash = ?1").bind(textHash).all();
+    if (cacheRows.results.length > 0) {
+      const cached = cacheRows.results[0];
       return {
-        pattern: bestMatch.pattern,
-        severity: bestMatch.severity,
-        resolution: bestMatch.resolution
+        idiomScore: cached.idiom_score,
+        sarcasmScore: cached.sarcasm_score,
+        figurativeScore: cached.figurative_score,
+        contextAnalysis: cached.context_analysis,
+        confidence: cached.confidence
       };
     }
-    return {
-      pattern: "unknown_error",
-      severity: 1,
-      resolution: "Basic troubleshooting recommended"
-    };
-  } catch (error) {
-    console.error('Error analyzing error context:', error);
-    return {
-      pattern: "analysis_error",
-      severity: 5,
-      resolution: "Check error logs for details"
-    };
-  }
-}
 
-async function recordUserFeedback(db: Database, responseId: number, feedbackType: string, content: string, sentimentScore?: number) {
-  try {
-    const MAX_RETRIES = 3;
-    let retries = 0;
-    let success = false;
-
-    while (ret
+    // Simulate ML analysis (in a real implementation, this would call an ML model)
+    // For now, we'll use simple heuristics as a placeholder
+    const analysis = analyzeText
