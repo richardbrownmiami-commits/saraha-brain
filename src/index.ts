@@ -19,46 +19,71 @@ const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: 
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
 async function getEmotions(db: Database) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
-  const result = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+    const result = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error fetching emotions:', error);
+    return { ...EMO_DEFAULTS };
   }
-  return result;
 }
 async function getState(db: Database) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
-  const emotions = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+    const emotions = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+    }
+    const reg = { energy: 100, confidence: 50 };
+    for (const r of rows.results) {
+      if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
+      if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+    }
+    return { emotions, reg };
+  } catch (error) {
+    console.error('Error fetching state:', error);
+    return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
   }
-  const reg = { energy: 100, confidence: 50 };
-  for (const r of rows.results) {
-    if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
-    if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
-  }
-  return { emotions, reg };
 }
 async function updateEmotion(db: Database, name: string, delta: number) {
-  const emotions = await getEmotions(db);
-  const [min, max] = RANGES[name];
-  const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
-  return newVal;
+  try {
+    const emotions = await getEmotions(db);
+    const [min, max] = RANGES[name];
+    const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
+    return newVal;
+  } catch (error) {
+    console.error(`Error updating emotion ${name}:`, error);
+    throw error;
+  }
 }
 
 async function getRegulator(db: Database) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
-  const vals = { energy: 100, confidence: 50 };
-  for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
-  return { energy: vals.energy, confidence: vals.confidence };
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
+    const vals = { energy: 100, confidence: 50 };
+    for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
+    return { energy: vals.energy, confidence: vals.confidence };
+  } catch (error) {
+    console.error('Error fetching regulator values:', error);
+    return { energy: 100, confidence: 50 };
+  }
 }
 async function adjustEnergy(db: Database, delta: number) {
-  const { energy } = await getRegulator(db);
-  const newVal = Math.max(0, Math.min(100, energy + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  try {
+    const { energy } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(100, energy + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  } catch (error) {
+    console.error('Error adjusting energy:', error);
+    throw error;
+  }
 }
 
 function describeMood(emotions: any, energy: number) {
@@ -79,20 +104,38 @@ function describeMood(emotions: any, energy: number) {
 }
 
 async function driftEmotions(db: Database) {
-  const emo = await getEmotions(db);
-  if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  try {
+    const emo = await getEmotions(db);
+    if (emo.happy > 7) await updateEmotion(db, "happy", -1).catch(() => {});
+    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1).catch(() => {});
+    if (emo.bad > 0) await updateEmotion(db, "bad", -1).catch(() => {});
+    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1).catch(() => {});
+  } catch (error) {
+    console.error('Error drifting emotions:', error);
+    // Fallback: reset emotions to defaults
+    for (const emotion of EMOTIONS) {
+      await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + emotion, EMO_DEFAULTS[emotion].toString()).run().catch(() => {});
+    }
+  }
 }
 
 async function storeThought(db: Database, content: string) {
-  await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  try {
+    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  } catch (error) {
+    console.error('Error storing thought:', error);
+    throw error;
+  }
 }
 async function recall(db: Database, limit = 10) {
-  const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-  if (!rows.results.length) return "No memories yet.";
-  return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+  try {
+    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
+    if (!rows.results.length) return "No memories yet.";
+    return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+  } catch (error) {
+    console.error('Error recalling memories:', error);
+    return "Error retrieving memories.";
+  }
 }
 
 function isToolSafe(tool: string) {
@@ -109,50 +152,123 @@ function getBrainPhase(emotions: any, reg: any) {
 }
 
 async function getBusyUntil(db: Database) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-  return parseInt(r.results[0]?.value) || 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
+    return parseInt(r.results[0]?.value) || 0;
+  } catch (error) {
+    console.error('Error fetching busy_until:', error);
+    return 0;
+  }
 }
 async function setBusyUntil(db: Database, seconds: number) {
-  const val = Date.now() + seconds * 1000;
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  try {
+    const val = Date.now() + seconds * 1000;
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  } catch (error) {
+    console.error('Error setting busy_until:', error);
+    throw error;
+  }
 }
 
 async function storeStreamThought(db: Database, content: string, mood?: string, source?: string) {
-  try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
+  try {
+    await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run();
+  } catch (error) {
+    console.error('Error storing stream thought:', error);
+    throw error;
+  }
 }
 
 async function applyEvolutionChange(db: Database, proposal: any, proposalId: number, reason?: string) {
-  const change = { title: proposal.title, what: proposal.what_diff || "", how: proposal.how_diff || "", type: proposal.resource_type || "unknown", reason: reason || "self-improvement", risk: proposal.risk_pct || 0, applied_at: new Date().toISOString(), status: "active" };
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')").bind("evolution_log:" + proposalId, JSON.stringify(change)).run();
-  const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-  const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-  overrides.push({ from: proposalId, title: proposal.title, what: proposal.what_diff, how: proposal.how_diff, applied_at: change.applied_at });
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify(overrides)).run();
+  try {
+    const change = {
+      title: proposal.title,
+      what: proposal.what_diff || "",
+      how: proposal.how_diff || "",
+      type: proposal.resource_type || "unknown",
+      reason: reason || "self-improvement",
+      risk: proposal.risk_pct || 0,
+      applied_at: new Date().toISOString(),
+      status: "active"
+    };
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
+      .bind("evolution_log:" + proposalId, JSON.stringify(change))
+      .run();
+
+    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+    overrides.push({
+      from: proposalId,
+      title: proposal.title,
+      what: proposal.what_diff,
+      how: proposal.how_diff,
+      applied_at: change.applied_at
+    });
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+      .bind(JSON.stringify(overrides))
+      .run();
+  } catch (error) {
+    console.error('Error applying evolution change:', error);
+    throw error;
+  }
 }
 
 async function governanceGate(db: Database, resourceType: string, riskPct: number) {
-  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  try {
+    if (riskPct <= 30) {
+      return { action: "auto", reason: `${resourceType} at ${riskPct}% auto-approved (self-evolution)` };
+    } else {
+      return { action: "pending", reason: `${resourceType} at ${riskPct}% requires human approval` };
+    }
+  } catch (error) {
+    console.error('Error in governance gate:', error);
+    return { action: "error", reason: "Governance check failed" };
+  }
 }
 
 async function isKillSwitchActive(db: Database) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-  return r.results[0]?.value === "true";
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+    return r.results[0]?.value === "true";
+  } catch (error) {
+    console.error('Error checking kill switch:', error);
+    return false;
+  }
 }
 
 async function getMasterCronInterval(db: Database) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-  const v = r.results[0]?.value;
-  return v ? parseInt(v) : 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+    const v = r.results[0]?.value;
+    return v ? parseInt(v) : 0;
+  } catch (error) {
+    console.error('Error fetching master cron interval:', error);
+    return 0;
+  }
 }
 async function updateLastCycleTime(db: Database) {
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  try {
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  } catch (error) {
+    console.error('Error updating last cycle time:', error);
+    throw error;
+  }
 }
 async function checkDuplicateProposal(db: Database, title: string, whatDiff: string) {
-  const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-  if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-  const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-  if (receits.results.length) return { duplicate: true, existing: receipts.results[0] };
-  return { duplicate: false };
+  try {
+    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
+    if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
+
+    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
+    if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
+
+    return { duplicate: false };
+  } catch (error) {
+    console.error('Error checking duplicate proposal:', error);
+    return { duplicate: false };
+  }
 }
 
 const SEED_KNOWLEDGE = [
@@ -166,11 +282,4 @@ const SEED_KNOWLEDGE = [
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
   { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
   { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
-  { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
-  { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
-  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
-  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
-  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
-  { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed
+  { k: "governance_cron", c: "C
