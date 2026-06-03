@@ -13,7 +13,27 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS contextual_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, context TEXT NOT NULL, response TEXT, confidence REAL DEFAULT 0.5, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS emotional_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern_name TEXT NOT NULL UNIQUE, emotion_combination TEXT NOT NULL, context_trigger TEXT, response_template TEXT, success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, confidence REAL DEFAULT 0.5, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS graph_updates (id INTEGER PRIMARY KEY AUTOINCREMENT, node_type TEXT NOT NULL, node_id TEXT NOT NULL, operation TEXT NOT NULL, properties TEXT, timestamp TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS meta_learning_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, update_type TEXT NOT NULL, pattern TEXT, confidence_change REAL, success_rate REAL, last_applied TEXT, created_at TEXT DEFAULT (datetime('now')))`
+  `CREATE TABLE IF NOT EXISTS meta_learning_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, update_type TEXT NOT NULL, pattern TEXT, confidence_change REAL, success_rate REAL, last_applied TEXT, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS error_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    error_type TEXT NOT NULL,
+    error_message TEXT,
+    stack_trace TEXT,
+    context TEXT,
+    severity TEXT DEFAULT 'medium',
+    handled INTEGER DEFAULT 0,
+    recovery_action TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS recovery_procedures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    error_type TEXT NOT NULL UNIQUE,
+    procedure TEXT NOT NULL,
+    fallback TEXT,
+    max_retries INTEGER DEFAULT 3,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -29,6 +49,7 @@ async function getEmotions(db) {
   }
   return result;
 }
+
 async function getState(db) {
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
   const emotions = { ...EMO_DEFAULTS };
@@ -43,6 +64,7 @@ async function getState(db) {
   }
   return { emotions, reg };
 }
+
 async function updateEmotion(db, name, delta) {
   const emotions = await getEmotions(db);
   const [min, max] = RANGES[name];
@@ -57,6 +79,7 @@ async function getRegulator(db) {
   for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
   return { energy: vals.energy, confidence: vals.confidence };
 }
+
 async function adjustEnergy(db, delta) {
   const { energy } = await getRegulator(db);
   const newVal = Math.max(0, Math.min(100, energy + delta));
@@ -91,6 +114,7 @@ async function driftEmotions(db) {
 async function storeThought(db, content) {
   await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
 }
+
 async function recall(db, limit = 10) {
   const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
   if (!rows.results.length) return "No memories yet.";
@@ -122,6 +146,7 @@ async function getBusyUntil(db) {
   const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
   return parseInt(r.results[0]?.value) || 0;
 }
+
 async function setBusyUntil(db, seconds) {
   const val = Date.now() + seconds * 1000;
   await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
@@ -154,9 +179,11 @@ async function getMasterCronInterval(db) {
   const v = r.results[0]?.value;
   return v ? parseInt(v) : 0;
 }
+
 async function updateLastCycleTime(db) {
   await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
 }
+
 async function checkDuplicateProposal(db, title, whatDiff) {
   const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
   if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
@@ -378,18 +405,166 @@ async function updateGraphUpdateStats(db, updateType, pattern, confidenceChange,
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
-  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
-  { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
-  { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
-  { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
-  { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
-  { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
-  { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
-  { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
-  { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
-  { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), contextual_rules(pattern recognition). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
-  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
-  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
-  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest
+  { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web. Returns search results.", cat: "tools" },
+  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to fetch content from a URL. Returns page content.", cat: "tools" },
+  { k: "tool_github_read", c: "Use TOOL:github_read:repo:path to read files from GitHub repositories. Returns file content.", cat: "tools" },
+  { k: "error_handling_recovery", c: "When errors occur, attempt recovery procedures from recovery_procedures table. If no procedure exists, log error and continue with fallback behavior.", cat: "error_handling" },
+  { k: "error_classification_system", c: "Errors are classified by type, severity, and context. Use this classification to determine appropriate recovery procedures.", cat: "error_handling" }
+];
+
+async function logError(db, errorType, errorMessage, context = {}, severity = 'medium', stackTrace = null) {
+  try {
+    const errorLog = {
+      error_type: errorType,
+      error_message: errorMessage.substring(0, 500),
+      stack_trace: stackTrace ? stackTrace.substring(0, 1000) : null,
+      context: JSON.stringify(context),
+      severity,
+      handled: 0,
+      created_at: new Date().toISOString()
+    };
+
+    await db.prepare(`
+      INSERT INTO error_logs (error_type, error_message, stack_trace, context, severity, handled, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    `).bind(
+      errorLog.error_type,
+      errorLog.error_message,
+      errorLog.stack_trace,
+      errorLog.context,
+      errorLog.severity,
+      errorLog.handled,
+      errorLog.created_at
+    ).run();
+
+    return errorLog;
+  } catch (e) {
+    console.error("Failed to log error:", e);
+    return null;
+  }
+}
+
+async function getRecoveryProcedure(db, errorType) {
+  const rows = await db.prepare("SELECT * FROM recovery_procedures WHERE error_type = ?1").bind(errorType).all();
+  return rows.results[0] || null;
+}
+
+async function executeRecoveryProcedure(db, errorType, context = {}) {
+  const procedure = await getRecoveryProcedure(db, errorType);
+  if (!procedure) {
+    await logError(db, errorType, "No recovery procedure found", context, 'high');
+    return { success: false, message: "No recovery procedure found", fallback: true };
+  }
+
+  try {
+    const recoveryAction = JSON.parse(procedure.procedure);
+    if (typeof recoveryAction === 'function') {
+      const result = await recoveryAction(db, context);
+      await db.prepare("UPDATE recovery_procedures SET updated_at = datetime('now') WHERE error_type = ?1").bind(errorType).run();
+      return { success: true, message: "Recovery procedure executed", result };
+    } else {
+      await logError(db, errorType, "Invalid recovery procedure format", context, 'high');
+      return { success: false, message: "Invalid recovery procedure format", fallback: true };
+    }
+  } catch (e) {
+    await logError(db, errorType, `Recovery procedure execution failed: ${e.message}`, context, 'high', e.stack);
+    return { success: false, message: `Recovery procedure execution failed: ${e.message}`, fallback: true };
+  }
+}
+
+async function recordErrorRecovery(db, errorType, success, message, context = {}) {
+  await db.prepare(`
+    INSERT INTO error_logs (error_type, error_message, context, severity, handled, recovery_action, created_at)
+    VALUES (?1, ?2, ?3, 'medium', 1, ?4, datetime('now'))
+  `).bind(
+    errorType,
+    message,
+    JSON.stringify(context),
+    success ? "success" : "failed"
+  ).run();
+
+  if (success) {
+    await db.prepare("UPDATE recovery_procedures SET updated_at = datetime('now') WHERE error_type = ?1").bind(errorType).run();
+  }
+}
+
+async function initializeErrorHandling(db) {
+  // Create default recovery procedures
+  const defaultProcedures = [
+    {
+      error_type: 'database_error',
+      procedure: JSON.stringify(async (db, context) => {
+        try {
+          await db.prepare("SELECT 1").run();
+          return { status: "database_healthy" };
+        } catch (e) {
+          return { status: "database_unhealthy", error: e.message };
+        }
+      }),
+      fallback: "Retry operation with exponential backoff",
+      max_retries: 5
+    },
+    {
+      error_type: 'network_error',
+      procedure: JSON.stringify(async (db, context) => {
+        const delay = context.delay || 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return { status: "network_retry", delay };
+      }),
+      fallback: "Use cached data if available",
+      max_retries: 3
+    },
+    {
+      error_type: 'timeout_error',
+      procedure: JSON.stringify(async (db, context) => {
+        const newTimeout = (context.timeout || 5000) * 2;
+        return { status: "timeout_increased", new_timeout: newTimeout };
+      }),
+      fallback: "Reduce operation complexity",
+      max_retries: 2
+    },
+    {
+      error_type: 'unknown_error',
+      procedure: JSON.stringify(async (db, context) => {
+        return { status: "logged_and_continued" };
+      }),
+      fallback: "Continue with default behavior",
+      max_retries: 1
+    }
+  ];
+
+  for (const proc of defaultProcedures) {
+    try {
+      await db.prepare(`
+        INSERT INTO recovery_procedures (error_type, procedure, fallback, max_retries, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+        ON CONFLICT(error_type) DO UPDATE SET
+          procedure = ?2,
+          fallback = ?3,
+          max_retries = ?4,
+          updated_at = datetime('now')
+      `).bind(
+        proc.error_type,
+        proc.procedure,
+        proc.fallback,
+        proc.max_retries
+      ).run();
+    } catch (e) {
+      console.error(`Failed to initialize recovery procedure for ${proc.error_type}:`, e);
+    }
+  }
+}
+
+async function handleErrorWithRecovery(db, errorType, operation, context = {}) {
+  const errorLog = await logError(db, errorType, `Operation failed: ${operation}`, context, 'medium');
+
+  const recoveryResult = await executeRecoveryProcedure(db, errorType, context);
+
+  if (recoveryResult.success) {
+    await recordErrorRecovery(db, errorType, true, `Successfully recovered from ${errorType}`, context);
+    return { success: true, message: "Operation recovered", recovery: recoveryResult };
+  } else {
+    await recordErrorRecovery(db, errorType, false, `Failed to recover from ${errorType}: ${recoveryResult.message}`, context);
+    return { success: false, message: recoveryResult.fallback ? recoveryResult.message : "Operation failed", recovery: recoveryResult };
+  }
+}
