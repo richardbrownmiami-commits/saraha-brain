@@ -692,6 +692,16 @@ export default {
       return json({ base: "You are Saraha, an AI with a human brain with emotions, energy, memories, and tools.", overrides, changes });
     }
 
+    if (url.pathname === "/brain/backup") {
+      const prev = await env.DB.prepare("SELECT value FROM identity WHERE key='prev_code'").all();
+      if (prev.results[0]?.value) return json({ content: prev.results[0].value, source: "d1_backup" });
+      const r = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }
+      });
+      if (!r.ok) return json({ error: "no backup available" }, 404);
+      return json({ content: await r.text(), source: "github_live" });
+    }
+
     if (url.pathname === "/brain/github/read") {
       const repo = url.searchParams.get("repo") || "richardbrownmiami-commits/saraha-brain";
       const path = url.searchParams.get("path") || "src/index.ts";
@@ -851,13 +861,39 @@ export default {
       const text = data.choices?.[0]?.message?.content || "";
       if (text.includes("TOOL:github_write:")) {
         const input = text.slice(text.indexOf("TOOL:github_write:") + 18).split("\n")[0].trim();
+        let backupText = null, backupSha = null;
+        try {
+          const gRes = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes.ok) backupText = await gRes.text();
+          const gRes2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes2.ok) { const gd = await gRes2.json(); backupSha = gd.sha; }
+        } catch {}
         const result = await githubWrite(env, input);
-        await storeStreamThought(env.DB, "Auto code change: " + result.slice(0, 80), "happy", "evolve");
-        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
-        const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'tool_code',0,'auto') RETURNING id").bind(result.slice(0,60), "Code change: " + result, result).all();
-        await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
-        await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
-        await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_code_change',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+        if (result.startsWith("Written")) {
+          let healthy = false;
+          try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(5000) }); healthy = h.ok; } catch {}
+          if (!healthy && backupText) {
+            await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|rollback: unhealthy after auto-code change|" + backupText);
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy code change, sha='||?2)").bind(stamp, backupSha||"").run(); } catch {}
+            await storeStreamThought(env.DB, "Rolled back: brain unhealthy after code change", "bad", "evolve");
+          } else {
+            await storeStreamThought(env.DB, "Auto code change: " + result.slice(0, 80), "happy", "evolve");
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+            if (backupText) {
+              try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+            }
+            const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'tool_code',0,'auto') RETURNING id").bind(result.slice(0,60), "Code change: " + result, result).all();
+            await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+            await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_code_change',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+          }
+        } else {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write_fail',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+        }
       } else {
       let proposal;
       try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
