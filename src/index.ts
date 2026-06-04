@@ -395,62 +395,62 @@ async function analyzeGraphUpdatePatterns(db) {
   }
 }
 
+async function generatePrompt(db, context, topic, intent) {
+  // Enhanced prompt generation using contextual and emotional analysis
+  const { emotions, reg } = await getState(db);
+  const contextualCue = await analyzeContextualCue(db, context);
+  const emotionalPattern = await analyzeEmotionalPattern(db, emotions, context);
+
+  // Base prompt components
+  let promptParts = [];
+
+  // Add contextual understanding
+  if (contextualCue.detected) {
+    promptParts.push(`[Contextual Rule: ${contextualCue.pattern}] ${contextualCue.response}`);
+  }
+
+  // Add emotional awareness
+  if (emotionalPattern.detected) {
+    promptParts.push(`[Emotional Pattern: ${emotionalPattern.pattern_name}] ${emotionalPattern.response_template}`);
+  }
+
+  // Add current state information
+  promptParts.push(`Current state: ${describeMood(emotions, reg.energy)} Energy: ${reg.energy}, Confidence: ${reg.confidence}`);
+
+  // Add topic and intent with enhanced framing
+  promptParts.push(`Topic: ${topic}`);
+  promptParts.push(`Intent: ${intent}`);
+
+  // Generate the final prompt with RNN-enhanced language model integration
+  const enhancedContext = promptParts.join("\n");
+  const prompt = await generateEnhancedPrompt(enhancedContext, topic, intent);
+
+  return prompt;
+}
+
+async function generateEnhancedPrompt(context, topic, intent) {
+  // This would integrate with a pre-trained language model like BERT or RoBERTa
+  // For now, we'll simulate an enhanced prompt generation
+
+  // Simulate RNN-based prompt generation with attention to context
+  const promptTemplates = [
+    `Given the context: "${context}", please provide a detailed response about ${topic} with the intent to ${intent}. Consider the emotional and contextual factors mentioned above.`,
+    `Analyzing the situation: ${context}, respond to ${topic} with the goal of ${intent}. Take into account the current emotional state and any relevant patterns.`,
+    `With the following background: ${context}, address ${topic} while focusing on ${intent}. Your response should reflect the nuanced understanding of the context and emotions.`
+  ];
+
+  // Select template based on context length and complexity
+  if (context.length > 200) {
+    return promptTemplates[1];
+  } else if (context.length > 100) {
+    return promptTemplates[2];
+  }
+  return promptTemplates[0];
+}
+
 async function updateGraphUpdateStats(db, updateType, pattern, confidenceChange, successRate) {
   await db.prepare(`
     INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
     VALUES (?1, ?2, ?3, ?4, datetime('now'))
   `).bind(updateType, pattern, confidenceChange, successRate).run();
-}
-
-async function analyzeSemanticRoles(db, text) {
-  try {
-    const response = await fetch('http://localhost:8000/semantic-role-labeling', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-
-    if (!response.ok) throw new Error('SRL service unavailable');
-
-    const result = await response.json();
-    return result.roles || [];
-  } catch (error) {
-    console.error('Semantic Role Labeling failed:', error);
-    return [];
-  }
-}
-
-async function resolveCoreferences(db, text) {
-  try {
-    const response = await fetch('http://localhost:8000/coreference-resolution', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-
-    if (!response.ok) throw new Error('Coreference service unavailable');
-
-    const result = await response.json();
-    return result.coreferences || [];
-  } catch (error) {
-    console.error('Coreference resolution failed:', error);
-    return [];
-  }
-}
-
-async function enhanceContextWithSemantics(db, inputText) {
-  const semanticRoles = await analyzeSemanticRoles(db, inputText);
-  const coreferences = await resolveCoreferences(db, inputText);
-
-  let enhancedContext = inputText;
-
-  if (semanticRoles.length > 0) {
-    enhancedContext += `\n\nSemantic Roles Analysis:\n${JSON.stringify(semanticRoles, null, 2)}`;
-  }
-
-  if (coreferences.length > 0) {
-    enhancedContext += `\n\nCoreference Resolution:\n${JSON.stringify(coreferences, null, 2)}`;
-  }
-
-  return enhancedContext;
 }
