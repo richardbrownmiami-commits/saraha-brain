@@ -42,6 +42,18 @@ const TABLES = [
     max_retries INTEGER DEFAULT 3,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS tool_recovery_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name TEXT NOT NULL UNIQUE,
+    max_retries INTEGER DEFAULT 3,
+    initial_delay_ms INTEGER DEFAULT 100,
+    backoff_factor REAL DEFAULT 2.0,
+    fallback_tool TEXT,
+    notify_user INTEGER DEFAULT 0,
+    recovery_strategy TEXT DEFAULT 'exponential_backoff',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
   )`
 ];
 
@@ -67,6 +79,15 @@ class DatabaseConstraintError extends Error {
   constructor(message) {
     super(message);
     this.name = "DatabaseConstraintError";
+  }
+}
+
+class ToolRecoveryError extends Error {
+  constructor(message, toolName, originalError) {
+    super(message);
+    this.name = "ToolRecoveryError";
+    this.toolName = toolName;
+    this.originalError = originalError;
   }
 }
 
@@ -174,13 +195,128 @@ async function executeRecoveryProcedure(db, errorType, fallbackFunction, ...args
   }
 }
 
+async function addToolRecoveryRules(db) {
+  try {
+    // Check if recovery rules already exist
+    const existingRules = await db.prepare("SELECT COUNT(*) as count FROM tool_recovery_rules").bind().first().then(r => r.count);
+
+    if (existingRules === 0) {
+      // Insert default recovery rules for critical tools
+      const defaultRules = [
+        {
+          tool_name: 'web_search',
+          max_retries: 5,
+          initial_delay_ms: 200,
+          backoff_factor: 2.5,
+          fallback_tool: 'fallback_web_search',
+          notify_user: 1,
+          recovery_strategy: 'exponential_backoff_with_fallback'
+        },
+        {
+          tool_name: 'web_fetch',
+          max_retries: 3,
+          initial_delay_ms: 150,
+          backoff_factor: 2.0,
+          fallback_tool: null,
+          notify_user: 0,
+          recovery_strategy: 'exponential_backoff'
+        },
+        {
+          tool_name: 'github_read',
+          max_retries: 3,
+          initial_delay_ms: 100,
+          backoff_factor: 2.0,
+          fallback_tool: null,
+          notify_user: 0,
+          recovery_strategy: 'exponential_backoff'
+        },
+        {
+          tool_name: 'github_write',
+          max_retries: 3,
+          initial_delay_ms: 100,
+          backoff_factor: 2.0,
+          fallback_tool: null,
+          notify_user: 1,
+          recovery_strategy: 'exponential_backoff'
+        },
+        {
+          tool_name: 'code_interpreter',
+          max_retries: 4,
+          initial_delay_ms: 300,
+          backoff_factor: 3.0,
+          fallback_tool: null,
+          notify_user: 1,
+          recovery_strategy: 'exponential_backoff'
+        }
+      ];
+
+      for (const rule of defaultRules) {
+        await db.prepare(`
+          INSERT INTO tool_recovery_rules
+          (tool_name, max_retries, initial_delay_ms, backoff_factor, fallback_tool, notify_user, recovery_strategy, created_at, updated_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
+        `).bind(
+          rule.tool_name,
+          rule.max_retries,
+          rule.initial_delay_ms,
+          rule.backoff_factor,
+          rule.fallback_tool,
+          rule.notify_user,
+          rule.recovery_strategy
+        ).run();
+      }
+
+      console.log('Added default tool recovery rules');
+    }
+  } catch (error) {
+    await logError(db, 'addToolRecoveryRules', error, { context: 'initial setup' });
+    throw error;
+  }
+}
+
+async function getRecoveryStrategy(db, toolName) {
+  try {
+    const result = await db.prepare(`
+      SELECT max_retries, initial_delay_ms, backoff_factor, fallback_tool, notify_user, recovery_strategy
+      FROM tool_recovery_rules
+      WHERE tool_name = ?1
+    `).bind(toolName).all();
+
+    if (result.results.length > 0) {
+      return result.results[0];
+    }
+
+    // Return default strategy if no specific rule exists
+    return {
+      max_retries: 3,
+      initial_delay_ms: 100,
+      backoff_factor: 2.0,
+      fallback_tool: null,
+      notify_user: 0,
+      recovery_strategy: 'exponential_backoff'
+    };
+  } catch (error) {
+    await logError(db, 'getRecoveryStrategy', error, { toolName });
+    // Return conservative defaults on error
+    return {
+      max_retries: 3,
+      initial_delay_ms: 100,
+      backoff_factor: 2.0,
+      fallback_tool: null,
+      notify_user: 0,
+      recovery_strategy: 'exponential_backoff'
+    };
+  }
+}
+
 async function isToolRecoverable(db, toolName, error) {
   try {
     const toolRules = {
       web_search: ['TemporaryNetworkError', 'RateLimitError'],
       github_write: ['DatabaseConstraintError', 'TemporaryNetworkError'],
       github_read: ['TemporaryNetworkError'],
-      web_fetch: ['TemporaryNetworkError', 'RateLimitError']
+      web_fetch: ['TemporaryNetworkError', 'RateLimitError'],
+      code_interpreter: ['TemporaryNetworkError']
     };
 
     if (toolRules[toolName]?.includes(error.name)) {
@@ -197,62 +333,107 @@ async function isToolRecoverable(db, toolName, error) {
   }
 }
 
-async function invokeToolWithRecovery(db, toolName, args, maxRetries = 3) {
+async function invokeToolWithRecovery(db, toolName, args, context = {}) {
   let lastError, retryCount = 0;
-  const tool = { func: eval(toolName) };
+  const strategy = await getRecoveryStrategy(db, toolName);
 
-  while (retryCount < maxRetries) {
+  while (retryCount < strategy.max_retries) {
     try {
+      const tool = { func: eval(toolName) };
       const result = await tool.func(db, ...args);
 
       if (result?.error) {
         const error = new Error(result.error.message || 'Tool error');
         error.name = result.error.type || 'ToolError';
-        error.context = { tool: toolName, args };
+        error.context = { tool: toolName, args, attempt: retryCount + 1 };
 
         if (await isToolRecoverable(db, toolName, error)) {
           retryCount++;
-          const delay = Math.pow(2, retryCount) * 100 + Math.random() * 100;
+          const delay = Math.pow(strategy.backoff_factor, retryCount) * strategy.initial_delay_ms + Math.random() * 100;
           await new Promise(resolve => setTimeout(resolve, delay));
+
+          // Log recovery attempt
+          await storeBrainLog(db, null, toolName, 'recovery_attempt', {
+            error_type: error.name,
+            attempt: retryCount,
+            delay_ms: delay,
+            strategy: strategy.recovery_strategy
+          });
+
           continue;
         }
 
         await logError(db, 'invokeToolWithRecovery', error, {
           tool: toolName,
           attempt: retryCount + 1,
-          maxRetries
+          maxRetries: strategy.max_retries
         });
         return { error, shouldEscalate: true };
       }
+
+      // Log successful execution
+      await storeBrainLog(db, null, toolName, 'tool_success', {
+        tokens: result.tokens || 0,
+        attempt: retryCount + 1
+      });
 
       return result;
     } catch (error) {
       lastError = error;
       error.context = { tool: toolName, args, attempt: retryCount + 1 };
 
-      if (await isToolRecoverable(db, toolName, error) && retryCount < maxRetries - 1) {
+      if (await isToolRecoverable(db, toolName, error) && retryCount < strategy.max_retries - 1) {
         retryCount++;
-        const delay = Math.pow(2, retryCount) * 100 + Math.random() * 100;
+        const delay = Math.pow(strategy.backoff_factor, retryCount) * strategy.initial_delay_ms + Math.random() * 100;
         await new Promise(resolve => setTimeout(resolve, delay));
+
+        // Log recovery attempt
+        await storeBrainLog(db, null, toolName, 'recovery_attempt', {
+          error_type: error.name,
+          attempt: retryCount,
+          delay_ms: delay,
+          strategy: strategy.recovery_strategy
+        });
+
         continue;
       }
 
       await logError(db, 'invokeToolWithRecovery', error, {
         tool: toolName,
         attempt: retryCount + 1,
-        maxRetries
+        maxRetries: strategy.max_retries
       });
       return { error: lastError, shouldEscalate: true };
     }
   }
 
-  const error = new Error('Max retries exceeded');
-  error.name = 'MaxRetriesExceeded';
-  error.context = { tool: toolName, args, retries: maxRetries };
+  const error = new ToolRecoveryError('Max retries exceeded', toolName, lastError);
+  error.context = { tool: toolName, args, retries: strategy.max_retries };
   await logError(db, 'invokeToolWithRecovery', error, {
     tool: toolName,
-    retries: maxRetries
+    retries: strategy.max_retries
   });
+
+  // Attempt fallback if available
+  if (strategy.fallback_tool) {
+    try {
+      const fallbackResult = await invokeToolWithRecovery(db, strategy.fallback_tool, args, context);
+      if (!fallbackResult.error) {
+        await storeBrainLog(db, null, toolName, 'fallback_success', {
+          fallback_tool: strategy.fallback_tool,
+          original_tool: toolName
+        });
+        return fallbackResult;
+      }
+    } catch (fallbackError) {
+      await logError(db, 'invokeToolWithRecovery', fallbackError, {
+        tool: toolName,
+        fallback_tool: strategy.fallback_tool,
+        context: 'fallback execution failed'
+      });
+    }
+  }
+
   return { error, shouldEscalate: true };
 }
 
@@ -274,6 +455,48 @@ async function getRecentToolErrors(db, toolName, limit = 5) {
   }
 }
 
+async function fallback_web_search(db, query, context = {}) {
+  try {
+    // Use Brave Search API as fallback
+    const braveApiKey = process.env.BRAVE_SEARCH_API_KEY;
+    if (!braveApiKey) {
+      throw new Error('Brave Search API key not configured');
+    }
+
+    const url = `https://api.brave.com/search?q=${encodeURIComponent(query)}&count=5`;
+    const response = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'X-Subscription-Token': braveApiKey
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Brave API request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Format results similar to primary web_search
+    const results = data.web?.results?.map(item => ({
+      title: item.title,
+      url: item.url,
+      description: item.description,
+      content: item.page_age ? `Page age: ${item.page_age}` : null
+    })) || [];
+
+    return {
+      results,
+      query,
+      source: 'brave_fallback',
+      fallback_used: true
+    };
+  } catch (error) {
+    await logError(db, 'fallback_web_search', error, { query });
+    throw error;
+  }
+}
+
 async function github_write(db, input, context = {}) {
   return invokeToolWithRecovery(db, 'github_write', [input, context]);
 }
@@ -288,6 +511,10 @@ async function web_search(db, query, context = {}) {
 
 async function web_fetch(db, url, context = {}) {
   return invokeToolWithRecovery(db, 'web_fetch', [url, context]);
+}
+
+async function code_interpreter(db, code, context = {}) {
+  return invokeToolWithRecovery(db, 'code_interpreter', [code, context]);
 }
 
 async function getEmotions(db) {
@@ -475,44 +702,31 @@ async function storeThought(db, content, action_id = null, tool = 'cognition') {
   }
 }
 
-async function recall(db, limit = 10) {
+async function storeBrainLog(db, action_id, tool, step, metadata = {}) {
   try {
-    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-    if (!rows.results.length) return "No memories yet.";
-    return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+    await db.prepare(`
+      INSERT INTO brain_logs
+      (action_id, tool, step, content, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+    `).bind(
+      action_id,
+      tool,
+      step,
+      JSON.stringify(metadata)
+    ).run();
   } catch (error) {
-    await logError(db, 'recall', error, { limit });
+    await logError(db, 'storeBrainLog', error, { action_id, tool, step, metadata });
     throw error;
   }
 }
 
-function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
-  return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
-}
-
-async function getBrainPhase(db, emotions, reg) {
+async function recall(db, limit = 10) {
   try {
-    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-    if (ov.results[0]?.value) {
-      try {
-        const o = JSON.parse(ov.results[0].value);
-        if (o.until > Date.now()) return o.phase;
-        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-      } catch (e) {
-        await logError(db, 'getBrainPhase', e, { override: ov.results[0]?.value });
-      }
-    }
-
-    if (emotions.bad >= 2) return "recovery";
-    if (emotions.anxious >= 7) return "panic";
-    if (reg.energy < 20) return "sleep";
-    if (reg.focus < 3 && emotions.focused < 4) return "distracted";
-    if (emotions.energetic < 3 && reg.energy < 40) return "lethargic";
-    if (emotions.bored >= 7 && emotions.excited < 4) return "bored";
-    return "default";
+    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
+    if (!rows.results.length) return [];
+    return rows.results;
   } catch (error) {
-    await logError(db, 'getBrainPhase', error, { emotions, reg });
-    return "default";
+    await logError(db, 'recall', error, { limit });
+    return [];
   }
 }
