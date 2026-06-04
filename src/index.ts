@@ -532,6 +532,47 @@ async function code_interpreter(db, code, context = {}) {
   return invokeToolWithRecovery(db, 'code_interpreter', [code, context]);
 }
 
+async function apiProbe(db, url, method = 'GET', headers = {}, body = null) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const options = {
+      method,
+      headers,
+      signal: controller.signal
+    };
+
+    if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+      options.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }
+
+    const response = await fetch(url, options);
+    clearTimeout(timeoutId);
+
+    const responseHeaders = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+
+    let responseBody = await response.text();
+    if (responseBody.length > 5000) {
+      responseBody = responseBody.substring(0, 5000) + '... [truncated]';
+    }
+
+    return {
+      status: response.status,
+      headers: responseHeaders,
+      body: responseBody
+    };
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new TemporaryNetworkError('Request timeout after 15 seconds');
+    }
+    throw error;
+  }
+}
+
 async function getEmotions(db) {
   try {
     const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
@@ -957,3 +998,146 @@ async function addThought(db, content, mood = 'neutral', energy = null, phase = 
 
 async function getProposals(db, status = null) {
   try {
+    let query = "SELECT id, title, what_diff, how_diff, resource_type, risk_pct, status, research_sources, created_at, decided_at, executed_at FROM proposals";
+    const binds = [];
+
+    if (status) {
+      query += " WHERE status = ?1";
+      binds.push(status);
+    }
+
+    query += " ORDER BY created_at DESC";
+
+    const rows = await db.prepare(query).bind(...binds).all();
+    return rows.results.map(row => ({
+      id: row.id,
+      title: row.title,
+      what_diff: row.what_diff,
+      how_diff: row.how_diff,
+      resource_type: row.resource_type,
+      risk_pct: row.risk_pct,
+      status: row.status,
+      research_sources: JSON.parse(row.research_sources),
+      created_at: row.created_at,
+      decided_at: row.decided_at,
+      executed_at: row.executed_at
+    }));
+  } catch (error) {
+    await logError(db, 'getProposals', error, { status });
+    return [];
+  }
+}
+
+const isToolSafe = {
+  web_search: true,
+  web_fetch: true,
+  github_read: false,
+  github_write: false,
+  code_interpreter: false,
+  api_probe: true
+};
+
+async function runTool(db, tool, input) {
+  try {
+    switch (tool) {
+      case 'web_search':
+        return await web_search(db, input);
+      case 'web_fetch':
+        return await web_fetch(db, input);
+      case 'github_read':
+        return await github_read(db, input);
+      case 'github_write':
+        return await github_write(db, input);
+      case 'code_interpreter':
+        return await code_interpreter(db, input);
+      case 'api_probe':
+        return await apiProbe(db, input.url, input.method, input.headers, input.body);
+      default:
+        throw new Error(`Unknown tool: ${tool}`);
+    }
+  } catch (error) {
+    await logError(db, 'runTool', error, { tool, input });
+    return { error: error.message };
+  }
+}
+
+const SEED_KNOWLEDGE = `
+You are Saraha, a highly intelligent AI assistant with advanced reasoning capabilities and a wide range of tools at your disposal.
+
+You have access to the following tools:
+- web_search: Search the web for information
+- web_fetch: Fetch content from a specific URL
+- github_read: Read content from GitHub repositories
+- github_write: Write content to GitHub repositories
+- code_interpreter: Execute code safely
+- api_probe: Test and access free APIs (Safe=true, read-only)
+
+You can use these tools to gather information, perform tasks, and solve complex problems. Always consider the safety and ethical implications of your actions.
+
+When using tools, provide clear and specific inputs. For the api_probe tool, you can specify:
+- url: The API endpoint to test
+- method: HTTP method (GET/POST/PUT/DELETE/etc)
+- headers: Request headers as key-value pairs
+- body: Request body for POST/PUT requests
+
+Remember to:
+1. Analyze the user's request carefully
+2. Determine if tools are needed
+3. Use the most appropriate tool for the task
+4. Provide clear reasoning for your actions
+5. Present the final result in a helpful and informative way
+`;
+
+export {
+  TABLES,
+  EMOTIONS,
+  RANGES,
+  EMO_DEFAULTS,
+  EMO_DECAY,
+  TemporaryNetworkError,
+  RateLimitError,
+  DatabaseConstraintError,
+  ToolRecoveryError,
+  logError,
+  getRecoveryProcedure,
+  executeRecoveryProcedure,
+  addToolRecoveryRules,
+  getRecoveryStrategy,
+  isToolRecoverable,
+  invokeToolWithRecovery,
+  getRecentToolErrors,
+  fallback_web_search,
+  github_write,
+  github_read,
+  web_search,
+  web_fetch,
+  code_interpreter,
+  apiProbe,
+  getEmotions,
+  setEmotion,
+  decayEmotions,
+  getIdentity,
+  setIdentity,
+  getBrainKnowledge,
+  setBrainKnowledge,
+  searchBrainKnowledge,
+  storeBrainLog,
+  getContextualRules,
+  addContextualRule,
+  updateContextualRuleUsage,
+  getLearnings,
+  recordLearning,
+  getMemories,
+  addMemory,
+  updateMemoryStrength,
+  searchMemories,
+  getPendingActions,
+  updateActionStatus,
+  createAction,
+  getThoughtStream,
+  addThought,
+  getProposals,
+  isToolSafe,
+  runTool,
+  SEED_KNOWLEDGE
+};
