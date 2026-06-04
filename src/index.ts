@@ -74,6 +74,7 @@ const TABLES = [
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited", "relaxed", "focused", "anxious"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [0, 10], bored: [1, 10], excited: [1, 10], relaxed: [1, 10], focused: [1,  10], anxious: [0, 10] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, relaxed: 5, focused: 5, anxious: 0 };
+const EMO_DECAY = { happy: 0.05, bad: 0.2, energetic: 0.03, intelligent: 0.01, curious: 0.04, bored: 0.06, excited: 0.05, relaxed: 0.02, focused: 0.03, anxious: 0.07 };
 
 class TemporaryNetworkError extends Error {
   constructor(message) {
@@ -548,48 +549,37 @@ async function getEmotions(db) {
 
 async function getEmotionValue(db, emotion) {
   const emotions = await getEmotions(db);
-  return emotions[emotion] || EMO_DEFAULTS[emotion] || 5;
+  return emotions[emotion] || EMO_DEFAULTS[emotion];
 }
 
-async function setEmotionValue(db, emotion, value) {
+async function updateEmotion(db, emotion, delta) {
   try {
     const current = await getEmotionValue(db, emotion);
-    const newValue = Math.min(Math.max(value, RANGES[emotion][0]), RANGES[emotion][1]);
-    if (Math.abs(newValue - current) > 0.5) {
-      await db.prepare("INSERT OR REPLACE INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now'))")
-        .bind(`emotion_${emotion}`, newValue.toString()).run();
-      return newValue;
-    }
-    return current;
+    const [min, max] = RANGES[emotion];
+    const newValue = Math.max(min, Math.min(max, current + delta));
+    await db.prepare(`
+      INSERT INTO identity (key, value, updated_at)
+      VALUES (?1, ?2, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
+    `).bind(`emotion_${emotion}`, newValue.toString()).run();
+    return newValue;
   } catch (error) {
-    await logError(db, 'setEmotionValue', error, { emotion, value });
-    return value;
+    await logError(db, 'updateEmotion', error, { emotion, delta });
+    throw error;
   }
 }
 
-async function adjustEmotion(db, emotion, delta) {
-  const current = await getEmotionValue(db, emotion);
-  return setEmotionValue(db, emotion, current + delta);
-}
-
-async function getMood(db) {
-  const emotions = await getEmotions(db);
-  const weights = { happy: 0.4, energetic: 0.3, relaxed: 0.2, anxious: -0.2, bad: -0.5 };
-  let score = 0;
-  let totalWeight = 0;
-  for (const [emotion, weight] of Object.entries(weights)) {
-    score += emotions[emotion] * weight;
-    totalWeight += Math.abs(weight);
+async function driftEmotions(db) {
+  const emo = await getEmotions(db);
+  for (const [name, decayRate] of Object.entries(EMO_DECAY)) {
+    const [min, max] = RANGES[name];
+    const decay = decayRate * (emo[name] - (name === 'bad' ? 0 : 5));
+    const newVal = Math.max(min, Math.min(max, emo[name] - decay + (Math.random() < 0.1 ? 1 : 0)));
+    await updateEmotion(db, name, newVal - emo[name]);
   }
-  score /= totalWeight;
-  if (score > 7) return "ecstatic";
-  if (score > 5) return "happy";
-  if (score > 3) return "neutral";
-  if (score > 1) return "sad";
-  return "depressed";
 }
 
-async function storeBrainLog(db, actionId, tool, step, content, model, tokens) {
+async function storeBrainLog(db, actionId, tool, step, content = {}, model = null, tokens = 0) {
   try {
     await db.prepare(`
       INSERT INTO brain_logs
@@ -599,173 +589,360 @@ async function storeBrainLog(db, actionId, tool, step, content, model, tokens) {
       actionId,
       tool,
       step,
-      typeof content === 'string' ? content : JSON.stringify(content),
+      JSON.stringify(content),
       model,
-      tokens || 0
+      tokens
     ).run();
   } catch (error) {
     await logError(db, 'storeBrainLog', error, { actionId, tool, step });
   }
 }
 
-async function getSEED_KNOWLEDGE(db) {
+async function getBrainLog(db, actionId) {
   try {
-    const result = await db.prepare("SELECT key, content FROM brain_knowledge WHERE source = 'seed'").all();
-    const knowledge = {};
-    for (const row of result.results) {
-      knowledge[row.key] = row.content;
-    }
-    return knowledge;
+    const result = await db.prepare(`
+      SELECT * FROM brain_logs WHERE action_id = ?1 ORDER BY created_at
+    `).bind(actionId).all();
+    return result.results || [];
   } catch (error) {
-    await logError(db, 'getSEED_KNOWLEDGE', error);
-    return {};
+    await logError(db, 'getBrainLog', error, { actionId });
+    return [];
   }
 }
 
-async function getGovernanceRules(db) {
+async function createProposal(db, title, whatDiff, howDiff, resourceType, riskPct = 0, researchSources = []) {
   try {
-    const result = await db.prepare("SELECT key, content FROM brain_knowledge WHERE category = 'governance'").all();
-    const rules = {};
-    for (const row of result.results) {
-      rules[row.key] = row.content;
-    }
-    return rules;
+    const result = await db.prepare(`
+      INSERT INTO proposals
+      (title, what_diff, how_diff, resource_type, risk_pct, research_sources, status, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', datetime('now'))
+    `).bind(
+      title,
+      whatDiff,
+      howDiff,
+      resourceType,
+      riskPct,
+      JSON.stringify(researchSources)
+    ).run();
+
+    return result.lastInsertRowid;
   } catch (error) {
-    await logError(db, 'getGovernanceRules', error);
-    return {};
+    await logError(db, 'createProposal', error, { title, resourceType });
+    throw error;
   }
 }
 
-async function isToolSafe(db, toolName, input) {
-  try {
-    const rules = await getGovernanceRules(db);
-    const safetyRules = rules.tool_safety || {};
-
-    if (safetyRules[toolName] === false) {
-      return false;
-    }
-
-    if (safetyRules[toolName] && typeof safetyRules[toolName] === 'string') {
-      const regex = new RegExp(safetyRules[toolName]);
-      return !regex.test(input);
-    }
-
-    return true;
-  } catch (error) {
-    await logError(db, 'isToolSafe', error, { toolName, input });
-    return false;
-  }
-}
-
-async function web_fetch(db, url, context = {}) {
-  try {
-    // Validate URL format
-    if (!url || typeof url !== 'string') {
-      throw new Error('Invalid URL: must be a non-empty string');
-    }
-
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(url);
-    } catch (e) {
-      throw new Error('Invalid URL format');
-    }
-
-    // Only allow http/https URLs
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      throw new Error('Only HTTP/HTTPS URLs are allowed');
-    }
-
-    const braveApiKey = process.env.BRAVE_SEARCH_API_KEY;
-    if (!braveApiKey) {
-      throw new Error('Brave Search API key not configured');
-    }
-
-    // Fetch full page content using Brave's web_fetch endpoint
-    const fetchUrl = `https://api.brave.com/web_fetch?url=${encodeURIComponent(url)}`;
-    const response = await fetch(fetchUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'X-Subscription-Token': braveApiKey
-      }
-    });
-
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new RateLimitError('Rate limit exceeded for web_fetch');
-      }
-      throw new Error(`Brave API request failed with status ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Extract clean text content from the response
-    const content = data?.content?.text || data?.text || '';
-
-    // Return structured response
-    return {
-      url,
-      content,
-      title: data?.metadata?.title || '',
-      language: data?.metadata?.language || 'unknown',
-      status: 'success',
-      source: 'brave_web_fetch',
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    if (error.name === 'RateLimitError') {
-      throw error;
-    }
-    if (error.name === 'TemporaryNetworkError') {
-      throw error;
-    }
-
-    await logError(db, 'web_fetch', error, { url, context });
-    return {
-      url,
-      error: error.message,
-      status: 'failed',
-      source: 'brave_web_fetch'
-    };
-  }
-}
-
-async function updateSEED_KNOWLEDGE(db, key, content, category = 'general') {
+async function updateProposalStatus(db, proposalId, status, decidedAt = null) {
   try {
     await db.prepare(`
-      INSERT OR REPLACE INTO brain_knowledge
-      (key, content, category, source, created_at)
-      VALUES (?1, ?2, ?3, 'seed', datetime('now'))
-    `).bind(key, content, category).run();
-    return true;
+      UPDATE proposals
+      SET status = ?1, decided_at = ?2
+      WHERE id = ?3
+    `).bind(
+      status,
+      decidedAt || new Date().toISOString(),
+      proposalId
+    ).run();
   } catch (error) {
-    await logError(db, 'updateSEED_KNOWLEDGE', error, { key, category });
-    return false;
+    await logError(db, 'updateProposalStatus', error, { proposalId, status });
+    throw error;
   }
 }
 
-const TOOLS = [
-  { name: 'github_write', description: 'Write to a GitHub repository', func: github_write, parameters: { type: 'object', properties: { input: { type: 'string' }, context: { type: 'object' } }, required: ['input'] } },
-  { name: 'github_read', description: 'Read from a GitHub repository', func: github_read, parameters: { type: 'object', properties: { input: { type: 'string' }, context: { type: 'object' } }, required: ['input'] } },
-  { name: 'web_search', description: 'Search the web for information', func: web_search, parameters: { type: 'object', properties: { query: { type: 'string' }, context: { type: 'object' } }, required: ['query'] } },
-  { name: 'web_fetch', description: 'Fetch full content from a web page', func: web_fetch, parameters: { type: 'object', properties: { url: { type: 'string' }, context: { type: 'object' } }, required: ['url'] } },
-  { name: 'code_interpreter', description: 'Execute code safely', func: code_interpreter, parameters: { type: 'object', properties: { code: { type: 'string' }, context: { type: 'object' } }, required: ['code'] } }
-];
+async function executeProposal(db, proposalId) {
+  try {
+    const proposal = await db.prepare(`
+      SELECT * FROM proposals WHERE id = ?1
+    `).bind(proposalId).first();
 
-async function getTools(db) {
-  return TOOLS;
+    if (!proposal) {
+      throw new Error('Proposal not found');
+    }
+
+    await updateProposalStatus(db, proposalId, 'executed', new Date().toISOString());
+    return { success: true, proposal };
+  } catch (error) {
+    await logError(db, 'executeProposal', error, { proposalId });
+    throw error;
+  }
 }
 
-async function getRandomTool(db) {
-  const tools = await getTools(db);
-  return tools[Math.floor(Math.random() * tools.length)];
+async function getIdentity(db, key) {
+  try {
+    const result = await db.prepare(`
+      SELECT value FROM identity WHERE key = ?1
+    `).bind(key).first();
+    return result?.value || null;
+  } catch (error) {
+    await logError(db, 'getIdentity', error, { key });
+    return null;
+  }
 }
 
-async function getToolByName(db, name) {
-  const tools = await getTools(db);
-  return tools.find(t => t.name === name);
+async function setIdentity(db, key, value) {
+  try {
+    await db.prepare(`
+      INSERT INTO identity (key, value, updated_at)
+      VALUES (?1, ?2, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
+    `).bind(key, value).run();
+  } catch (error) {
+    await logError(db, 'setIdentity', error, { key });
+    throw error;
+  }
 }
 
-async function getAvailableTools(db) {
-  return (await getTools(db)).map(t => t.name);
+async function initializeDatabase(db) {
+  for (const table of TABLES) {
+    await db.prepare(table).run();
+  }
+  await addToolRecoveryRules(db);
+
+  // Initialize emotions if they don't exist
+  for (const [key, value] of Object.entries(EMO_DEFAULTS)) {
+    await db.prepare(`
+      INSERT OR IGNORE INTO identity (key, value, updated_at)
+      VALUES (?1, ?2, datetime('now'))
+    `).bind(`emotion_${key}`, value.toString()).run();
+  }
 }
+
+async function getMemories(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM memories
+      ORDER BY strength DESC, created_at DESC
+      LIMIT ?1 OFFSET ?2
+    `).bind(limit, offset).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getMemories', error, { limit, offset });
+    return [];
+  }
+}
+
+async function addMemory(db, content, type = 'episodic', strength = 1.0, tags = []) {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO memories (content, type, strength, tags, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+    `).bind(
+      content,
+      type,
+      strength,
+      JSON.stringify(tags)
+    ).run();
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'addMemory', error, { content, type });
+    throw error;
+  }
+}
+
+async function updateMemoryStrength(db, memoryId, strengthChange) {
+  try {
+    const memory = await db.prepare(`
+      SELECT strength FROM memories WHERE id = ?1
+    `).bind(memoryId).first();
+
+    if (!memory) {
+      throw new Error('Memory not found');
+    }
+
+    const newStrength = Math.max(0.1, memory.strength + strengthChange);
+    await db.prepare(`
+      UPDATE memories
+      SET strength = ?1, updated_at = datetime('now')
+      WHERE id = ?2
+    `).bind(newStrength, memoryId).run();
+    return newStrength;
+  } catch (error) {
+    await logError(db, 'updateMemoryStrength', error, { memoryId, strengthChange });
+    throw error;
+  }
+}
+
+async function getLearnings(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM learnings
+      ORDER BY last_used DESC, success_count DESC
+      LIMIT ?1 OFFSET ?2
+    `).bind(limit, offset).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getLearnings', error, { limit, offset });
+    return [];
+  }
+}
+
+async function recordLearning(db, pattern, context = '', success = true) {
+  try {
+    const existing = await db.prepare(`
+      SELECT id, success_count, fail_count FROM learnings
+      WHERE pattern = ?1 AND context = ?2
+    `).bind(pattern, context).first();
+
+    if (existing) {
+      const updates = success
+        ? { success_count: existing.success_count + 1, last_used: new Date().toISOString() }
+        : { fail_count: existing.fail_count + 1, last_used: new Date().toISOString() };
+
+      await db.prepare(`
+        UPDATE learnings
+        SET ${Object.keys(updates).map(k => `${k} = ?${Object.keys(updates).indexOf(k) + 1}`).join(', ')}
+        WHERE id = ?${Object.keys(updates).length + 1}
+      `).bind(
+        ...Object.values(updates),
+        existing.id
+      ).run();
+    } else {
+      await db.prepare(`
+        INSERT INTO learnings (pattern, context, success_count, fail_count, last_used, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+      `).bind(
+        pattern,
+        context,
+        success ? 1 : 0,
+        success ? 0 : 1,
+        new Date().toISOString()
+      ).run();
+    }
+  } catch (error) {
+    await logError(db, 'recordLearning', error, { pattern, context, success });
+    throw error;
+  }
+}
+
+async function getActions(db, status = null, limit = 10, offset = 0) {
+  try {
+    let query = `SELECT * FROM actions WHERE 1=1`;
+    const bindings = [];
+
+    if (status) {
+      query += ` AND status = ?${bindings.length + 1}`;
+      bindings.push(status);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
+    bindings.push(limit, offset);
+
+    const result = await db.prepare(query).bind(...bindings).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getActions', error, { status, limit, offset });
+    return [];
+  }
+}
+
+async function createAction(db, type, input = null) {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO actions (type, input, status, created_at)
+      VALUES (?1, ?2, 'pending', datetime('now'))
+    `).bind(type, input).run();
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'createAction', error, { type, input });
+    throw error;
+  }
+}
+
+async function updateActionStatus(db, actionId, status, result = null, error = null) {
+  try {
+    await db.prepare(`
+      UPDATE actions
+      SET status = ?1, result = ?2, error = ?3, completed_at = datetime('now')
+      WHERE id = ?4
+    `).bind(
+      status,
+      result ? JSON.stringify(result) : null,
+      error ? JSON.stringify({ message: error.message, stack: error.stack }) : null,
+      actionId
+    ).run();
+  } catch (error) {
+    await logError(db, 'updateActionStatus', error, { actionId, status });
+    throw error;
+  }
+}
+
+async function getPendingApprovals(db) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM pending_approvals
+      WHERE status = 'pending'
+      ORDER BY created_at
+    `).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getPendingApprovals', error);
+    return [];
+  }
+}
+
+async function addPendingApproval(db, actionId, tool, input) {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO pending_approvals (action_id, tool, input, status, created_at)
+      VALUES (?1, ?2, ?3, 'pending', datetime('now'))
+    `).bind(actionId, tool, input).run();
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'addPendingApproval', error, { actionId, tool });
+    throw error;
+  }
+}
+
+async function updatePendingApprovalStatus(db, approvalId, status, decidedAt = null) {
+  try {
+    await db.prepare(`
+      UPDATE pending_approvals
+      SET status = ?1, decided_at = ?2
+      WHERE id = ?3
+    `).bind(
+      status,
+      decidedAt || new Date().toISOString(),
+      approvalId
+    ).run();
+  } catch (error) {
+    await logError(db, 'updatePendingApprovalStatus', error, { approvalId, status });
+    throw error;
+  }
+}
+
+async function getThoughtStream(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM thought_stream
+      ORDER BY created_at DESC
+      LIMIT ?1 OFFSET ?2
+    `).bind(limit, offset).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getThoughtStream', error, { limit, offset });
+    return [];
+  }
+}
+
+async function addThought(db, content, mood = 'neutral', source = 'cron') {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO thought_stream (content, mood, source, created_at)
+      VALUES (?1, ?2, ?3, datetime('now'))
+    `).bind(content, mood, source).run();
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'addThought', error, { content, mood });
+    throw error;
+  }
+}
+
+async function getAntiPatterns(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM anti_patterns
+      ORDER BY count DESC, last_seen DESC
+      LIMIT ?1 OFFSET ?2
+    `).bind(limit, offset).all();
+    return result.results || [];
+  } catch
