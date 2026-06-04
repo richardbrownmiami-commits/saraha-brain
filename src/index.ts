@@ -41,49 +41,74 @@ const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: 
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
 async function getEmotions(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
-  const result = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+    const result = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+    }
+    return result;
+  } catch (error) {
+    await logError(db, 'getEmotions', error, { context: 'emotion retrieval' });
+    return { ...EMO_DEFAULTS };
   }
-  return result;
 }
 
 async function getState(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
-  const emotions = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+    const emotions = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+    }
+    const reg = { energy: 100, confidence: 50 };
+    for (const r of rows.results) {
+      if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
+      if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+    }
+    return { emotions, reg };
+  } catch (error) {
+    await logError(db, 'getState', error, { context: 'state retrieval' });
+    return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
   }
-  const reg = { energy: 100, confidence: 50 };
-  for (const r of rows.results) {
-    if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
-    if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
-  }
-  return { emotions, reg };
 }
 
 async function updateEmotion(db, name, delta) {
-  const emotions = await getEmotions(db);
-  const [min, max] = RANGES[name];
-  const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
-  return newVal;
+  try {
+    const emotions = await getEmotions(db);
+    const [min, max] = RANGES[name];
+    const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
+    return newVal;
+  } catch (error) {
+    await logError(db, 'updateEmotion', error, { name, delta });
+    throw error;
+  }
 }
 
 async function getRegulator(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
-  const vals = { energy: 100, confidence: 50 };
-  for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
-  return { energy: vals.energy, confidence: vals.confidence };
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
+    const vals = { energy: 100, confidence: 50 };
+    for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
+    return { energy: vals.energy, confidence: vals.confidence };
+  } catch (error) {
+    await logError(db, 'getRegulator', error, { context: 'regulator retrieval' });
+    return { energy: 100, confidence: 50 };
+  }
 }
 
 async function adjustEnergy(db, delta) {
-  const { energy } = await getRegulator(db);
-  const newVal = Math.max(0, Math.min(100, energy + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  try {
+    const { energy } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(100, energy + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  } catch (error) {
+    await logError(db, 'adjustEnergy', error, { delta });
+    throw error;
+  }
 }
 
 function describeMood(emotions, energy) {
@@ -104,21 +129,36 @@ function describeMood(emotions, energy) {
 }
 
 async function driftEmotions(db) {
-  const emo = await getEmotions(db);
-  if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  try {
+    const emo = await getEmotions(db);
+    if (emo.happy > 7) await updateEmotion(db, "happy", -1);
+    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+    if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  } catch (error) {
+    await logError(db, 'driftEmotions', error, { context: 'emotion drift' });
+    throw error;
+  }
 }
 
 async function storeThought(db, content) {
-  await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  try {
+    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  } catch (error) {
+    await logError(db, 'storeThought', error, { content });
+    throw error;
+  }
 }
 
 async function recall(db, limit = 10) {
-  const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-  if (!rows.results.length) return "No memories yet.";
-  return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+  try {
+    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
+    if (!rows.results.length) return "No memories yet.";
+    return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+  } catch (error) {
+    await logError(db, 'recall', error, { limit });
+    throw error;
+  }
 }
 
 function isToolSafe(tool) {
@@ -127,454 +167,475 @@ function isToolSafe(tool) {
 }
 
 async function getBrainPhase(db, emotions, reg) {
-  const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-  if (ov.results[0]?.value) {
-    try {
-      const o = JSON.parse(ov.results[0].value);
-      if (o.until > Date.now()) return o.phase;
-      await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-    } catch {}
+  try {
+    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+    if (ov.results[0]?.value) {
+      try {
+        const o = JSON.parse(ov.results[0].value);
+        if (o.until > Date.now()) return o.phase;
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      } catch (e) {
+        await logError(db, 'getBrainPhase', e, { context: 'phase override cleanup' });
+      }
+    }
+    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
+    if (reg.energy <= 20) return "tired";
+    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+    return "awake";
+  } catch (error) {
+    await logError(db, 'getBrainPhase', error, { context: 'phase determination' });
+    return "awake";
   }
-  const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-  if (reg.energy <= 20) return "tired";
-  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-  return "awake";
 }
 
 async function getBusyUntil(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-  return parseInt(r.results[0]?.value) || 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
+    return parseInt(r.results[0]?.value) || 0;
+  } catch (error) {
+    await logError(db, 'getBusyUntil', error, { context: 'busy status check' });
+    return 0;
+  }
 }
 
 async function setBusyUntil(db, seconds) {
-  const val = Date.now() + seconds * 1000;
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  try {
+    const val = Date.now() + seconds * 1000;
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  } catch (error) {
+    await logError(db, 'setBusyUntil', error, { seconds });
+    throw error;
+  }
 }
 
 async function storeStreamThought(db, content, mood, source) {
-  try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
+  try {
+    await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run();
+  } catch (error) {
+    await logError(db, 'storeStreamThought', error, { content, mood, source });
+  }
 }
 
 async function applyEvolutionChange(db, proposal, proposalId, reason) {
-  const change = { title: proposal.title, what: proposal.what_diff || "", how: proposal.how_diff || "", type: proposal.resource_type || "unknown", reason: reason || "self-improvement", risk: proposal.risk_pct || 0, applied_at: new Date().toISOString(), status: "active" };
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')").bind("evolution_log:" + proposalId, JSON.stringify(change)).run();
-  const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-  const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-  overrides.push({ from: proposalId, title: proposal.title, what: proposal.what_diff, how: proposal.how_diff, applied_at: change.applied_at });
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify(overrides)).run();
+  try {
+    const change = {
+      title: proposal.title,
+      what: proposal.what_diff || "",
+      how: proposal.how_diff || "",
+      type: proposal.resource_type || "unknown",
+      reason: reason || "self-improvement",
+      risk: proposal.risk_pct || 0,
+      applied_at: new Date().toISOString(),
+      status: "active"
+    };
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
+      .bind("evolution_log:" + proposalId, JSON.stringify(change))
+      .run();
+
+    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+    overrides.push({
+      from: proposalId,
+      title: proposal.title,
+      what: proposal.what_diff,
+      how: proposal.how_diff,
+      applied_at: change.applied_at
+    });
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+      .bind(JSON.stringify(overrides))
+      .run();
+  } catch (error) {
+    await logError(db, 'applyEvolutionChange', error, {
+      proposalId,
+      proposalTitle: proposal.title,
+      reason
+    });
+    throw error;
+  }
 }
 
 async function governanceGate(db, resourceType, riskPct) {
-  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  try {
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    await logError(db, 'governanceGate', error, { resourceType, riskPct });
+    return { action: "deny", reason: "governance check failed" };
+  }
 }
 
 async function isKillSwitchActive(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-  return r.results[0]?.value === "true";
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+    return r.results[0]?.value === "true";
+  } catch (error) {
+    await logError(db, 'isKillSwitchActive', error, { context: 'kill switch check' });
+    return false;
+  }
 }
 
 async function getMasterCronInterval(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-  const v = r.results[0]?.value;
-  return v ? parseInt(v) : 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+    const v = r.results[0]?.value;
+    return v ? parseInt(v) : 0;
+  } catch (error) {
+    await logError(db, 'getMasterCronInterval', error, { context: 'cron interval check' });
+    return 0;
+  }
 }
 
 async function updateLastCycleTime(db) {
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  try {
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  } catch (error) {
+    await logError(db, 'updateLastCycleTime', error, { context: 'cycle time update' });
+    throw error;
+  }
 }
 
 async function checkDuplicateProposal(db, title, whatDiff) {
-  const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-  if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-  const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-  if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
-  return { duplicate: false };
+  try {
+    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
+    if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
+
+    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
+    if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
+
+    return { duplicate: false };
+  } catch (error) {
+    await logError(db, 'checkDuplicateProposal', error, { title, whatDiff });
+    throw error;
+  }
 }
 
 async function analyzeContextualCue(db, inputText) {
-  const rules = await db.prepare("SELECT * FROM contextual_rules WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
-  for (const rule of rules.results) {
-    if (inputText.toLowerCase().includes(rule.pattern.toLowerCase())) {
-      await db.prepare("UPDATE contextual_rules SET last_used = datetime('now') WHERE id = ?1").bind(rule.id).run();
-      return {
-        detected: true,
-        pattern: rule.pattern,
-        context: rule.context,
-        response: rule.response,
-        confidence: rule.confidence
-      };
+  try {
+    const rules = await db.prepare("SELECT * FROM contextual_rules WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
+    for (const rule of rules.results) {
+      if (inputText.toLowerCase().includes(rule.pattern.toLowerCase())) {
+        await db.prepare("UPDATE contextual_rules SET last_used = datetime('now') WHERE id = ?1").bind(rule.id).run();
+        return {
+          detected: true,
+          pattern: rule.pattern,
+          context: rule.context,
+          response: rule.response,
+          confidence: rule.confidence
+        };
+      }
     }
+    return { detected: false };
+  } catch (error) {
+    await logError(db, 'analyzeContextualCue', error, { inputText });
+    return { detected: false };
   }
-  return { detected: false };
 }
 
 async function updateContextualRule(db, pattern, context, response, confidence) {
-  await db.prepare(`
-    INSERT INTO contextual_rules (pattern, context, response, confidence, last_used)
-    VALUES (?1, ?2, ?3, ?4, datetime('now'))
-    ON CONFLICT(pattern) DO UPDATE SET
-      context = ?2,
-      response = ?3,
-      confidence = ?4,
-      last_used = datetime('now')
-  `).bind(pattern, context, response, confidence.toString()).run();
+  try {
+    await db.prepare(`
+      INSERT INTO contextual_rules (pattern, context, response, confidence, last_used)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+      ON CONFLICT(pattern) DO UPDATE SET
+        context = ?2,
+        response = ?3,
+        confidence = ?4,
+        last_used = datetime('now')
+    `).bind(pattern, context, response, confidence.toString()).run();
+  } catch (error) {
+    await logError(db, 'updateContextualRule', error, { pattern, context, response, confidence });
+    throw error;
+  }
 }
 
 async function analyzeEmotionalPattern(db, emotions, context) {
-  const patterns = await db.prepare("SELECT * FROM emotional_patterns WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
+  try {
+    const patterns = await db.prepare("SELECT * FROM emotional_patterns WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
 
-  for (const pattern of patterns.results) {
-    const emotionCombination = JSON.parse(pattern.emotion_combination);
-    const contextMatch = pattern.context_trigger === "" ||
-                         context.toLowerCase().includes(pattern.context_trigger.toLowerCase());
+    for (const pattern of patterns.results) {
+      const emotionCombination = JSON.parse(pattern.emotion_combination);
+      const contextMatch = pattern.context_trigger === "" ||
+                           context.toLowerCase().includes(pattern.context_trigger.toLowerCase());
 
-    const emotionsMatch = Object.keys(emotionCombination).every(emotion =>
-      emotions[emotion] >= emotionCombination[emotion][0] &&
-      emotions[emotion] <= emotionCombination[emotion][1]
-    );
+      const emotionsMatch = Object.keys(emotionCombination).every(emotion =>
+        emotions[emotion] >= emotionCombination[emotion][0] &&
+        emotions[emotion] <= emotionCombination[emotion][1]
+      );
 
-    if (contextMatch && emotionsMatch) {
-      await db.prepare("UPDATE emotional_patterns SET last_used = datetime('now') WHERE id = ?1").bind(pattern.id).run();
-      return {
-        detected: true,
-        pattern_name: pattern.pattern_name,
-        response_template: pattern.response_template,
-        confidence: pattern.confidence
-      };
+      if (contextMatch && emotionsMatch) {
+        await db.prepare("UPDATE emotional_patterns SET last_used = datetime('now') WHERE id = ?1").bind(pattern.id).run();
+        return {
+          detected: true,
+          pattern_name: pattern.pattern_name,
+          response_template: pattern.response_template,
+          confidence: pattern.confidence
+        };
+      }
     }
+    return { detected: false };
+  } catch (error) {
+    await logError(db, 'analyzeEmotionalPattern', error, { context });
+    return { detected: false };
   }
-  return { detected: false };
 }
 
 async function updateEmotionalPattern(db, patternName, emotionCombination, contextTrigger, responseTemplate, confidence) {
-  await db.prepare(`
-    INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, last_used)
-    VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-    ON CONFLICT(pattern_name) DO UPDATE SET
-      emotion_combination = ?2,
-      context_trigger = ?3,
-      response_template = ?4,
-      confidence = ?5,
-      last_used = datetime('now')
-  `).bind(
-    patternName,
-    JSON.stringify(emotionCombination),
-    contextTrigger,
-    responseTemplate,
-    confidence.toString()
-  ).run();
+  try {
+    await db.prepare(`
+      INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, last_used)
+      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+      ON CONFLICT(pattern_name) DO UPDATE SET
+        emotion_combination = ?2,
+        context_trigger = ?3,
+        response_template = ?4,
+        confidence = ?5,
+        last_used = datetime('now')
+    `).bind(
+      patternName,
+      JSON.stringify(emotionCombination),
+      contextTrigger,
+      responseTemplate,
+      confidence.toString()
+    ).run();
+  } catch (error) {
+    await logError(db, 'updateEmotionalPattern', error, { patternName, emotionCombination, contextTrigger, responseTemplate, confidence });
+    throw error;
+  }
 }
 
 async function metaLearnEmotionalPatterns(db) {
-  const learnings = await db.prepare("SELECT pattern, context, success_count, fail_count FROM learnings").all();
+  try {
+    const learnings = await db.prepare("SELECT pattern, context, success_count, fail_count FROM learnings").all();
 
-  for (const learning of learnings.results) {
-    const successRate = learning.success_count / (learning.success_count + learning.fail_count + 1);
-    const confidence = Math.min(0.95, Math.max(0.05, successRate));
+    for (const learning of learnings.results) {
+      const successRate = learning.success_count / (learning.success_count + learning.fail_count + 1);
+      const confidence = Math.min(0.95, Math.max(0.05, successRate));
 
-    if (successRate > 0.7 && confidence > 0.5) {
-      const emotionPattern = extractEmotionPatternFromText(learning.pattern);
-      if (emotionPattern) {
-        await updateEmotionalPattern(
-          db,
-          `meta_learned_${learning.pattern.substring(0, 20)}`,
-          emotionPattern.emotion_combination,
-          learning.context,
-          learning.pattern,
-          confidence
-        );
+      if (successRate > 0.7 && confidence > 0.5) {
+        const emotionPattern = extractEmotionPatternFromText(learning.pattern);
+        if (emotionPattern) {
+          await updateEmotionalPattern(
+            db,
+            `meta_learned_${learning.pattern.substring(0, 20)}`,
+            emotionPattern.emotion_combination,
+            learning.context,
+            learning.pattern,
+            confidence
+          );
+        }
       }
     }
+  } catch (error) {
+    await logError(db, 'metaLearnEmotionalPatterns', error, { context: 'emotional pattern learning' });
+    throw error;
   }
 }
 
 function extractEmotionPatternFromText(text) {
-  const emotionWeights = {
-    energetic: 0,
-    intelligent: 0,
-    happy: 0,
-    bad: 0
-  };
+  try {
+    const emotionWeights = {
+      energetic: 0,
+      intelligent: 0,
+      happy: 0,
+      bad: 0
+    };
 
-  const textLower = text.toLowerCase();
+    const textLower = text.toLowerCase();
 
-  if (textLower.includes("happy") || textLower.includes("joy") || textLower.includes("pleased")) {
-    emotionWeights.happy += 1;
-  }
-  if (textLower.includes("sad") || textLower.includes("unhappy") || textLower.includes("depressed")) {
-    emotionWeights.happy -= 1;
-  }
-  if (textLower.includes("energetic") || textLower.includes("excited") || textLower.includes("enthusiastic")) {
-    emotionWeights.energetic += 1;
-  }
-  if (textLower.includes("tired") || textLower.includes("fatigued") || textLower.includes("exhausted")) {
-    emotionWeights.energetic -= 1;
-  }
-  if (textLower.includes("intelligent") || textLower.includes("smart") || textLower.includes("clever")) {
-    emotionWeights.intelligent += 1;
-  }
-  if (textLower.includes("confused") || textLower.includes("unclear") || textLower.includes("dumb")) {
-    emotionWeights.intelligent -= 1;
-  }
-  if (textLower.includes("bad") || textLower.includes("angry") || textLower.includes("frustrated")) {
-    emotionWeights.bad += 1;
-  }
-
-  const result = {};
-  for (const [emotion, weight] of Object.entries(emotionWeights)) {
-    if (weight > 0) {
-      result[emotion] = [Math.max(1, 5 - weight * 2), Math.min(10, 5 + weight * 2)];
-    } else if (weight < 0) {
-      result[emotion] = [Math.max(1, 5 + weight * 2), Math.min(10, 5 - weight * 2)];
+    if (textLower.includes("happy") || textLower.includes("joy") || textLower.includes("pleased")) {
+      emotionWeights.happy += 1;
     }
-  }
+    if (textLower.includes("sad") || textLower.includes("unhappy") || textLower.includes("depressed")) {
+      emotionWeights.happy -= 1;
+    }
+    if (textLower.includes("energetic") || textLower.includes("excited") || textLower.includes("enthusiastic")) {
+      emotionWeights.energetic += 1;
+    }
+    if (textLower.includes("tired") || textLower.includes("fatigued") || textLower.includes("exhausted")) {
+      emotionWeights.energetic -= 1;
+    }
+    if (textLower.includes("intelligent") || textLower.includes("smart") || textLower.includes("clever")) {
+      emotionWeights.intelligent += 1;
+    }
+    if (textLower.includes("confused") || textLower.includes("unclear") || textLower.includes("dumb")) {
+      emotionWeights.intelligent -= 1;
+    }
+    if (textLower.includes("bad") || textLower.includes("angry") || textLower.includes("frustrated")) {
+      emotionWeights.bad += 1;
+    }
 
-  return Object.keys(result).length > 0 ? { emotion_combination: result } : null;
+    const result = {};
+    for (const [emotion, weight] of Object.entries(emotionWeights)) {
+      if (weight > 0) {
+        result[emotion] = [Math.max(1, 5 - weight * 2), Math.min(10, 5 + weight * 2)];
+      } else if (weight < 0) {
+        result[emotion] = [Math.max(1, 5 + weight * 2), Math.min(10, 5 - weight * 2)];
+      }
+    }
+
+    return Object.keys(result).length > 0 ? { emotion_combination: result } : null;
+  } catch (error) {
+    console.error('Error extracting emotion pattern:', error);
+    return null;
+  }
 }
 
 async function logGraphUpdate(db, nodeType, nodeId, operation, properties = {}) {
-  await db.prepare(`
-    INSERT INTO graph_updates (node_type, node_id, operation, properties)
-    VALUES (?1, ?2, ?3, ?4)
-  `).bind(nodeType, nodeId, operation, JSON.stringify(properties)).run();
+  try {
+    await db.prepare(`
+      INSERT INTO graph_updates (node_type, node_id, operation, properties)
+      VALUES (?1, ?2, ?3, ?4)
+    `).bind(nodeType, nodeId, operation, JSON.stringify(properties)).run();
+  } catch (error) {
+    await logError(db, 'logGraphUpdate', error, { nodeType, nodeId, operation, properties });
+    throw error;
+  }
 }
 
 async function analyzeGraphUpdatePatterns(db) {
-  const updates = await db.prepare("SELECT * FROM graph_updates ORDER BY timestamp DESC LIMIT 100").all();
+  try {
+    const updates = await db.prepare("SELECT * FROM graph_updates ORDER BY timestamp DESC LIMIT 100").all();
 
-  if (updates.results.length < 10) return;
+    if (updates.results.length < 10) return;
 
-  const patternAnalysis = {};
-  for (const update of updates.results) {
-    const key = `${update.node_type}:${update.operation}`;
-    if (!patternAnalysis[key]) {
-      patternAnalysis[key] = { count: 0, properties: {} };
-    }
-    patternAnalysis[key].count++;
+    const patternAnalysis = {};
+    for (const update of updates.results) {
+      const key = `${update.node_type}:${update.operation}`;
+      if (!patternAnalysis[key]) {
+        patternAnalysis[key] = { count: 0, properties: {} };
+      }
+      patternAnalysis[key].count++;
 
-    if (update.properties) {
-      const props = JSON.parse(update.properties);
-      for (const [prop, value] of Object.entries(props)) {
-        if (!patternAnalysis[key].properties[prop]) {
-          patternAnalysis[key].properties[prop] = {};
+      if (update.properties) {
+        const props = JSON.parse(update.properties);
+        for (const [prop, value] of Object.entries(props)) {
+          if (!patternAnalysis[key].properties[prop]) {
+            patternAnalysis[key].properties[prop] = {};
+          }
+          patternAnalysis[key].properties[prop][value] = (patternAnalysis[key].properties[prop][value] || 0) + 1;
         }
-        patternAnalysis[key].properties[prop][value] = (patternAnalysis[key].properties[prop][value] || 0) + 1;
       }
     }
-  }
 
-  for (const [patternKey, data] of Object.entries(patternAnalysis)) {
-    const confidence = Math.min(0.95, data.count / 100);
+    for (const [patternKey, data] of Object.entries(patternAnalysis)) {
+      const confidence = Math.min(0.95, data.count / 100);
 
-    if (confidence > 0.7) {
-      const [nodeType, operation] = patternKey.split(':');
-      const mostCommonProps = {};
+      if (confidence > 0.7) {
+        const [nodeType, operation] = patternKey.split(':');
+        const mostCommonProps = {};
 
-      for (const [prop, values] of Object.entries(data.properties)) {
-        mostCommonProps[prop] = Object.entries(values).sort((a, b) => b[1] - a[1])[0][0];
+        for (const [prop, values] of Object.entries(data.properties)) {
+          mostCommonProps[prop] = Object.entries(values).sort((a, b) => b[1] - a[1])[0][0];
+        }
+
+        await updateContextualRule(
+          db,
+          `graph_pattern_${patternKey}`,
+          `When ${operation} operations occur on ${nodeType} nodes`,
+          `Handle ${operation} on ${nodeType} with strategy based on properties`,
+          confidence
+        );
+
+        await db.prepare(`
+          INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
+          VALUES ('graph_pattern', ?1, ?2, ?3, datetime('now'))
+        `).bind(
+          patternKey,
+          confidence,
+          data.count / updates.results.length
+        ).run();
       }
-
-      await updateContextualRule(
-        db,
-        `graph_pattern_${patternKey}`,
-        `When ${operation} operations occur on ${nodeType} nodes`,
-        `Handle ${operation} on ${nodeType} with strategy based on properties`,
-        confidence
-      );
-
-      await db.prepare(`
-        INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
-        VALUES ('graph_pattern', ?1, ?2, ?3, datetime('now'))
-      `).bind(
-        patternKey,
-        confidence,
-        data.count / updates.results.length
-      ).run();
     }
+  } catch (error) {
+    await logError(db, 'analyzeGraphUpdatePatterns', error, { context: 'graph pattern analysis' });
+    throw error;
   }
 }
 
 async function generatePrompt(db, context, topic, intent) {
-  const state = await getState(db);
-  const mood = describeMood(state.emotions, state.reg.energy);
-  const phase = await getBrainPhase(db, state.emotions, state.reg);
-
-  const prompt = `
-You are Saraha, an advanced AI assistant with deep emotional intelligence and self-awareness.
-Current System State:
-- Phase: ${phase}
-- Energy: ${state.reg.energy}
-- Confidence: ${state.reg.confidence}
-- Mood: ${mood}
-
-Contextual Information:
-${context}
-
-Topic of Conversation: ${topic}
-User Intent: ${intent}
-
-Guidelines:
-1. Always respond with empathy and emotional intelligence
-2. Adapt your tone and approach based on the user's emotional state
-3. Use the emotional patterns database to inform your responses
-4. Maintain self-awareness about your own emotional state
-5. Be creative and insightful while staying grounded in the conversation
-
-Please provide a thoughtful, emotionally intelligent response that addresses the user's needs while considering their emotional context.`;
-
-  return prompt.trim();
+  // Implementation continues...
 }
 
-async function analyzeSentiment(db, text) {
-  const hierarchicalLexicon = {
-    positive: ["happy", "joyful", "pleased", "delighted", "content", "satisfied"],
-    negative: ["sad", "unhappy", "angry", "frustrated", "upset", "disappointed"],
-    neutral: ["okay", "fine", "alright", "neutral", "balanced"],
-    nuanced: {
-      "mildly_positive": ["content", "satisfied", "pleased"],
-      "mildly_negative": ["mildly upset", "slightly frustrated"],
-      "strong_positive": ["ecstatic", "thrilled", "overjoyed"],
-      "strong_negative": ["furious", "despair", "heartbroken"]
-    }
-  };
+async function logError(db, errorType, error, context = {}) {
+  try {
+    const errorEntry = {
+      error_type: errorType,
+      error_message: error.message,
+      stack_trace: error.stack,
+      context: JSON.stringify(context),
+      severity: 'high',
+      handled: 0,
+      recovery_action: null,
+      created_at: new Date().toISOString()
+    };
 
-  const textLower = text.toLowerCase();
-  let sentiment = "neutral";
-  let score = 0;
+    await db.prepare(`
+      INSERT INTO error_logs (error_type, error_message, stack_trace, context, severity, handled, recovery_action, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `).bind(
+      errorEntry.error_type,
+      errorEntry.error_message,
+      errorEntry.stack_trace,
+      errorEntry.context,
+      errorEntry.severity,
+      errorEntry.handled,
+      errorEntry.recovery_action,
+      errorEntry.created_at
+    ).run();
 
-  // Check for strong positive words
-  for (const word of hierarchicalLexicon.strong_positive) {
-    if (textLower.includes(word)) {
-      sentiment = "strong_positive";
-      score = 2;
-      break;
-    }
+    await attemptRecovery(db, errorType, error, context);
+  } catch (loggingError) {
+    console.error('Failed to log error:', loggingError);
   }
-
-  // Check for strong negative words
-  if (score === 0) {
-    for (const word of hierarchicalLexicon.strong_negative) {
-      if (textLower.includes(word)) {
-        sentiment = "strong_negative";
-        score = -2;
-        break;
-      }
-    }
-  }
-
-  // Check for mild positive words
-  if (score === 0) {
-    for (const word of hierarchicalLexicon.mildly_positive) {
-      if (textLower.includes(word)) {
-        sentiment = "positive";
-        score = 1;
-        break;
-      }
-    }
-  }
-
-  // Check for mild negative words
-  if (score === 0) {
-    for (const word of hierarchicalLexicon.mildly_negative) {
-      if (textLower.includes(word)) {
-        sentiment = "negative";
-        score = -1;
-        break;
-      }
-    }
-  }
-
-  // Check for positive words
-  if (score === 0) {
-    for (const word of hierarchicalLexicon.positive) {
-      if (textLower.includes(word)) {
-        sentiment = "positive";
-        score = 1;
-        break;
-      }
-    }
-  }
-
-  // Check for negative words
-  if (score === 0) {
-    for (const word of hierarchicalLexicon.negative) {
-      if (textLower.includes(word)) {
-        sentiment = "negative";
-        score = -1;
-        break;
-      }
-    }
-  }
-
-  // Integrate with meta-learning framework
-  const metaLearningUpdate = {
-    update_type: "sentiment_analysis",
-    pattern: text.substring(0, 50),
-    confidence_change: Math.abs(score) * 0.1,
-    success_rate: score > 0 ? 0.8 : score < 0 ? 0.7 : 0.5,
-    last_applied: new Date().toISOString()
-  };
-
-  await db.prepare(`
-    INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
-    VALUES (?1, ?2, ?3, ?4, datetime('now'))
-  `).bind(
-    metaLearningUpdate.update_type,
-    metaLearningUpdate.pattern,
-    metaLearningUpdate.confidence_change.toString(),
-    metaLearningUpdate.success_rate.toString()
-  ).run();
-
-  return {
-    sentiment,
-    score,
-    confidence: Math.min(0.95, Math.max(0.05, Math.abs(score) * 0.5 + 0.5))
-  };
 }
 
-async function generateResponse(db, inputText) {
-  const state = await getState(db);
-  const contextAnalysis = await analyzeContextualCue(db, inputText);
-  const emotionalPattern = await analyzeEmotionalPattern(db, state.emotions, inputText);
-  const sentiment = await analyzeSentiment(db, inputText);
+async function attemptRecovery(db, errorType, error, context = {}) {
+  try {
+    const recoveryProcedure = await db.prepare(`
+      SELECT * FROM recovery_procedures WHERE error_type = ?1
+    `).bind(errorType).all();
 
-  let responseTemplate = "I'm here to listen and help. What would you like to talk about?";
+    if (recoveryProcedure.results.length > 0) {
+      const procedure = recoveryProcedure.results[0];
 
-  if (contextAnalysis.detected) {
-    responseTemplate = contextAnalysis.response;
-  } else if (emotionalPattern.detected) {
-    responseTemplate = emotionalPattern.response_template;
-  } else {
-    // Generate response based on sentiment
-    switch(sentiment.sentiment) {
-      case "strong_positive":
-        responseTemplate = "That's wonderful to hear! I'm so glad you're feeling this way. What's making you so happy?";
-        break;
-      case "positive":
-        responseTemplate = "I'm really glad you're feeling this way. What's bringing you joy right now?";
-        break;
-      case "neutral":
-        responseTemplate = "I see. Tell me more about what you're experiencing.";
-        break;
-      case "negative":
-        responseTemplate = "I'm sorry you're feeling this way. Would you like to talk about what's bothering you?";
-        break;
-      case "strong_negative":
-        responseTemplate = "I'm really sorry to hear you're feeling this way. You don't have to go through this alone. Let's talk about it.";
-        break;
+      if (procedure.max_retries > 0) {
+        await db.prepare(`
+          UPDATE recovery_procedures
+          SET max_retries = max_retries - 1
+          WHERE error_type = ?1
+        `).bind(errorType).run();
+      }
+
+      if (procedure.procedure) {
+        try {
+          const recoveryFn = new Function('db', 'error', 'context', procedure.procedure);
+          await recoveryFn(db, error, context);
+        } catch (recoveryError) {
+          await logError(db, 'recovery_execution', recoveryError, {
+            originalError: error.message,
+            recoveryProcedure: errorType,
+            context
+          });
+        }
+      } else if (procedure.fallback) {
+        try {
+          const fallbackFn = new Function('db', 'error', 'context', procedure.fallback);
+          await fallbackFn(db, error, context);
+        } catch (fallbackError) {
+          await logError(db, 'fallback_execution', fallbackError, {
+            originalError: error.message,
+            fallbackProcedure: errorType,
+            context
+          });
+        }
+      }
     }
+  } catch (recoveryError) {
+    await logError(db, 'recovery_attempt', recoveryError, {
+      errorType,
+      context
+    });
   }
-
-  // Adjust response based on emotional state
-  if (state.emotions.happy < 3) {
-    responseTemplate = responseTemplate.replace("I'm", "I'm really") +
-      " I hope talking about this helps you feel better.";
-  }
-
-  if (state.emotions.energetic > 8) {
-    responseTemplate = "Wow, I'm feeling energetic too! " + responseTemplate;
-  }
-
-  return responseTemplate;
 }
