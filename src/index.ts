@@ -1141,3 +1141,74 @@ export {
   runTool,
   SEED_KNOWLEDGE
 };
+
+async function hnFetch(db, input) {
+  try {
+    const { action, limit, id } = input;
+    let result;
+
+    if (action === 'topstories') {
+      const response = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+      const topStories = await response.json();
+      const storyIds = topStories.slice(0, limit);
+
+      result = await Promise.all(storyIds.map(async (storyId) => {
+        const storyResponse = await fetch(`https://hacker-news.firebaseio.com/v0/item/${storyId}.json`);
+        const story = await storyResponse.json();
+        return {
+          title: story.title,
+          url: story.url,
+          score: story.score,
+          author: story.by,
+          time: story.time
+        };
+      }));
+    } else if (action === 'item') {
+      const response = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+      const item = await response.json();
+      result = {
+        title: item.title,
+        url: item.url,
+        score: item.score,
+        author: item.by,
+        time: item.time
+      };
+    } else {
+      throw new Error(`Unknown action: ${action}`);
+    }
+
+    return result;
+  } catch (error) {
+    await logError(db, 'hnFetch', error, input);
+    throw error;
+  }
+}
+
+const isToolSafe = {
+  ...isToolSafe,
+  hn_fetch: true
+};
+
+const SEED_KNOWLEDGE = `
+${SEED_KNOWLEDGE}
+- hn_fetch: Fetch top stories and items from the HackerNews API
+
+When using the hn_fetch tool, you can specify:
+- action: topstories or item
+- limit: The number of top stories to fetch (default: 10)
+- id: The ID of the item to fetch
+`;
+
+async function runTool(db, tool, input) {
+  try {
+    switch (tool) {
+      // ...
+      case 'hn_fetch':
+        return await hnFetch(db, input);
+      // ...
+    }
+  } catch (error) {
+    await logError(db, 'runTool', error, { tool, input });
+    return { error: error.message };
+  }
+}
