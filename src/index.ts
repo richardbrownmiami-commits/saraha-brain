@@ -547,414 +547,225 @@ async function getEmotions(db) {
 }
 
 async function getEmotionValue(db, emotion) {
-  const current = await getEmotions(db);
-  return current[emotion] || EMO_DEFAULTS[emotion];
+  const emotions = await getEmotions(db);
+  return emotions[emotion] || EMO_DEFAULTS[emotion] || 5;
 }
 
 async function setEmotionValue(db, emotion, value) {
   try {
-    const current = await getEmotions(db);
-    const newValue = Math.max(RANGES[emotion][0], Math.min(value, RANGES[emotion][1]));
-    await db.prepare("INSERT OR REPLACE INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now'))")
-      .bind(`emotion_${emotion}`, newValue.toString()).run();
-    return newValue;
+    const current = await getEmotionValue(db, emotion);
+    const newValue = Math.min(Math.max(value, RANGES[emotion][0]), RANGES[emotion][1]);
+    if (Math.abs(newValue - current) > 0.5) {
+      await db.prepare("INSERT OR REPLACE INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now'))")
+        .bind(`emotion_${emotion}`, newValue.toString()).run();
+      return newValue;
+    }
+    return current;
   } catch (error) {
     await logError(db, 'setEmotionValue', error, { emotion, value });
-    throw error;
+    return value;
   }
 }
 
-async function recall(db, limit = 10) {
-  // First get recent relevant memories from brain_knowledge
-  const recentMemories = await db.prepare(
-    `SELECT m.id, m.content, m.type, m.tags, m.strength, m.created_at
-     FROM memories m
-     WHERE m.content IN (
-       SELECT key FROM brain_knowledge
-       WHERE category IN ('episodic', 'semantic')
-     )
-     ORDER BY m.strength DESC, m.created_at DESC
-     LIMIT ?1`
-  ).bind(limit).all();
-
-  if (recentMemories.results.length) {
-    return recentMemories.results.map((m) =>
-      `[${m.type}] ${m.content} (strength: ${m.strength}) (${m.created_at})`
-    ).join("\n");
-  }
-
-  // Fallback to original behavior for new memories
-  const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-  if (!rows.results.length) return "No memories yet.";
-  return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+async function adjustEmotion(db, emotion, delta) {
+  const current = await getEmotionValue(db, emotion);
+  return setEmotionValue(db, emotion, current + delta);
 }
 
-async function store(db, content, type = 'episodic', strength = 1.0, tags = []) {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO memories (content, type, strength, tags, created_at)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-    `).bind(
-      content,
-      type,
-      strength,
-      JSON.stringify(tags)
-    ).run();
-
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'store', error, { content, type, strength, tags });
-    throw error;
+async function getMood(db) {
+  const emotions = await getEmotions(db);
+  const weights = { happy: 0.4, energetic: 0.3, relaxed: 0.2, anxious: -0.2, bad: -0.5 };
+  let score = 0;
+  let totalWeight = 0;
+  for (const [emotion, weight] of Object.entries(weights)) {
+    score += emotions[emotion] * weight;
+    totalWeight += Math.abs(weight);
   }
+  score /= totalWeight;
+  if (score > 7) return "ecstatic";
+  if (score > 5) return "happy";
+  if (score > 3) return "neutral";
+  if (score > 1) return "sad";
+  return "depressed";
 }
 
-async function searchKnowledge(db, query, category = null, limit = 5) {
-  try {
-    let sql = `SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1`;
-    const params = [`%${query}%`];
-
-    if (category) {
-      sql += ` AND category = ?2`;
-      params.push(category);
-    }
-
-    sql += ` ORDER BY created_at DESC LIMIT ?3`;
-    const rows = await db.prepare(sql).bind(...params).all();
-
-    return rows.results || [];
-  } catch (error) {
-    await logError(db, 'searchKnowledge', error, { query, category, limit });
-    return [];
-  }
-}
-
-async function storeKnowledge(db, key, content, category = 'general', source = 'user') {
+async function storeBrainLog(db, actionId, tool, step, content, model, tokens) {
   try {
     await db.prepare(`
-      INSERT OR REPLACE INTO brain_knowledge (key, content, category, source, created_at)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-    `).bind(key, content, category, source).run();
-  } catch (error) {
-    await logError(db, 'storeKnowledge', error, { key, content, category, source });
-    throw error;
-  }
-}
-
-async function getIdentity(db, key) {
-  try {
-    const row = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
-    return row?.value || null;
-  } catch (error) {
-    await logError(db, 'getIdentity', error, { key });
-    return null;
-  }
-}
-
-async function setIdentity(db, key, value) {
-  try {
-    await db.prepare(`
-      INSERT OR REPLACE INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-    `).bind(key, value).run();
-  } catch (error) {
-    await logError(db, 'setIdentity', error, { key, value });
-    throw error;
-  }
-}
-
-async function updateIdentity(db, key, value) {
-  try {
-    await db.prepare(`
-      UPDATE identity
-      SET value = ?2, updated_at = datetime('now')
-      WHERE key = ?1
-    `).bind(key, value).run();
-  } catch (error) {
-    await logError(db, 'updateIdentity', error, { key, value });
-    throw error;
-  }
-}
-
-async function storeBrainLog(db, actionId, tool, step, content = {}, model = null, tokens = 0) {
-  try {
-    await db.prepare(`
-      INSERT INTO brain_logs (action_id, tool, step, content, model, tokens, created_at)
+      INSERT INTO brain_logs
+      (action_id, tool, step, content, model, tokens, created_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
     `).bind(
       actionId,
       tool,
       step,
-      JSON.stringify(content),
+      typeof content === 'string' ? content : JSON.stringify(content),
       model,
-      tokens
+      tokens || 0
     ).run();
   } catch (error) {
-    await logError(db, 'storeBrainLog', error, { actionId, tool, step, content, model, tokens });
-    throw error;
+    await logError(db, 'storeBrainLog', error, { actionId, tool, step });
   }
 }
 
-async function getProposals(db, status = null) {
+async function getSEED_KNOWLEDGE(db) {
   try {
-    let query = "SELECT * FROM proposals";
-    const params = [];
+    const result = await db.prepare("SELECT key, content FROM brain_knowledge WHERE source = 'seed'").all();
+    const knowledge = {};
+    for (const row of result.results) {
+      knowledge[row.key] = row.content;
+    }
+    return knowledge;
+  } catch (error) {
+    await logError(db, 'getSEED_KNOWLEDGE', error);
+    return {};
+  }
+}
 
-    if (status) {
-      query += " WHERE status = ?1";
-      params.push(status);
+async function getGovernanceRules(db) {
+  try {
+    const result = await db.prepare("SELECT key, content FROM brain_knowledge WHERE category = 'governance'").all();
+    const rules = {};
+    for (const row of result.results) {
+      rules[row.key] = row.content;
+    }
+    return rules;
+  } catch (error) {
+    await logError(db, 'getGovernanceRules', error);
+    return {};
+  }
+}
+
+async function isToolSafe(db, toolName, input) {
+  try {
+    const rules = await getGovernanceRules(db);
+    const safetyRules = rules.tool_safety || {};
+
+    if (safetyRules[toolName] === false) {
+      return false;
     }
 
-    query += " ORDER BY created_at DESC";
-    const rows = await db.prepare(query).bind(...params).all();
+    if (safetyRules[toolName] && typeof safetyRules[toolName] === 'string') {
+      const regex = new RegExp(safetyRules[toolName]);
+      return !regex.test(input);
+    }
 
-    return rows.results || [];
+    return true;
   } catch (error) {
-    await logError(db, 'getProposals', error, { status });
-    return [];
+    await logError(db, 'isToolSafe', error, { toolName, input });
+    return false;
   }
 }
 
-async function getProposal(db, id) {
+async function web_fetch(db, url, context = {}) {
   try {
-    const row = await db.prepare("SELECT * FROM proposals WHERE id = ?1").bind(id).first();
-    return row || null;
-  } catch (error) {
-    await logError(db, 'getProposal', error, { id });
-    return null;
-  }
-}
+    // Validate URL format
+    if (!url || typeof url !== 'string') {
+      throw new Error('Invalid URL: must be a non-empty string');
+    }
 
-async function createProposal(db, title, whatDiff, howDiff, resourceType, riskPct = 0, researchSources = []) {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO proposals
-      (title, what_diff, how_diff, resource_type, risk_pct, status, research_sources, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
-    `).bind(
-      title,
-      whatDiff,
-      howDiff,
-      resourceType,
-      riskPct,
-      'pending',
-      JSON.stringify(researchSources)
-    ).run();
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch (e) {
+      throw new Error('Invalid URL format');
+    }
 
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'createProposal', error, { title, whatDiff, howDiff, resourceType, riskPct, researchSources });
-    throw error;
-  }
-}
+    // Only allow http/https URLs
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Only HTTP/HTTPS URLs are allowed');
+    }
 
-async function updateProposalStatus(db, id, status, decidedAt = null) {
-  try {
-    const updateData = {
-      status,
-      decided_at: decidedAt || (status === 'approved' || status === 'rejected' ? new Date().toISOString() : null)
+    const braveApiKey = process.env.BRAVE_SEARCH_API_KEY;
+    if (!braveApiKey) {
+      throw new Error('Brave Search API key not configured');
+    }
+
+    // Fetch full page content using Brave's web_fetch endpoint
+    const fetchUrl = `https://api.brave.com/web_fetch?url=${encodeURIComponent(url)}`;
+    const response = await fetch(fetchUrl, {
+      headers: {
+        'Accept': 'application/json',
+        'X-Subscription-Token': braveApiKey
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new RateLimitError('Rate limit exceeded for web_fetch');
+      }
+      throw new Error(`Brave API request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Extract clean text content from the response
+    const content = data?.content?.text || data?.text || '';
+
+    // Return structured response
+    return {
+      url,
+      content,
+      title: data?.metadata?.title || '',
+      language: data?.metadata?.language || 'unknown',
+      status: 'success',
+      source: 'brave_web_fetch',
+      timestamp: new Date().toISOString()
     };
-
-    await db.prepare(`
-      UPDATE proposals
-      SET status = ?1, decided_at = ?2
-      WHERE id = ?3
-    `).bind(updateData.status, updateData.decided_at, id).run();
   } catch (error) {
-    await logError(db, 'updateProposalStatus', error, { id, status, decidedAt });
-    throw error;
-  }
-}
-
-async function storeAuthorityReceipt(db, proposalId, approvedBy, outcome, metrics = {}, prevRef = null) {
-  try {
-    await db.prepare(`
-      INSERT INTO authority_receipts
-      (proposal_id, approved_by, outcome, metrics, prev_ref, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-    `).bind(
-      proposalId,
-      approvedBy,
-      outcome,
-      JSON.stringify(metrics),
-      prevRef
-    ).run();
-  } catch (error) {
-    await logError(db, 'storeAuthorityReceipt', error, { proposalId, approvedBy, outcome, metrics, prevRef });
-    throw error;
-  }
-}
-
-async function getLearnings(db, pattern = null) {
-  try {
-    let query = "SELECT * FROM learnings";
-    const params = [];
-
-    if (pattern) {
-      query += " WHERE pattern = ?1";
-      params.push(pattern);
+    if (error.name === 'RateLimitError') {
+      throw error;
+    }
+    if (error.name === 'TemporaryNetworkError') {
+      throw error;
     }
 
-    query += " ORDER BY last_used DESC, success_count DESC";
-    const rows = await db.prepare(query).bind(...params).all();
-
-    return rows.results || [];
-  } catch (error) {
-    await logError(db, 'getLearnings', error, { pattern });
-    return [];
+    await logError(db, 'web_fetch', error, { url, context });
+    return {
+      url,
+      error: error.message,
+      status: 'failed',
+      source: 'brave_web_fetch'
+    };
   }
 }
 
-async function recordLearning(db, pattern, context = '', success = true) {
-  try {
-    const existing = await db.prepare("SELECT * FROM learnings WHERE pattern = ?1").bind(pattern).first();
-
-    if (existing) {
-      const updateData = {
-        success_count: existing.success_count + (success ? 1 : 0),
-        fail_count: existing.fail_count + (success ? 0 : 1),
-        last_used: new Date().toISOString()
-      };
-
-      await db.prepare(`
-        UPDATE learnings
-        SET success_count = ?1, fail_count = ?2, last_used = ?3
-        WHERE pattern = ?4
-      `).bind(
-        updateData.success_count,
-        updateData.fail_count,
-        updateData.last_used,
-        pattern
-      ).run();
-    } else {
-      await db.prepare(`
-        INSERT INTO learnings (pattern, context, success_count, fail_count, last_used, created_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-      `).bind(
-        pattern,
-        context,
-        success ? 1 : 0,
-        success ? 0 : 1,
-        new Date().toISOString()
-      ).run();
-    }
-  } catch (error) {
-    await logError(db, 'recordLearning', error, { pattern, context, success });
-    throw error;
-  }
-}
-
-async function getActions(db, status = null) {
-  try {
-    let query = "SELECT * FROM actions";
-    const params = [];
-
-    if (status) {
-      query += " WHERE status = ?1";
-      params.push(status);
-    }
-
-    query += " ORDER BY created_at DESC";
-    const rows = await db.prepare(query).bind(...params).all();
-
-    return rows.results || [];
-  } catch (error) {
-    await logError(db, 'getActions', error, { status });
-    return [];
-  }
-}
-
-async function createAction(db, type, input = null, status = 'pending') {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO actions (type, status, input, created_at)
-      VALUES (?1, ?2, ?3, datetime('now'))
-    `).bind(type, status, input).run();
-
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'createAction', error, { type, input, status });
-    throw error;
-  }
-}
-
-async function updateActionStatus(db, id, status, result = null, error = null, completedAt = null) {
+async function updateSEED_KNOWLEDGE(db, key, content, category = 'general') {
   try {
     await db.prepare(`
-      UPDATE actions
-      SET status = ?1, result = ?2, error = ?3, completed_at = ?4
-      WHERE id = ?5
-    `).bind(
-      status,
-      result,
-      error,
-      completedAt || new Date().toISOString(),
-      id
-    ).run();
+      INSERT OR REPLACE INTO brain_knowledge
+      (key, content, category, source, created_at)
+      VALUES (?1, ?2, ?3, 'seed', datetime('now'))
+    `).bind(key, content, category).run();
+    return true;
   } catch (error) {
-    await logError(db, 'updateActionStatus', error, { id, status, result, error, completedAt });
-    throw error;
+    await logError(db, 'updateSEED_KNOWLEDGE', error, { key, category });
+    return false;
   }
 }
 
-async function getThoughtStream(db, limit = 20) {
-  try {
-    const rows = await db.prepare("SELECT * FROM thought_stream ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
-    return rows.results || [];
-  } catch (error) {
-    await logError(db, 'getThoughtStream', error, { limit });
-    return [];
-  }
+const TOOLS = [
+  { name: 'github_write', description: 'Write to a GitHub repository', func: github_write, parameters: { type: 'object', properties: { input: { type: 'string' }, context: { type: 'object' } }, required: ['input'] } },
+  { name: 'github_read', description: 'Read from a GitHub repository', func: github_read, parameters: { type: 'object', properties: { input: { type: 'string' }, context: { type: 'object' } }, required: ['input'] } },
+  { name: 'web_search', description: 'Search the web for information', func: web_search, parameters: { type: 'object', properties: { query: { type: 'string' }, context: { type: 'object' } }, required: ['query'] } },
+  { name: 'web_fetch', description: 'Fetch full content from a web page', func: web_fetch, parameters: { type: 'object', properties: { url: { type: 'string' }, context: { type: 'object' } }, required: ['url'] } },
+  { name: 'code_interpreter', description: 'Execute code safely', func: code_interpreter, parameters: { type: 'object', properties: { code: { type: 'string' }, context: { type: 'object' } }, required: ['code'] } }
+];
+
+async function getTools(db) {
+  return TOOLS;
 }
 
-async function addThought(db, content, mood = 'neutral', source = 'cron') {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO thought_stream (content, mood, source, created_at)
-      VALUES (?1, ?2, ?3, datetime('now'))
-    `).bind(content, mood, source).run();
-
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'addThought', error, { content, mood, source });
-    throw error;
-  }
+async function getRandomTool(db) {
+  const tools = await getTools(db);
+  return tools[Math.floor(Math.random() * tools.length)];
 }
 
-async function getAntiPatterns(db) {
-  try {
-    const rows = await db.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC").all();
-    return rows.results || [];
-  } catch (error) {
-    await logError(db, 'getAntiPatterns', error, {});
-    return [];
-  }
+async function getToolByName(db, name) {
+  const tools = await getTools(db);
+  return tools.find(t => t.name === name);
 }
 
-async function recordAntiPattern(db, pattern, rootCause, fix, linkedProposalId = null) {
-  try {
-    // Check if pattern already exists
-    const existing = await db.prepare("SELECT * FROM anti_patterns WHERE pattern = ?1").bind(pattern).first();
-
-    if (existing) {
-      // Update existing record
-      await db.prepare(`
-        UPDATE anti_patterns
-        SET root_cause = ?1, fix = ?2, count = count + 1, linked_proposal_id = ?3, last_seen = datetime('now')
-        WHERE pattern = ?4
-      `).bind(rootCause, fix, linkedProposalId, pattern).run();
-    } else {
-      // Insert new record
-      await db.prepare(`
-        INSERT INTO anti_patterns (pattern, root_cause, fix, linked_proposal_id, created_at, last_seen)
-        VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
-      `).bind(pattern, rootCause, fix, linkedProposalId).run();
-    }
-  } catch (error) {
-    await logError(db, 'recordAntiPattern', error, { pattern, rootCause, fix, linkedProposalId });
-    throw error;
-  }
+async function getAvailableTools(db) {
+  return (await getTools(db)).map(t => t.name);
 }
-
-async function getContextualRules(db) {
-  try {
-    const rows =
