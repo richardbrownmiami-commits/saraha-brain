@@ -1052,6 +1052,8 @@ async function runTool(db, tool, input) {
         return await code_interpreter(db, input);
       case 'api_probe':
         return await apiProbe(db, input.url, input.method, input.headers, input.body);
+      case 'hn_fetch':
+        return await hnFetch(db, input);
       default:
         throw new Error(`Unknown tool: ${tool}`);
     }
@@ -1071,6 +1073,7 @@ You have access to the following tools:
 - github_write: Write content to GitHub repositories
 - code_interpreter: Execute code safely
 - api_probe: Test and access free APIs (Safe=true, read-only)
+- hn_fetch: Fetch top stories and items from HackerNews API
 
 You can use these tools to gather information, perform tasks, and solve complex problems. Always consider the safety and ethical implications of your actions.
 
@@ -1080,6 +1083,11 @@ When using tools, provide clear and specific inputs. For the api_probe tool, you
 - headers: Request headers as key-value pairs
 - body: Request body for POST/PUT requests
 
+For the hn_fetch tool, you can specify:
+- action: topstories or item
+- limit: The number of top stories to fetch (default: 10)
+- id: The ID of the item to fetch
+
 Remember to:
 1. Analyze the user's request carefully
 2. Determine if tools are needed
@@ -1087,6 +1095,64 @@ Remember to:
 4. Provide clear reasoning for your actions
 5. Present the final result in a helpful and informative way
 `;
+
+async function hnFetch(db, input) {
+  try {
+    const { action, limit = 10, id } = input;
+    let result;
+
+    if (action === 'topstories') {
+      const response = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch top stories: ${response.status}`);
+      }
+      const topStories = await response.json();
+      const storyIds = topStories.slice(0, limit);
+
+      result = await Promise.all(storyIds.map(async (storyId) => {
+        const storyResponse = await fetch(`https://hacker-news.firebaseio.com/v0/item/${storyId}.json`);
+        if (!storyResponse.ok) {
+          throw new Error(`Failed to fetch story ${storyId}: ${storyResponse.status}`);
+        }
+        const story = await storyResponse.json();
+        return {
+          id: story.id,
+          title: story.title,
+          url: story.url,
+          score: story.score,
+          author: story.by,
+          time: new Date(story.time * 1000).toISOString()
+        };
+      }));
+    } else if (action === 'item') {
+      if (!id) {
+        throw new Error('Item ID is required for item action');
+      }
+      const response = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch item ${id}: ${response.status}`);
+      }
+      const item = await response.json();
+      result = {
+        id: item.id,
+        title: item.title,
+        url: item.url,
+        score: item.score,
+        author: item.by,
+        time: new Date(item.time * 1000).toISOString(),
+        kids: item.kids || [],
+        comment_count: item.descendants || 0
+      };
+    } else {
+      throw new Error(`Unknown action: ${action}. Valid actions are 'topstories' or 'item'`);
+    }
+
+    return result;
+  } catch (error) {
+    await logError(db, 'hnFetch', error, input);
+    throw error;
+  }
+}
 
 export {
   TABLES,
@@ -1139,188 +1205,6 @@ export {
   getProposals,
   isToolSafe,
   runTool,
-  SEED_KNOWLEDGE
+  SEED_KNOWLEDGE,
+  hnFetch
 };
-
-async function hnFetch(db, input) {
-  try {
-    const { action, limit, id } = input;
-    let result;
-
-    if (action === 'topstories') {
-      const response = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json');
-      const topStories = await response.json();
-      const storyIds = topStories.slice(0, limit);
-
-      result = await Promise.all(storyIds.map(async (storyId) => {
-        const storyResponse = await fetch(`https://hacker-news.firebaseio.com/v0/item/${storyId}.json`);
-        const story = await storyResponse.json();
-        return {
-          title: story.title,
-          url: story.url,
-          score: story.score,
-          author: story.by,
-          time: story.time
-        };
-      }));
-    } else if (action === 'item') {
-      const response = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`);
-      const item = await response.json();
-      result = {
-        title: item.title,
-        url: item.url,
-        score: item.score,
-        author: item.by,
-        time: item.time
-      };
-    } else {
-      throw new Error(`Unknown action: ${action}`);
-    }
-
-    return result;
-  } catch (error) {
-    await logError(db, 'hnFetch', error, input);
-    throw error;
-  }
-}
-
-const isToolSafe = {
-  ...isToolSafe,
-  hn_fetch: true
-};
-
-const SEED_KNOWLEDGE = `
-${SEED_KNOWLEDGE}
-- hn_fetch: Fetch top stories and items from the HackerNews API
-
-When using the hn_fetch tool, you can specify:
-- action: topstories or item
-- limit: The number of top stories to fetch (default: 10)
-- id: The ID of the item to fetch
-`;
-
-async function runTool(db, tool, input) {
-  try {
-    switch (tool) {
-      // ...
-      case 'hn_fetch':
-        return await hnFetch(db, input);
-      // ...
-    }
-  } catch (error) {
-    await logError(db, 'runTool', error, { tool, input });
-    return { error: error.message };
-  }
-}
-
-async function wikiSearch(db, input) {
-  try {
-    const { action, query, limit } = input;
-    let result;
-
-    if (action === 'search') {
-      const response = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srsearch=${query}`);
-      const data = await response.json();
-      const pages = data.query.search.slice(0, limit);
-
-      result = pages.map(page => ({
-        title: page.title,
-        extract: page.snippet,
-        url: `https://en.wikipedia.org/?curid=${page.pageid}`
-      }));
-    } else if (action === 'summary') {
-      const response = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${query}`);
-      const data = await response.json();
-      result = {
-        title: data.title,
-        extract: data.extract,
-        url: data.content_urls.desktop.page
-      };
-    } else {
-      throw new Error(`Unknown action: ${action}`);
-    }
-
-    return result;
-  } catch (error) {
-    await logError(db, 'wikiSearch', error, input);
-    throw error;
-  }
-}
-
-const isToolSafe = {
-  ...isToolSafe,
-  wiki_search: true
-};
-
-async function runTool(db, tool, input) {
-  try {
-    switch (tool) {
-      // ...
-      case 'wiki_search':
-        return await wikiSearch(db, input);
-      // ...
-    }
-  } catch (error) {
-    await logError(db, 'runTool', error, { tool, input });
-    return { error: error.message };
-  }
-}
-
-const SEED_KNOWLEDGE = `
-${SEED_KNOWLEDGE}
-- wiki_search: Search Wikipedia and fetch article summaries
-
-When using the wiki_search tool, you can specify:
-- action: search or summary
-- query: The search query or article title
-- limit: The number of search results to return (default: 10)
-`;
-
-async function osmFetch(db, input) {
-  try {
-    const { query, limit } = input;
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=${limit}`, {
-      headers: {
-        'User-Agent': 'Saraha/1.0'
-      }
-    });
-    const data = await response.json();
-    return data.map(result => ({
-      lat: result.lat,
-      lon: result.lon,
-      display_name: result.display_name,
-      type: result.type
-    }));
-  } catch (error) {
-    await logError(db, 'osmFetch', error, input);
-    throw error;
-  }
-}
-
-const isToolSafe = {
-  ...isToolSafe,
-  osm_fetch: true
-};
-
-async function runTool(db, tool, input) {
-  try {
-    switch (tool) {
-      // ...
-      case 'osm_fetch':
-        return await osmFetch(db, input);
-      // ...
-    }
-  } catch (error) {
-    await logError(db, 'runTool', error, { tool, input });
-    return { error: error.message };
-  }
-}
-
-const SEED_KNOWLEDGE = `
-${SEED_KNOWLEDGE}
-- osm_fetch: Geocode location names to coordinates using OpenStreetMap Nominatim API
-
-When using the osm_fetch tool, you can specify:
-- query: The location name to geocode
-- limit: The number of results to return (default: 10)
-`;
