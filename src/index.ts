@@ -191,14 +191,14 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
   { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
-  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself â€” prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
+  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
   { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
   { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
   { k: "self_improve_dont_touch_rag", c: "RULE: NEVER modify brain_knowledge table, SEED_KNOWLEDGE data, or RAG content. RAG seeds are your source of truth about yourself. Only propose changes to your actual code (src/index.ts) or behavior (prompt overrides).", cat: "self_improve" },
   { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
-  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves â€” through actual code changes pushed to GitHub.", cat: "governance" },
+  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves — through actual code changes pushed to GitHub.", cat: "governance" },
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
 ];
@@ -229,7 +229,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha – Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -631,6 +631,34 @@ export default {
       return json({ phase, emotions, energy: reg.energy });
     }
 
+    if (url.pathname === "/brain/capabilities") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      const lastAct = await env.DB.prepare("SELECT type, status, created_at FROM actions ORDER BY created_at DESC LIMIT 1").all();
+      const lastActivity = lastAct.results[0] ? lastAct.results[0].type + " (" + lastAct.results[0].status + ")" : "none";
+      return json({
+        name: "Saraha Core",
+        description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
+        version: "1.0.0",
+        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write"], avatar: true, health: true, task_scheduling: false, heal: false },
+        status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
+        endpoints: {
+          activity: { method: "GET", path: "/brain/activity" },
+          logs: { method: "GET", path: "/brain/logs" },
+          proposals: { method: "GET", path: "/brain/proposals" },
+          phase: { method: "GET", path: "/brain/phase" },
+          emotions: { method: "GET", path: "/brain/emotions" },
+          knowledge: { method: "GET", path: "/brain/knowledge" },
+          stream: { method: "GET", path: "/brain/stream" },
+          wake: { method: "POST", path: "/brain/wake" },
+          sleep: { method: "POST", path: "/brain/sleep" },
+          avatar: { method: "GET", path: "/avatar" },
+          diag: { method: "GET", path: "/brain/diag" }
+        }
+      });
+    }
+
     if (url.pathname === "/brain/override") {
       const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
       if (!ov.results[0]?.value) return json({ active: false });
@@ -998,7 +1026,7 @@ export default {
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
     const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
-    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\n" + (sourceCode ? "Above is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF — your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\n" + (sourceCode ? "Above is your actual source code — read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
