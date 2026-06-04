@@ -547,410 +547,166 @@ async function getEmotions(db) {
 }
 
 async function getEmotionValue(db, emotion) {
-  try {
-    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(`emotion_${emotion}`).first();
-    return result ? parseInt(result.value) : EMO_DEFAULTS[emotion];
-  } catch (error) {
-    await logError(db, 'getEmotionValue', error, { emotion });
-    return EMO_DEFAULTS[emotion];
+  if (!EMOTIONS.includes(emotion)) {
+    throw new Error(`Invalid emotion: ${emotion}`);
   }
+  const emotions = await getEmotions(db);
+  return emotions[emotion] || EMO_DEFAULTS[emotion];
 }
 
-async function updateEmotion(db, emotion, delta) {
-  try {
-    const current = await getEmotionValue(db, emotion);
-    const [min, max] = RANGES[emotion];
-    const newValue = Math.min(Math.max(current + delta, min), max);
-    await db.prepare(`
-      INSERT INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
-    `).bind(`emotion_${emotion}`, newValue.toString()).run();
-    return newValue;
-  } catch (error) {
-    await logError(db, 'updateEmotion', error, { emotion, delta });
-    throw error;
+async function adjustEnergy(db, delta) {
+  // Input validation
+  if (!Number.isInteger(delta)) {
+    throw new Error('Delta must be an integer');
   }
+
+  if (delta < -50 || delta > 50) {
+    throw new Error('Delta must be between -50 and 50');
+  }
+
+  // Rate limiting check - prevent energy spikes
+  const recentAdjustments = await db.prepare(`
+    SELECT SUM(value) as total_delta
+    FROM graph_updates
+    WHERE node_type = 'energy'
+    AND operation = 'adjust'
+    AND timestamp > datetime('now', '-5 minutes')
+  `).first().then(r => r.total_delta || 0);
+
+  if (recentAdjustments + delta > 100 || recentAdjustments + delta < -100) {
+    throw new RateLimitError('Energy adjustment would exceed safe limits');
+  }
+
+  // Update energy
+  const currentEnergy = await getEmotionValue(db, 'energetic');
+  const newEnergy = Math.min(Math.max(currentEnergy + delta, 0), 10);
+
+  await db.prepare(`
+    INSERT INTO graph_updates (node_type, node_id, operation, properties, timestamp)
+    VALUES ('energy', 'energetic', 'adjust', json_object('delta', ?1, 'old_value', ?2, 'new_value', ?3), datetime('now'))
+  `).bind(delta, currentEnergy, newEnergy).run();
+
+  await db.prepare(`
+    INSERT INTO identity (key, value, updated_at)
+    VALUES ('emotion_energetic', ?1, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).bind(newEnergy).run();
+
+  // Monitoring hook
+  await storeBrainLog(db, null, 'adjustEnergy', 'monitor', {
+    action: 'energy_adjustment',
+    delta: delta,
+    old_value: currentEnergy,
+    new_value: newEnergy,
+    source: 'monitor'
+  });
+
+  return newEnergy;
 }
 
-async function storeBrainLog(db, actionId, tool, step, content = {}, model = null, tokens = 0) {
+async function updateEmotion(db, name, delta) {
+  // Input validation
+  if (!EMOTIONS.includes(name)) {
+    throw new Error(`Invalid emotion: ${name}`);
+  }
+
+  if (!Number.isInteger(delta)) {
+    throw new Error('Delta must be an integer');
+  }
+
+  if (delta < -10 || delta > 10) {
+    throw new Error('Delta must be between -10 and 10');
+  }
+
+  // Get current value
+  const currentValue = await getEmotionValue(db, name);
+  const range = RANGES[name];
+  const newValue = Math.min(Math.max(currentValue + delta, range[0]), range[1]);
+
+  // Update emotion
+  await db.prepare(`
+    INSERT INTO graph_updates (node_type, node_id, operation, properties, timestamp)
+    VALUES ('emotion', ?1, 'adjust', json_object('delta', ?2, 'old_value', ?3, 'new_value', ?4), datetime('now'))
+  `).bind(name, delta, currentValue, newValue).run();
+
+  await db.prepare(`
+    INSERT INTO identity (key, value, updated_at)
+    VALUES ('emotion_${name}', ?1, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).bind(newValue).run();
+
+  // Monitoring hook
+  await storeBrainLog(db, null, 'updateEmotion', 'monitor', {
+    action: 'emotion_update',
+    emotion: name,
+    delta: delta,
+    old_value: currentValue,
+    new_value: newValue,
+    source: 'monitor'
+  });
+
+  return newValue;
+}
+
+async function storeBrainLog(db, actionId, tool, step, content) {
   try {
     await db.prepare(`
-      INSERT INTO brain_logs (action_id, tool, step, content, model, tokens, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+      INSERT INTO brain_logs (action_id, tool, step, content, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
     `).bind(
       actionId,
       tool,
       step,
-      JSON.stringify(content),
-      model,
-      tokens
+      JSON.stringify(content)
     ).run();
   } catch (error) {
-    await logError(db, 'storeBrainLog', error, { actionId, tool, step });
-  }
-}
-
-async function initializeDatabase(db) {
-  for (const table of TABLES) {
-    await db.prepare(table).run();
-  }
-  await addToolRecoveryRules(db);
-  console.log('Database initialized');
-}
-
-async function getMemory(db, id) {
-  try {
-    const result = await db.prepare("SELECT * FROM memories WHERE id = ?1").bind(id).first();
-    return result || null;
-  } catch (error) {
-    await logError(db, 'getMemory', error, { id });
+    await logError(db, 'storeBrainLog', error, {
+      actionId,
+      tool,
+      step,
+      content
+    });
     throw error;
   }
 }
 
-async function getMemories(db, limit = 10, offset = 0) {
-  try {
-    const result = await db.prepare("SELECT * FROM memories ORDER BY strength DESC, created_at DESC LIMIT ?1 OFFSET ?2")
-      .bind(limit, offset).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getMemories', error, { limit, offset });
-    throw error;
+async function governanceGate(db, decision, resourceType, riskPct) {
+  // Input validation
+  if (!['approve', 'reject', 'pending'].includes(decision)) {
+    throw new Error('Invalid decision: must be approve, reject, or pending');
   }
-}
 
-async function addMemory(db, content, type = 'episodic', tags = [], strength = 1.0) {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO memories (content, type, strength, tags, created_at)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-    `).bind(content, type, strength, JSON.stringify(tags)).run();
-
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'addMemory', error, { content, type, tags });
-    throw error;
+  if (!['code', 'data', 'system', 'memory', 'energy'].includes(resourceType)) {
+    throw new Error('Invalid resource type');
   }
-}
 
-async function updateMemoryStrength(db, id, delta) {
-  try {
-    const memory = await getMemory(db, id);
-    if (!memory) throw new Error('Memory not found');
-
-    const newStrength = Math.min(Math.max(memory.strength + delta, 0), 10);
-    await db.prepare(`
-      UPDATE memories SET strength = ?1, created_at = datetime('now')
-      WHERE id = ?2
-    `).bind(newStrength, id).run();
-
-    return newStrength;
-  } catch (error) {
-    await logError(db, 'updateMemoryStrength', error, { id, delta });
-    throw error;
+  if (typeof riskPct !== 'number' || riskPct < 0 || riskPct > 100) {
+    throw new Error('Risk percentage must be a number between 0 and 100');
   }
+
+  // Create governance record
+  const result = await db.prepare(`
+    INSERT INTO proposals (title, what_diff, how_diff, resource_type, risk_pct, status, created_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+  `).bind(
+    `Governance decision for ${resourceType}`,
+    decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'pending',
+    `Risk assessment: ${riskPct}%`,
+    resourceType,
+    riskPct,
+    decision
+  ).run();
+
+  const proposalId = result.lastInsertRowid;
+
+  // Monitoring hook - log all governance decisions
+  await storeBrainLog(db, proposalId, 'governanceGate', 'monitor', {
+    decision: decision,
+    resource_type: resourceType,
+    risk_pct: riskPct,
+    timestamp: new Date().toISOString(),
+    source: 'monitor'
+  });
+
+  return proposalId;
 }
-
-async function getLearning(db, id) {
-  try {
-    const result = await db.prepare("SELECT * FROM learnings WHERE id = ?1").bind(id).first();
-    return result || null;
-  } catch (error) {
-    await logError(db, 'getLearning', error, { id });
-    throw error;
-  }
-}
-
-async function getLearnings(db, limit = 10, offset = 0) {
-  try {
-    const result = await db.prepare("SELECT * FROM learnings ORDER BY last_used DESC, success_count DESC LIMIT ?1 OFFSET ?2")
-      .bind(limit, offset).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getLearnings', error, { limit, offset });
-    throw error;
-  }
-}
-
-async function addLearning(db, pattern, context = '') {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO learnings (pattern, context, created_at)
-      VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(pattern) DO UPDATE SET
-        context = ?2,
-        success_count = success_count + 1,
-        last_used = datetime('now')
-    `).bind(pattern, context).run();
-
-    return result.lastInsertRowId || (await db.prepare("SELECT id FROM learnings WHERE pattern = ?1").bind(pattern).first()).id;
-  } catch (error) {
-    await logError(db, 'addLearning', error, { pattern, context });
-    throw error;
-  }
-}
-
-async function recordLearningSuccess(db, id) {
-  try {
-    await db.prepare(`
-      UPDATE learnings SET
-        success_count = success_count + 1,
-        last_used = datetime('now')
-      WHERE id = ?1
-    `).bind(id).run();
-  } catch (error) {
-    await logError(db, 'recordLearningSuccess', error, { id });
-    throw error;
-  }
-}
-
-async function recordLearningFailure(db, id) {
-  try {
-    await db.prepare(`
-      UPDATE learnings SET
-        fail_count = fail_count + 1,
-        last_used = datetime('now')
-      WHERE id = ?1
-    `).bind(id).run();
-  } catch (error) {
-    await logError(db, 'recordLearningFailure', error, { id });
-    throw error;
-  }
-}
-
-async function getIdentity(db, key) {
-  try {
-    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
-    return result ? result.value : null;
-  } catch (error) {
-    await logError(db, 'getIdentity', error, { key });
-    throw error;
-  }
-}
-
-async function setIdentity(db, key, value) {
-  try {
-    await db.prepare(`
-      INSERT INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
-    `).bind(key, value).run();
-  } catch (error) {
-    await logError(db, 'setIdentity', error, { key, value });
-    throw error;
-  }
-}
-
-async function getAction(db, id) {
-  try {
-    const result = await db.prepare("SELECT * FROM actions WHERE id = ?1").bind(id).first();
-    return result || null;
-  } catch (error) {
-    await logError(db, 'getAction', error, { id });
-    throw error;
-  }
-}
-
-async function createAction(db, type, input = null, status = 'pending') {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO actions (type, status, input, created_at)
-      VALUES (?1, ?2, ?3, datetime('now'))
-    `).bind(type, status, input).run();
-    return result.lastInsertRowid;
-  } catch (error) {
-    await logError(db, 'createAction', error, { type, input, status });
-    throw error;
-  }
-}
-
-async function updateActionStatus(db, id, status, result = null, error = null) {
-  try {
-    await db.prepare(`
-      UPDATE actions SET
-        status = ?1,
-        result = ?2,
-        error = ?3,
-        completed_at = datetime('now')
-      WHERE id = ?4
-    `).bind(status, result, error, id).run();
-  } catch (error) {
-    await logError(db, 'updateActionStatus', error, { id, status, result, error });
-    throw error;
-  }
-}
-
-async function getBrainKnowledge(db, key) {
-  try {
-    const result = await db.prepare("SELECT * FROM brain_knowledge WHERE key = ?1").bind(key).first();
-    return result || null;
-  } catch (error) {
-    await logError(db, 'getBrainKnowledge', error, { key });
-    throw error;
-  }
-}
-
-async function setBrainKnowledge(db, key, content, category = 'general', source = 'seed') {
-  try {
-    await db.prepare(`
-      INSERT INTO brain_knowledge (key, content, category, source, created_at)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET
-        content = ?2,
-        category = ?3,
-        source = ?4,
-        created_at = datetime('now')
-    `).bind(key, content, category, source).run();
-  } catch (error) {
-    await logError(db, 'setBrainKnowledge', error, { key, content, category, source });
-    throw error;
-  }
-}
-
-async function getContextualRules(db, context) {
-  try {
-    const result = await db.prepare(`
-      SELECT * FROM contextual_rules
-      WHERE context = ?1 OR context = '*'
-      ORDER BY confidence DESC, last_used DESC
-    `).bind(context).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getContextualRules', error, { context });
-    throw error;
-  }
-}
-
-async function addContextualRule(db, pattern, context, response, confidence = 0.5) {
-  try {
-    await db.prepare(`
-      INSERT INTO contextual_rules (pattern, context, response, confidence, created_at)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-      ON CONFLICT(pattern) DO UPDATE SET
-        context = ?2,
-        response = ?3,
-        confidence = ?4,
-        last_used = datetime('now')
-    `).bind(pattern, context, response, confidence).run();
-  } catch (error) {
-    await logError(db, 'addContextualRule', error, { pattern, context, response });
-    throw error;
-  }
-}
-
-async function updateContextualRuleUsage(db, id) {
-  try {
-    await db.prepare(`
-      UPDATE contextual_rules SET last_used = datetime('now')
-      WHERE id = ?1
-    `).bind(id).run();
-  } catch (error) {
-    await logError(db, 'updateContextualRuleUsage', error, { id });
-    throw error;
-  }
-}
-
-async function getEmotionalPatterns(db, context) {
-  try {
-    const result = await db.prepare(`
-      SELECT * FROM emotional_patterns
-      WHERE context_trigger = ?1 OR context_trigger = '*'
-      ORDER BY confidence DESC, success_count DESC
-    `).bind(context).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getEmotionalPatterns', error, { context });
-    throw error;
-  }
-}
-
-async function addEmotionalPattern(db, patternName, emotionCombination, contextTrigger, responseTemplate, confidence = 0.5) {
-  try {
-    await db.prepare(`
-      INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-      ON CONFLICT(pattern_name) DO UPDATE SET
-        emotion_combination = ?2,
-        context_trigger = ?3,
-        response_template = ?4,
-        confidence = ?5,
-        last_used = datetime('now')
-    `).bind(patternName, emotionCombination, contextTrigger, responseTemplate, confidence).run();
-  } catch (error) {
-    await logError(db, 'addEmotionalPattern', error, { patternName, emotionCombination, contextTrigger });
-    throw error;
-  }
-}
-
-async function recordEmotionalPatternSuccess(db, id) {
-  try {
-    await db.prepare(`
-      UPDATE emotional_patterns SET
-        success_count = success_count + 1,
-        last_used = datetime('now')
-      WHERE id = ?1
-    `).bind(id).run();
-  } catch (error) {
-    await logError(db, 'recordEmotionalPatternSuccess', error, { id });
-    throw error;
-  }
-}
-
-async function recordEmotionalPatternFailure(db, id) {
-  try {
-    await db.prepare(`
-      UPDATE emotional_patterns SET
-        fail_count = fail_count + 1,
-        last_used = datetime('now')
-      WHERE id = ?1
-    `).bind(id).run();
-  } catch (error) {
-    await logError(db, 'recordEmotionalPatternFailure', error, { id });
-    throw error;
-  }
-}
-
-async function getGraphUpdates(db, limit = 10) {
-  try {
-    const result = await db.prepare("SELECT * FROM graph_updates ORDER BY timestamp DESC LIMIT ?1").bind(limit).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getGraphUpdates', error, { limit });
-    throw error;
-  }
-}
-
-async function addGraphUpdate(db, nodeType, nodeId, operation, properties = {}) {
-  try {
-    await db.prepare(`
-      INSERT INTO graph_updates (node_type, node_id, operation, properties, timestamp)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-    `).bind(nodeType, nodeId, operation, JSON.stringify(properties)).run();
-  } catch (error) {
-    await logError(db, 'addGraphUpdate', error, { nodeType, nodeId, operation });
-    throw error;
-  }
-}
-
-async function getMetaLearningStats(db, updateType = null) {
-  try {
-    let query = "SELECT * FROM meta_learning_stats";
-    const bindings = [];
-
-    if (updateType) {
-      query += " WHERE update_type = ?1";
-      bindings.push(updateType);
-    }
-
-    query += " ORDER BY created_at DESC";
-
-    const result = await db.prepare(query).bind(...bindings).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getMetaLearningStats', error, { updateType });
-    throw error;
-  }
-}
-
-async
