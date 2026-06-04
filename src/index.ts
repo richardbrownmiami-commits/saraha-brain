@@ -36,9 +36,9 @@ const TABLES = [
   )`
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited", "relaxed", "focused", "anxious"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10], relaxed: [1, 10], focused: [1, 10], anxious: [0, 10] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, relaxed: 5, focused: 5, anxious: 0 };
 
 async function getEmotions(db) {
   try {
@@ -57,21 +57,22 @@ async function getEmotions(db) {
 
 async function getState(db) {
   try {
-    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence','stress')").all();
     const emotions = { ...EMO_DEFAULTS };
     for (const r of rows.results) {
       const key = r.key.replace("emotion_", "");
       if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
     }
-    const reg = { energy: 100, confidence: 50 };
+    const reg = { energy: 100, confidence: 50, stress: 0 };
     for (const r of rows.results) {
       if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
       if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+      if (r.key === "stress") reg.stress = parseFloat(r.value) || 0;
     }
     return { emotions, reg };
   } catch (error) {
     await logError(db, 'getState', error, { context: 'state retrieval' });
-    return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
+    return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50, stress: 0 } };
   }
 }
 
@@ -90,13 +91,13 @@ async function updateEmotion(db, name, delta) {
 
 async function getRegulator(db) {
   try {
-    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
-    const vals = { energy: 100, confidence: 50 };
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence','stress','focus')").all();
+    const vals = { energy: 100, confidence: 50, stress: 0, focus: 5 };
     for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
-    return { energy: vals.energy, confidence: vals.confidence };
+    return vals;
   } catch (error) {
     await logError(db, 'getRegulator', error, { context: 'regulator retrieval' });
-    return { energy: 100, confidence: 50 };
+    return { energy: 10, confidence: 50, stress: 0, focus: 5 };
   }
 }
 
@@ -111,35 +112,86 @@ async function adjustEnergy(db, delta) {
   }
 }
 
+async function adjustStress(db, delta) {
+  try {
+    const { stress } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(10, stress + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('stress', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  } catch (error) {
+    await logError(db, 'adjustStress', error, { delta });
+    throw error;
+  }
+}
+
+async function adjustFocus(db, delta) {
+  try {
+    const { focus } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(10, focus + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('focus', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  } catch (error) {
+    await logError(db, 'adjustFocus', error, { delta });
+    throw error;
+  }
+}
+
 function describeMood(emotions, energy) {
   const parts = [];
-  if (energy > 80 && emotions.energetic >= 7) parts.push("alert and full of energy");
+  if (energy > 80 && emotions.energetic >= 7 && emotions.focused >= 7) parts.push("highly alert and deeply focused");
   else if (energy > 60 && emotions.energetic >= 5) parts.push("energetic and engaged");
   else if (energy > 40) parts.push("balanced and present");
   else if (energy > 20) parts.push("a bit tired but clear-minded");
-  else parts.push("quite fatigued, resting");
+  else parts.push("quite fatigued, needing rest");
+
+  if (emotions.focused >= 8) parts.push("in deep concentration");
+  else if (emotions.focused >= 5) parts.push("maintaining focus");
+  else if (emotions.focused <= 3) parts.push("struggling to concentrate");
+
   if (emotions.happy >= 9) parts.push("in excellent spirits");
   else if (emotions.happy >= 6) parts.push("in good spirits");
   else if (emotions.happy >= 4) parts.push("quiet and neutral");
   else parts.push("feeling low");
-  if (emotions.bad >= 2) parts.push("with a trace of unease");
+
+  if (emotions.relaxed >= 8) parts.push("feeling calm and at ease");
+  else if (emotions.relaxed >= 5) parts.push("feeling balanced");
+  else if (emotions.relaxed <= 3) parts.push("feeling tense");
+
+  if (emotions.bad >= 2 || emotions.anxious >= 5) parts.push("with a trace of unease");
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
   else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+
   if (emotions.curious >= 7) parts.push("feeling curious and inquisitive");
   if (emotions.bored >= 7) parts.push("feeling bored and restless");
   if (emotions.excited >= 7) parts.push("feeling excited and enthusiastic");
+
   return "You feel " + parts.join(", ") + ".";
 }
 
 async function driftEmotions(db) {
   try {
     const emo = await getEmotions(db);
+    const reg = await getRegulator(db);
+
+    // Natural emotion decay and adjustment
     if (emo.happy > 7) await updateEmotion(db, "happy", -1);
     if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
     if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
-    if (emo.curious < 5 && emo.curious >= 1) await updateEmotion(db, "curious", 1);
+    if (emo.anxious > 0) await updateEmotion(db, "anxious", -1);
+
+    // Energy-based adjustments
+    if (reg.energy < 30 && emo.energetic > 3) await updateEmotion(db, "energetic", -1);
+    if (reg.energy > 70 && emo.energetic < 7) await updateEmotion(db, "energetic", 1);
+
+    // Focus adjustments
+    if (reg.focus < 3 && emo.focused > 3) await updateEmotion(db, "focused", -1);
+    if (reg.focus > 7 && emo.focused < 7) await updateEmotion(db, "focused", 1);
+
+    // Stress recovery
+    if (reg.stress > 0) await adjustStress(db, -1);
+    if (reg.stress > 5) await adjustStress(db, -2);
+
+    // Curiosity and boredom adjustments
     if (emo.curious > 7) await updateEmotion(db, "curious", -1);
+    if (emo.curious < 5 && emo.curious > 1) await updateEmotion(db, "curious", 1);
     if (emo.bored > 7) await updateEmotion(db, "bored", -1);
     if (emo.bored < 5 && emo.bored > 1) await updateEmotion(db, "bored", 1);
     if (emo.excited > 7) await updateEmotion(db, "excited", -1);
@@ -190,7 +242,10 @@ async function getBrainPhase(db, emotions, reg) {
     const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
     if (utcMin >= 1170 || utcMin < 30) return "sleeping";
     if (reg.energy <= 20) return "tired";
-    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+    if (reg.energy > 40 && emotions.energetic >= 4 && reg.focus >= 5) return "focused";
+    if (reg.energy > 60 && emotions.curious >= 7) return "exploring";
+    if (reg.stress > 5) return "overwhelmed";
+    if (reg.focus >= 7 && emotions.focused >= 7) return "concentrating";
     return "awake";
   } catch (error) {
     await logError(db, 'getBrainPhase', error, { context: 'phase determination' });
@@ -419,56 +474,25 @@ async function metaLearnEmotionalPatterns(db) {
     const learnings = await db.prepare("SELECT pattern, context, success_count, fail_count FROM learnings").all();
 
     for (const learning of learnings.results) {
-      const successRate = learning.success_count / (learning.success_count + learning.fail_count + 1);
-      const confidence = Math.min(0.95, Math.max(0.05, successRate));
+      const successRate = learning.success_count / (learning.success_count + learning.fail_count || 1);
 
-      if (successRate > 0.7 && confidence > 0.5) {
-        const emotionPattern = extractEmotionPatternFromText(learning.pattern);
-        if (emotionPattern) {
-          await updateEmotionalPattern(
-            db,
-            `meta_learned_${learning.pattern.substring(0, 20)}`,
-            emotionPattern.emotion_combination,
-            learning.context,
-            learning.pattern,
-            confidence
-          );
-        }
-      }
+      // Create emotional patterns based on learning patterns
+      const emotionCombination = {
+        curious: [Math.min(7, Math.max(3, Math.floor(successRate * 10)))],
+        focused: [Math.min(8, Math.max(4, Math.floor(successRate * 8)))]
+      };
+
+      await updateEmotionalPattern(
+        db,
+        `learning_${learning.pattern}`,
+        emotionCombination,
+        learning.context,
+        `When learning ${learning.pattern}, maintain focus and curiosity.`,
+        successRate
+      );
     }
   } catch (error) {
     await logError(db, 'metaLearnEmotionalPatterns', error, { context: 'emotional pattern learning' });
     throw error;
-  }
-}
-
-function extractEmotionPatternFromText(text) {
-  try {
-    const emotionWeights = {
-      curious: 0.4,
-      bored: 0.3,
-      excited: 0.5,
-      happy: 0.6,
-      bad: 0.2,
-      energetic: 0.3,
-      intelligent: 0.2
-    };
-
-    const emotionCombination = {};
-    for (const emotion of EMOTIONS) {
-      emotionCombination[emotion] = [0, 0];
-    }
-
-    for (const [emotion, weight] of Object.entries(emotionWeights)) {
-      if (text.toLowerCase().includes(emotion.toLowerCase())) {
-        emotionCombination[emotion][1] += weight * 10;
-        emotionCombination[emotion][0] += weight * 5;
-      }
-    }
-
-    return { emotion_combination: emotionCombination };
-  } catch (error) {
-    console.error('Error in extractEmotionPatternFromText:', error);
-    return null;
   }
 }
