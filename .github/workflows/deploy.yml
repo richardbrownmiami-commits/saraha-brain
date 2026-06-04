@@ -12,6 +12,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npx wrangler@3.90.0 deploy --var GITHUB_PAT:${{ vars.GHPAT }}
+      - run: npx wrangler@3.90.0 deploy --var GITHUB_PAT:${{ secrets.GHPAT }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}
