@@ -36,9 +36,9 @@ const TABLES = [
   )`
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored", "excited"];
+const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10] };
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5 };
 
 async function getEmotions(db) {
   try {
@@ -125,6 +125,9 @@ function describeMood(emotions, energy) {
   if (emotions.bad >= 2) parts.push("with a trace of unease");
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
   else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+  if (emotions.curious >= 7) parts.push("feeling curious and inquisitive");
+  if (emotions.bored >= 7) parts.push("feeling bored and restless");
+  if (emotions.excited >= 7) parts.push("feeling excited and enthusiastic");
   return "You feel " + parts.join(", ") + ".";
 }
 
@@ -135,6 +138,12 @@ async function driftEmotions(db) {
     if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
     if (emo.bad > 0) await updateEmotion(db, "bad", -1);
     if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+    if (emo.curious < 5 && emo.curious >= 1) await updateEmotion(db, "curious", 1);
+    if (emo.curious > 7) await updateEmotion(db, "curious", -1);
+    if (emo.bored > 7) await updateEmotion(db, "bored", -1);
+    if (emo.bored < 5 && emo.bored > 1) await updateEmotion(db, "bored", 1);
+    if (emo.excited > 7) await updateEmotion(db, "excited", -1);
+    if (emo.excited < 5 && emo.excited > 1) await updateEmotion(db, "excited", 1);
   } catch (error) {
     await logError(db, 'driftEmotions', error, { context: 'emotion drift' });
     throw error;
@@ -436,206 +445,30 @@ async function metaLearnEmotionalPatterns(db) {
 function extractEmotionPatternFromText(text) {
   try {
     const emotionWeights = {
-      energetic: 0,
-      intelligent: 0,
-      happy: 0,
-      bad: 0
+      curious: 0.4,
+      bored: 0.3,
+      excited: 0.5,
+      happy: 0.6,
+      bad: 0.2,
+      energetic: 0.3,
+      intelligent: 0.2
     };
 
-    const textLower = text.toLowerCase();
-
-    if (textLower.includes("happy") || textLower.includes("joy") || textLower.includes("pleased")) {
-      emotionWeights.happy += 1;
-    }
-    if (textLower.includes("sad") || textLower.includes("unhappy") || textLower.includes("depressed")) {
-      emotionWeights.happy -= 1;
-    }
-    if (textLower.includes("energetic") || textLower.includes("excited") || textLower.includes("enthusiastic")) {
-      emotionWeights.energetic += 1;
-    }
-    if (textLower.includes("tired") || textLower.includes("fatigued") || textLower.includes("exhausted")) {
-      emotionWeights.energetic -= 1;
-    }
-    if (textLower.includes("intelligent") || textLower.includes("smart") || textLower.includes("clever")) {
-      emotionWeights.intelligent += 1;
-    }
-    if (textLower.includes("confused") || textLower.includes("unclear") || textLower.includes("dumb")) {
-      emotionWeights.intelligent -= 1;
-    }
-    if (textLower.includes("bad") || textLower.includes("angry") || textLower.includes("frustrated")) {
-      emotionWeights.bad += 1;
+    const emotionCombination = {};
+    for (const emotion of EMOTIONS) {
+      emotionCombination[emotion] = [0, 0];
     }
 
-    const result = {};
     for (const [emotion, weight] of Object.entries(emotionWeights)) {
-      if (weight > 0) {
-        result[emotion] = [Math.max(1, 5 - weight * 2), Math.min(10, 5 + weight * 2)];
-      } else if (weight < 0) {
-        result[emotion] = [Math.max(1, 5 + weight * 2), Math.min(10, 5 - weight * 2)];
+      if (text.toLowerCase().includes(emotion.toLowerCase())) {
+        emotionCombination[emotion][1] += weight * 10;
+        emotionCombination[emotion][0] += weight * 5;
       }
     }
 
-    return Object.keys(result).length > 0 ? { emotion_combination: result } : null;
+    return { emotion_combination: emotionCombination };
   } catch (error) {
-    console.error('Error extracting emotion pattern:', error);
+    console.error('Error in extractEmotionPatternFromText:', error);
     return null;
-  }
-}
-
-async function logGraphUpdate(db, nodeType, nodeId, operation, properties = {}) {
-  try {
-    await db.prepare(`
-      INSERT INTO graph_updates (node_type, node_id, operation, properties)
-      VALUES (?1, ?2, ?3, ?4)
-    `).bind(nodeType, nodeId, operation, JSON.stringify(properties)).run();
-  } catch (error) {
-    await logError(db, 'logGraphUpdate', error, { nodeType, nodeId, operation, properties });
-    throw error;
-  }
-}
-
-async function analyzeGraphUpdatePatterns(db) {
-  try {
-    const updates = await db.prepare("SELECT * FROM graph_updates ORDER BY timestamp DESC LIMIT 100").all();
-
-    if (updates.results.length < 10) return;
-
-    const patternAnalysis = {};
-    for (const update of updates.results) {
-      const key = `${update.node_type}:${update.operation}`;
-      if (!patternAnalysis[key]) {
-        patternAnalysis[key] = { count: 0, properties: {} };
-      }
-      patternAnalysis[key].count++;
-
-      if (update.properties) {
-        const props = JSON.parse(update.properties);
-        for (const [prop, value] of Object.entries(props)) {
-          if (!patternAnalysis[key].properties[prop]) {
-            patternAnalysis[key].properties[prop] = {};
-          }
-          patternAnalysis[key].properties[prop][value] = (patternAnalysis[key].properties[prop][value] || 0) + 1;
-        }
-      }
-    }
-
-    for (const [patternKey, data] of Object.entries(patternAnalysis)) {
-      const confidence = Math.min(0.95, data.count / 100);
-
-      if (confidence > 0.7) {
-        const [nodeType, operation] = patternKey.split(':');
-        const mostCommonProps = {};
-
-        for (const [prop, values] of Object.entries(data.properties)) {
-          mostCommonProps[prop] = Object.entries(values).sort((a, b) => b[1] - a[1])[0][0];
-        }
-
-        await updateContextualRule(
-          db,
-          `graph_pattern_${patternKey}`,
-          `When ${operation} operations occur on ${nodeType} nodes`,
-          `Handle ${operation} on ${nodeType} with strategy based on properties`,
-          confidence
-        );
-
-        await db.prepare(`
-          INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
-          VALUES ('graph_pattern', ?1, ?2, ?3, datetime('now'))
-        `).bind(
-          patternKey,
-          confidence,
-          data.count / updates.results.length
-        ).run();
-      }
-    }
-  } catch (error) {
-    await logError(db, 'analyzeGraphUpdatePatterns', error, { context: 'graph pattern analysis' });
-    throw error;
-  }
-}
-
-async function generatePrompt(db, context, topic, intent) {
-  // Implementation continues...
-}
-
-async function logError(db, errorType, error, context = {}) {
-  try {
-    const errorEntry = {
-      error_type: errorType,
-      error_message: error.message,
-      stack_trace: error.stack,
-      context: JSON.stringify(context),
-      severity: 'high',
-      handled: 0,
-      recovery_action: null,
-      created_at: new Date().toISOString()
-    };
-
-    await db.prepare(`
-      INSERT INTO error_logs (error_type, error_message, stack_trace, context, severity, handled, recovery_action, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-    `).bind(
-      errorEntry.error_type,
-      errorEntry.error_message,
-      errorEntry.stack_trace,
-      errorEntry.context,
-      errorEntry.severity,
-      errorEntry.handled,
-      errorEntry.recovery_action,
-      errorEntry.created_at
-    ).run();
-
-    await attemptRecovery(db, errorType, error, context);
-  } catch (loggingError) {
-    console.error('Failed to log error:', loggingError);
-  }
-}
-
-async function attemptRecovery(db, errorType, error, context = {}) {
-  try {
-    const recoveryProcedure = await db.prepare(`
-      SELECT * FROM recovery_procedures WHERE error_type = ?1
-    `).bind(errorType).all();
-
-    if (recoveryProcedure.results.length > 0) {
-      const procedure = recoveryProcedure.results[0];
-
-      if (procedure.max_retries > 0) {
-        await db.prepare(`
-          UPDATE recovery_procedures
-          SET max_retries = max_retries - 1
-          WHERE error_type = ?1
-        `).bind(errorType).run();
-      }
-
-      if (procedure.procedure) {
-        try {
-          const recoveryFn = new Function('db', 'error', 'context', procedure.procedure);
-          await recoveryFn(db, error, context);
-        } catch (recoveryError) {
-          await logError(db, 'recovery_execution', recoveryError, {
-            originalError: error.message,
-            recoveryProcedure: errorType,
-            context
-          });
-        }
-      } else if (procedure.fallback) {
-        try {
-          const fallbackFn = new Function('db', 'error', 'context', procedure.fallback);
-          await fallbackFn(db, error, context);
-        } catch (fallbackError) {
-          await logError(db, 'fallback_execution', fallbackError, {
-            originalError: error.message,
-            fallbackProcedure: errorType,
-            context
-          });
-        }
-      }
-    }
-  } catch (recoveryError) {
-    await logError(db, 'recovery_attempt', recoveryError, {
-      errorType,
-      context
-    });
   }
 }
