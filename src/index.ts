@@ -132,8 +132,8 @@ async function executeRecoveryProcedure(db, errorType, fallbackFunction, ...args
         retries++;
         if (retries >= procedure.max_retries) break;
 
-        // Exponential backoff
-        const delay = Math.pow(2, retries) * 100;
+        // Exponential backoff with jitter
+        const delay = Math.pow(2, retries) * 100 + Math.random() * 100;
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -165,18 +165,102 @@ async function executeRecoveryProcedure(db, errorType, fallbackFunction, ...args
   }
 }
 
+async function isToolRecoverable(db, toolName, error) {
+  try {
+    const toolRules = {
+      web_search: ['TemporaryNetworkError', 'RateLimitError'],
+      github_write: ['DatabaseConstraintError', 'TemporaryNetworkError'],
+      github_read: ['TemporaryNetworkError'],
+      web_fetch: ['TemporaryNetworkError', 'RateLimitError']
+    };
+
+    if (toolRules[toolName]?.includes(error.name)) {
+      return true;
+    }
+
+    // Check if error is recoverable by default
+    return error.name === 'TemporaryNetworkError' ||
+           error.name === 'RateLimitError' ||
+           error.name === 'DatabaseConstraintError';
+  } catch (checkError) {
+    await logError(db, 'isToolRecoverable', checkError, { toolName, error: error.name });
+    return true; // Default to recoverable if we can't determine
+  }
+}
+
+async function invokeToolWithRecovery(db, toolName, args, maxRetries = 3) {
+  let lastError, retryCount = 0;
+  const tool = { func: eval(toolName) };
+
+  while (retryCount < maxRetries) {
+    try {
+      const result = await tool.func(db, ...args);
+
+      if (result?.error) {
+        const error = new Error(result.error.message || 'Tool error');
+        error.name = result.error.type || 'ToolError';
+        error.context = { tool: toolName, args };
+
+        if (await isToolRecoverable(db, toolName, error)) {
+          retryCount++;
+          const delay = Math.pow(2, retryCount) * 100 + Math.random() * 100;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        await logError(db, 'invokeToolWithRecovery', error, {
+          tool: toolName,
+          attempt: retryCount + 1,
+          maxRetries
+        });
+        return { error, shouldEscalate: true };
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+      error.context = { tool: toolName, args, attempt: retryCount + 1 };
+
+      if (await isToolRecoverable(db, toolName, error) && retryCount < maxRetries - 1) {
+        retryCount++;
+        const delay = Math.pow(2, retryCount) * 100 + Math.random() * 100;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      await logError(db, 'invokeToolWithRecovery', error, {
+        tool: toolName,
+        attempt: retryCount + 1,
+        maxRetries
+      });
+      return { error: lastError, shouldEscalate: true };
+    }
+  }
+
+  const error = new Error('Max retries exceeded');
+  error.name = 'MaxRetriesExceeded';
+  error.context = { tool: toolName, args, retries: maxRetries };
+  await logError(db, 'invokeToolWithRecovery', error, {
+    tool: toolName,
+    retries: maxRetries
+  });
+  return { error, shouldEscalate: true };
+}
+
 async function github_write(db, input, context = {}) {
-  return executeRecoveryProcedure(
-    db,
-    'TemporaryNetworkError',
-    async () => {
-      // Original github_write implementation would go here
-      throw new TemporaryNetworkError("Simulated network error for testing recovery");
-    },
-    db,
-    input,
-    context
-  );
+  return invokeToolWithRecovery(db, 'github_write', [input, context]);
+}
+
+async function github_read(db, input, context = {}) {
+  return invokeToolWithRecovery(db, 'github_read', [input, context]);
+}
+
+async function web_search(db, query, context = {}) {
+  return invokeToolWithRecovery(db, 'web_search', [query, context]);
+}
+
+async function web_fetch(db, url, context = {}) {
+  return invokeToolWithRecovery(db, 'web_fetch', [url, context]);
 }
 
 async function getEmotions(db) {
@@ -335,6 +419,12 @@ async function driftEmotions(db) {
     if (emo.bored < 5 && emo.bored > 1) await updateEmotion(db, "bored", 1);
     if (emo.excited > 7) await updateEmotion(db, "excited", -1);
     if (emo.excited < 5 && emo.excited > 1) await updateEmotion(db, "excited", 1);
+
+    // Add 'bad' emotion when tools fail repeatedly
+    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0 AND created_at > datetime('now', '-1 hour')").bind().first().then(r => r.count);
+    if (errorCount > 3) {
+      await updateEmotion(db, "bad", 1);
+    }
   } catch (error) {
     await logError(db, 'driftEmotions', error, { context: 'emotion drift' });
     throw error;
@@ -395,7 +485,9 @@ async function getBrainPhase(db, emotions, reg) {
 async function getBusyUntil(db) {
   try {
     const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-    return parseInt(r.results[0]?.value) || 0;
+    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0").bind().first().then(r => r.count);
+    const busyValue = parseInt(r.results[0]?.value) || 0;
+    return busyValue + (errorCount * 1000 * 60); // Add 1 minute per error as additional busy time
   } catch (error) {
     await logError(db, 'getBusyUntil', error, { context: 'busy status check' });
     return 0;
@@ -437,6 +529,24 @@ async function applyEvolutionChange(db, proposal, proposalId, reason) {
       .bind("evolution_log:" + proposalId, JSON.stringify(change))
       .run();
 
+    // Store tool errors as anti-patterns if they exist
+    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0 AND created_at > datetime('now', '-1 hour')").bind().first().then(r => r.count);
+    if (errorCount > 0) {
+      await db.prepare(`
+        INSERT INTO anti_patterns (pattern, root_cause, fix, count, linked_proposal_id)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(pattern) DO UPDATE SET
+          count = count + 1,
+          last_seen = datetime('now')
+      `).bind(
+        `tool_errors_${proposalId}`,
+        `Multiple tool errors occurred during proposal execution`,
+        `Review error logs and implement recovery procedures`,
+        errorCount,
+        proposalId
+      ).run();
+    }
+
     const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
     const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
     overrides.push({
@@ -453,93 +563,29 @@ async function applyEvolutionChange(db, proposal, proposalId, reason) {
   } catch (error) {
     await logError(db, 'applyEvolutionChange', error, {
       proposalId,
+      title: proposal.title
     });
+    throw error;
   }
 }
 
-async function web_search(db, query, attempt = 1) {
-  const maxAttempts = 3;
-  const delayMs = [1000, 3000, 5000][attempt-1] || 5000;
-
+async function governanceGate(db, proposal) {
   try {
-    const result = await searchService(query);
+    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0 AND created_at > datetime('now', '-1 hour')").bind().first().then(r => r.count);
+    const riskScore = proposal.risk_pct || 0;
 
-    // Add source citation and timestamp
-    const sources = result.sources || [];
-    const citedResults = sources.map(s => ({
-      ...s,
-      source: `Source: ${new URL(s.url).hostname} | Retrieved: ${new Date().toISOString()}`
-    }));
+    // Increase risk score based on recent errors
+    const adjustedRisk = riskScore + (errorCount * 5);
+    if (adjustedRisk > 100) {
+      throw new Error(`Proposal rejected due to high error rate (${errorCount} recent errors)`);
+    }
 
-    // Log successful search attempt
-    await db.prepare(`
-      INSERT INTO brain_logs (step, content, created_at)
-      VALUES (?1, ?2, datetime('now'))
-    `).bind(
-      'web_search_success',
-      JSON.stringify({
-        query,
-        attempt,
-        sources: citedResults.map(s => ({ url: s.url, title: s.title, source: s.source }))
-      })
-    ).run();
-
-    return {
-      success: true,
-      results: citedResults,
-      query,
-      attempt
-    };
+    return adjustedRisk <= 75; // Original threshold was 75
   } catch (error) {
-    // Log the failed attempt
-    await db.prepare(`
-      INSERT INTO brain_logs (step, content, created_at)
-      VALUES (?1, ?2, datetime('now'))
-    `).bind(
-      'web_search_failure',
-      JSON.stringify({
-        query,
-        attempt,
-        error: error.message,
-        errorType: error.name
-      })
-    ).run();
-
-    // Handle rate limiting and network errors
-    if ((error.name === 'RateLimitError' || error.message.includes('429')) && attempt < maxAttempts) {
-      console.warn(`Rate limited on attempt ${attempt}, retrying in ${delayMs}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-      return web_search(db, query, attempt + 1);
-    }
-
-    if ((error.name === 'TemporaryNetworkError' || error.message.includes('503')) && attempt < maxAttempts) {
-      console.warn(`Network error on attempt ${attempt}, retrying in ${delayMs}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-      return web_search(db, query, attempt + 1);
-    }
-
-    // Return structured error response
-    return {
-      success: false,
-      error: {
-        type: error.name || 'SearchError',
-        message: error.message || 'Web search failed',
-        retryable: error.name === 'RateLimitError' || error.name === 'TemporaryNetworkError',
-        attempt
-      },
-      query
-    };
+    await logError(db, 'governanceGate', error, {
+      proposalId: proposal.id,
+      title: proposal.title
+    });
+    throw error;
   }
-}
-
-async function searchService(query) {
-  // This is a placeholder for the actual search implementation
-  // In a real implementation, this would call a search API like Google Custom Search
-  console.log(`Searching for: ${query}`);
-  return {
-    sources: [
-      { url: "https://example.com/result1", title: "Example Result 1" },
-      { url: "https://example.org/result2", title: "Example Result 2" }
-    ]
-  };
 }
