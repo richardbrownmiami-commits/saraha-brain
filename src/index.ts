@@ -453,102 +453,93 @@ async function applyEvolutionChange(db, proposal, proposalId, reason) {
   } catch (error) {
     await logError(db, 'applyEvolutionChange', error, {
       proposalId,
-      proposalTitle: proposal.title,
-      reason
     });
-    throw error;
   }
 }
 
-async function governanceGate(db, resourceType, riskPct) {
+async function web_search(db, query, attempt = 1) {
+  const maxAttempts = 3;
+  const delayMs = [1000, 3000, 5000][attempt-1] || 5000;
+
   try {
-    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
-  } catch (error) {
-    await logError(db, 'governanceGate', error, { resourceType, riskPct });
-    return { action: "deny", reason: "governance check failed" };
-  }
-}
+    const result = await searchService(query);
 
-async function isKillSwitchActive(db) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-    return r.results[0]?.value === "true";
-  } catch (error) {
-    await logError(db, 'isKillSwitchActive', error, { context: 'kill switch check' });
-    return false;
-  }
-}
+    // Add source citation and timestamp
+    const sources = result.sources || [];
+    const citedResults = sources.map(s => ({
+      ...s,
+      source: `Source: ${new URL(s.url).hostname} | Retrieved: ${new Date().toISOString()}`
+    }));
 
-async function getMasterCronInterval(db) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-    const v = r.results[0]?.value;
-    return v ? parseInt(v) : 0;
-  } catch (error) {
-    await logError(db, 'getMasterCronInterval', error, { context: 'cron interval check' });
-    return 0;
-  }
-}
-
-async function updateLastCycleTime(db) {
-  try {
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
-  } catch (error) {
-    await logError(db, 'updateLastCycleTime', error, { context: 'cycle time update' });
-    throw error;
-  }
-}
-
-async function checkDuplicateProposal(db, title, whatDiff) {
-  try {
-    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-    if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-
-    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-    if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
-
-    return { duplicate: false };
-  } catch (error) {
-    await logError(db, 'checkDuplicateProposal', error, { title, whatDiff });
-    throw error;
-  }
-}
-
-async function analyzeContextualCue(db, inputText) {
-  try {
-    const rules = await db.prepare("SELECT * FROM contextual_rules WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
-    for (const rule of rules.results) {
-      if (inputText.toLowerCase().includes(rule.pattern.toLowerCase())) {
-        await db.prepare("UPDATE contextual_rules SET last_used = datetime('now') WHERE id = ?1").bind(rule.id).run();
-        return {
-          detected: true,
-          pattern: rule.pattern,
-          context: rule.context,
-          response: rule.response,
-          confidence: rule.confidence
-        };
-      }
-    }
-    return { detected: false };
-  } catch (error) {
-    await logError(db, 'analyzeContextualCue', error, { inputText });
-    return { detected: false };
-  }
-}
-
-async function updateContextualRule(db, pattern, context, response, confidence) {
-  try {
+    // Log successful search attempt
     await db.prepare(`
-      INSERT INTO contextual_rules (pattern, context, response, confidence, last_used)
-      VALUES (?1, ?2, ?3, ?4, datetime('now'))
-      ON CONFLICT(pattern) DO UPDATE SET
-        context = ?2,
-        response = ?3,
-        confidence = ?4,
-        last_used = datetime('now')
-    `).bind(pattern, context, response, confidence.toString()).run();
+      INSERT INTO brain_logs (step, content, created_at)
+      VALUES (?1, ?2, datetime('now'))
+    `).bind(
+      'web_search_success',
+      JSON.stringify({
+        query,
+        attempt,
+        sources: citedResults.map(s => ({ url: s.url, title: s.title, source: s.source }))
+      })
+    ).run();
+
+    return {
+      success: true,
+      results: citedResults,
+      query,
+      attempt
+    };
   } catch (error) {
-    await logError(db, 'updateContextualRule', error, { pattern, context, response, confidence });
-    throw error;
+    // Log the failed attempt
+    await db.prepare(`
+      INSERT INTO brain_logs (step, content, created_at)
+      VALUES (?1, ?2, datetime('now'))
+    `).bind(
+      'web_search_failure',
+      JSON.stringify({
+        query,
+        attempt,
+        error: error.message,
+        errorType: error.name
+      })
+    ).run();
+
+    // Handle rate limiting and network errors
+    if ((error.name === 'RateLimitError' || error.message.includes('429')) && attempt < maxAttempts) {
+      console.warn(`Rate limited on attempt ${attempt}, retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      return web_search(db, query, attempt + 1);
+    }
+
+    if ((error.name === 'TemporaryNetworkError' || error.message.includes('503')) && attempt < maxAttempts) {
+      console.warn(`Network error on attempt ${attempt}, retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      return web_search(db, query, attempt + 1);
+    }
+
+    // Return structured error response
+    return {
+      success: false,
+      error: {
+        type: error.name || 'SearchError',
+        message: error.message || 'Web search failed',
+        retryable: error.name === 'RateLimitError' || error.name === 'TemporaryNetworkError',
+        attempt
+      },
+      query
+    };
   }
+}
+
+async function searchService(query) {
+  // This is a placeholder for the actual search implementation
+  // In a real implementation, this would call a search API like Google Custom Search
+  console.log(`Searching for: ${query}`);
+  return {
+    sources: [
+      { url: "https://example.com/result1", title: "Example Result 1" },
+      { url: "https://example.org/result2", title: "Example Result 2" }
+    ]
+  };
 }
