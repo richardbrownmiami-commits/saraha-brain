@@ -641,7 +641,7 @@ export default {
         name: "Saraha Core",
         description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
         version: "1.0.0",
-        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write"], avatar: true, health: true, task_scheduling: false, heal: false },
+        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write"], avatar: true, health: true, task_scheduling: true, heal: true },
         status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
         endpoints: {
           activity: { method: "GET", path: "/brain/activity" },
@@ -845,6 +845,26 @@ export default {
       });
       const d = await r.json();
       return json(d, r.status);
+    }
+
+    if (url.pathname === "/brain/task" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!body.type || !body.input) return json({ error: "type and input required" }, 400);
+      const r = await env.DB.prepare("INSERT INTO actions (type,status,input,created_at) VALUES (?1,'pending',?2,datetime('now'))").bind(body.type, body.input).run();
+      return json({ id: r.meta.last_row_id, status: "pending" });
+    }
+
+    if (url.pathname === "/brain/heal" && req.method === "POST") {
+      const { emotions, reg } = await getState(env.DB);
+      const actCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions").all()).results[0]?.c || 0;
+      const approvalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM pending_approvals WHERE status='pending'").all()).results[0]?.c || 0;
+      const proposalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const antiCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM anti_patterns").all()).results[0]?.c || 0;
+      const memCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM memories").all()).results[0]?.c || 0;
+      const learningCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM learnings").all()).results[0]?.c || 0;
+      const streamCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM thought_stream").all()).results[0]?.c || 0;
+      const lastAction = (await env.DB.prepare("SELECT type,status,created_at FROM actions ORDER BY created_at DESC LIMIT 1").all()).results[0] || null;
+      return json({ alive: true, emotions, energy: reg.energy, confidence: reg.confidence, db: { actions: actCount, pendingApprovals: approvalPending, pendingProposals: proposalPending, antiPatterns: antiCount, memories: memCount, learnings: learningCount, streamThoughts: streamCount }, lastAction });
     }
 
     return json({ error: "not found" }, 404);
