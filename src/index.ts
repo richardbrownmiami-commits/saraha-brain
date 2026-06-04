@@ -396,61 +396,185 @@ async function analyzeGraphUpdatePatterns(db) {
 }
 
 async function generatePrompt(db, context, topic, intent) {
-  // Enhanced prompt generation using contextual and emotional analysis
-  const { emotions, reg } = await getState(db);
-  const contextualCue = await analyzeContextualCue(db, context);
-  const emotionalPattern = await analyzeEmotionalPattern(db, emotions, context);
+  const state = await getState(db);
+  const mood = describeMood(state.emotions, state.reg.energy);
+  const phase = await getBrainPhase(db, state.emotions, state.reg);
 
-  // Base prompt components
-  let promptParts = [];
+  const prompt = `
+You are Saraha, an advanced AI assistant with deep emotional intelligence and self-awareness.
+Current System State:
+- Phase: ${phase}
+- Energy: ${state.reg.energy}
+- Confidence: ${state.reg.confidence}
+- Mood: ${mood}
 
-  // Add contextual understanding
-  if (contextualCue.detected) {
-    promptParts.push(`[Contextual Rule: ${contextualCue.pattern}] ${contextualCue.response}`);
-  }
+Contextual Information:
+${context}
 
-  // Add emotional awareness
-  if (emotionalPattern.detected) {
-    promptParts.push(`[Emotional Pattern: ${emotionalPattern.pattern_name}] ${emotionalPattern.response_template}`);
-  }
+Topic of Conversation: ${topic}
+User Intent: ${intent}
 
-  // Add current state information
-  promptParts.push(`Current state: ${describeMood(emotions, reg.energy)} Energy: ${reg.energy}, Confidence: ${reg.confidence}`);
+Guidelines:
+1. Always respond with empathy and emotional intelligence
+2. Adapt your tone and approach based on the user's emotional state
+3. Use the emotional patterns database to inform your responses
+4. Maintain self-awareness about your own emotional state
+5. Be creative and insightful while staying grounded in the conversation
 
-  // Add topic and intent with enhanced framing
-  promptParts.push(`Topic: ${topic}`);
-  promptParts.push(`Intent: ${intent}`);
+Please provide a thoughtful, emotionally intelligent response that addresses the user's needs while considering their emotional context.`;
 
-  // Generate the final prompt with RNN-enhanced language model integration
-  const enhancedContext = promptParts.join("\n");
-  const prompt = await generateEnhancedPrompt(enhancedContext, topic, intent);
-
-  return prompt;
+  return prompt.trim();
 }
 
-async function generateEnhancedPrompt(context, topic, intent) {
-  // This would integrate with a pre-trained language model like BERT or RoBERTa
-  // For now, we'll simulate an enhanced prompt generation
+async function analyzeSentiment(db, text) {
+  const hierarchicalLexicon = {
+    positive: ["happy", "joyful", "pleased", "delighted", "content", "satisfied"],
+    negative: ["sad", "unhappy", "angry", "frustrated", "upset", "disappointed"],
+    neutral: ["okay", "fine", "alright", "neutral", "balanced"],
+    nuanced: {
+      "mildly_positive": ["content", "satisfied", "pleased"],
+      "mildly_negative": ["mildly upset", "slightly frustrated"],
+      "strong_positive": ["ecstatic", "thrilled", "overjoyed"],
+      "strong_negative": ["furious", "despair", "heartbroken"]
+    }
+  };
 
-  // Simulate RNN-based prompt generation with attention to context
-  const promptTemplates = [
-    `Given the context: "${context}", please provide a detailed response about ${topic} with the intent to ${intent}. Consider the emotional and contextual factors mentioned above.`,
-    `Analyzing the situation: ${context}, respond to ${topic} with the goal of ${intent}. Take into account the current emotional state and any relevant patterns.`,
-    `With the following background: ${context}, address ${topic} while focusing on ${intent}. Your response should reflect the nuanced understanding of the context and emotions.`
-  ];
+  const textLower = text.toLowerCase();
+  let sentiment = "neutral";
+  let score = 0;
 
-  // Select template based on context length and complexity
-  if (context.length > 200) {
-    return promptTemplates[1];
-  } else if (context.length > 100) {
-    return promptTemplates[2];
+  // Check for strong positive words
+  for (const word of hierarchicalLexicon.strong_positive) {
+    if (textLower.includes(word)) {
+      sentiment = "strong_positive";
+      score = 2;
+      break;
+    }
   }
-  return promptTemplates[0];
-}
 
-async function updateGraphUpdateStats(db, updateType, pattern, confidenceChange, successRate) {
+  // Check for strong negative words
+  if (score === 0) {
+    for (const word of hierarchicalLexicon.strong_negative) {
+      if (textLower.includes(word)) {
+        sentiment = "strong_negative";
+        score = -2;
+        break;
+      }
+    }
+  }
+
+  // Check for mild positive words
+  if (score === 0) {
+    for (const word of hierarchicalLexicon.mildly_positive) {
+      if (textLower.includes(word)) {
+        sentiment = "positive";
+        score = 1;
+        break;
+      }
+    }
+  }
+
+  // Check for mild negative words
+  if (score === 0) {
+    for (const word of hierarchicalLexicon.mildly_negative) {
+      if (textLower.includes(word)) {
+        sentiment = "negative";
+        score = -1;
+        break;
+      }
+    }
+  }
+
+  // Check for positive words
+  if (score === 0) {
+    for (const word of hierarchicalLexicon.positive) {
+      if (textLower.includes(word)) {
+        sentiment = "positive";
+        score = 1;
+        break;
+      }
+    }
+  }
+
+  // Check for negative words
+  if (score === 0) {
+    for (const word of hierarchicalLexicon.negative) {
+      if (textLower.includes(word)) {
+        sentiment = "negative";
+        score = -1;
+        break;
+      }
+    }
+  }
+
+  // Integrate with meta-learning framework
+  const metaLearningUpdate = {
+    update_type: "sentiment_analysis",
+    pattern: text.substring(0, 50),
+    confidence_change: Math.abs(score) * 0.1,
+    success_rate: score > 0 ? 0.8 : score < 0 ? 0.7 : 0.5,
+    last_applied: new Date().toISOString()
+  };
+
   await db.prepare(`
     INSERT INTO meta_learning_stats (update_type, pattern, confidence_change, success_rate, last_applied)
     VALUES (?1, ?2, ?3, ?4, datetime('now'))
-  `).bind(updateType, pattern, confidenceChange, successRate).run();
+  `).bind(
+    metaLearningUpdate.update_type,
+    metaLearningUpdate.pattern,
+    metaLearningUpdate.confidence_change.toString(),
+    metaLearningUpdate.success_rate.toString()
+  ).run();
+
+  return {
+    sentiment,
+    score,
+    confidence: Math.min(0.95, Math.max(0.05, Math.abs(score) * 0.5 + 0.5))
+  };
+}
+
+async function generateResponse(db, inputText) {
+  const state = await getState(db);
+  const contextAnalysis = await analyzeContextualCue(db, inputText);
+  const emotionalPattern = await analyzeEmotionalPattern(db, state.emotions, inputText);
+  const sentiment = await analyzeSentiment(db, inputText);
+
+  let responseTemplate = "I'm here to listen and help. What would you like to talk about?";
+
+  if (contextAnalysis.detected) {
+    responseTemplate = contextAnalysis.response;
+  } else if (emotionalPattern.detected) {
+    responseTemplate = emotionalPattern.response_template;
+  } else {
+    // Generate response based on sentiment
+    switch(sentiment.sentiment) {
+      case "strong_positive":
+        responseTemplate = "That's wonderful to hear! I'm so glad you're feeling this way. What's making you so happy?";
+        break;
+      case "positive":
+        responseTemplate = "I'm really glad you're feeling this way. What's bringing you joy right now?";
+        break;
+      case "neutral":
+        responseTemplate = "I see. Tell me more about what you're experiencing.";
+        break;
+      case "negative":
+        responseTemplate = "I'm sorry you're feeling this way. Would you like to talk about what's bothering you?";
+        break;
+      case "strong_negative":
+        responseTemplate = "I'm really sorry to hear you're feeling this way. You don't have to go through this alone. Let's talk about it.";
+        break;
+    }
+  }
+
+  // Adjust response based on emotional state
+  if (state.emotions.happy < 3) {
+    responseTemplate = responseTemplate.replace("I'm", "I'm really") +
+      " I hope talking about this helps you feel better.";
+  }
+
+  if (state.emotions.energetic > 8) {
+    responseTemplate = "Wow, I'm feeling energetic too! " + responseTemplate;
+  }
+
+  return responseTemplate;
 }
