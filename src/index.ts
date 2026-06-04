@@ -1275,3 +1275,52 @@ When using the wiki_search tool, you can specify:
 - query: The search query or article title
 - limit: The number of search results to return (default: 10)
 `;
+
+async function osmFetch(db, input) {
+  try {
+    const { query, limit } = input;
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=${limit}`, {
+      headers: {
+        'User-Agent': 'Saraha/1.0'
+      }
+    });
+    const data = await response.json();
+    return data.map(result => ({
+      lat: result.lat,
+      lon: result.lon,
+      display_name: result.display_name,
+      type: result.type
+    }));
+  } catch (error) {
+    await logError(db, 'osmFetch', error, input);
+    throw error;
+  }
+}
+
+const isToolSafe = {
+  ...isToolSafe,
+  osm_fetch: true
+};
+
+async function runTool(db, tool, input) {
+  try {
+    switch (tool) {
+      // ...
+      case 'osm_fetch':
+        return await osmFetch(db, input);
+      // ...
+    }
+  } catch (error) {
+    await logError(db, 'runTool', error, { tool, input });
+    return { error: error.message };
+  }
+}
+
+const SEED_KNOWLEDGE = `
+${SEED_KNOWLEDGE}
+- osm_fetch: Geocode location names to coordinates using OpenStreetMap Nominatim API
+
+When using the osm_fetch tool, you can specify:
+- query: The location name to geocode
+- limit: The number of results to return (default: 10)
+`;
