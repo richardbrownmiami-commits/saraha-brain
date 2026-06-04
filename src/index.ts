@@ -40,6 +40,145 @@ const EMOTIONS = ["energetic", "intelligent", "happy", "bad", "curious", "bored"
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3], curious: [1, 10], bored: [1, 10], excited: [1, 10], relaxed: [1, 10], focused: [1, 10], anxious: [0, 10] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0, curious: 5, bored: 5, excited: 5, relaxed: 5, focused: 5, anxious: 0 };
 
+class TemporaryNetworkError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "TemporaryNetworkError";
+  }
+}
+
+class RateLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RateLimitError";
+  }
+}
+
+class DatabaseConstraintError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "DatabaseConstraintError";
+  }
+}
+
+async function logError(db, functionName, error, context = {}) {
+  try {
+    const errorLog = {
+      error_type: error.name || 'UnknownError',
+      error_message: error.message || 'No error message',
+      stack_trace: error.stack || 'No stack trace',
+      context: JSON.stringify(context),
+      severity: error.severity || 'medium',
+      handled: 0,
+      recovery_action: null,
+      created_at: new Date().toISOString()
+    };
+
+    await db.prepare(`
+      INSERT INTO error_logs
+      (error_type, error_message, stack_trace, context, severity, handled, recovery_action, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `).bind(
+      errorLog.error_type,
+      errorLog.error_message,
+      errorLog.stack_trace,
+      errorLog.context,
+      errorLog.severity,
+      errorLog.handled,
+      errorLog.recovery_action,
+      errorLog.created_at
+    ).run();
+  } catch (loggingError) {
+    console.error('Failed to log error:', loggingError);
+    console.error('Original error:', error);
+  }
+}
+
+async function getRecoveryProcedure(db, errorType) {
+  try {
+    const result = await db.prepare(`
+      SELECT procedure, fallback, max_retries
+      FROM recovery_procedures
+      WHERE error_type = ?1
+    `).bind(errorType).all();
+
+    if (result.results.length > 0) {
+      return result.results[0];
+    }
+    return null;
+  } catch (error) {
+    await logError(db, 'getRecoveryProcedure', error, { errorType });
+    return null;
+  }
+}
+
+async function executeRecoveryProcedure(db, errorType, fallbackFunction, ...args) {
+  try {
+    const procedure = await getRecoveryProcedure(db, errorType);
+    if (!procedure) {
+      console.warn(`No recovery procedure found for ${errorType}`);
+      return false;
+    }
+
+    let retries = 0;
+    let lastError = null;
+
+    while (retries < procedure.max_retries) {
+      try {
+        await eval(procedure.procedure)(...args);
+        return true;
+      } catch (retryError) {
+        lastError = retryError;
+        retries++;
+        if (retries >= procedure.max_retries) break;
+
+        // Exponential backoff
+        const delay = Math.pow(2, retries) * 100;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    // Execute fallback if available
+    if (procedure.fallback && typeof fallbackFunction === 'function') {
+      try {
+        await fallbackFunction(...args);
+        return true;
+      } catch (fallbackError) {
+        await logError(db, 'executeRecoveryProcedure', fallbackError, {
+          errorType,
+          fallback: true,
+          originalError: lastError?.message
+        });
+        return false;
+      }
+    }
+
+    await logError(db, 'executeRecoveryProcedure', lastError, {
+      errorType,
+      retries,
+      procedure: procedure.procedure
+    });
+    return false;
+  } catch (error) {
+    await logError(db, 'executeRecoveryProcedure', error, { errorType });
+    return false;
+  }
+}
+
+async function github_write(db, input, context = {}) {
+  return executeRecoveryProcedure(
+    db,
+    'TemporaryNetworkError',
+    async () => {
+      // Original github_write implementation would go here
+      throw new TemporaryNetworkError("Simulated network error for testing recovery");
+    },
+    db,
+    input,
+    context
+  );
+}
+
 async function getEmotions(db) {
   try {
     const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
@@ -410,89 +549,6 @@ async function updateContextualRule(db, pattern, context, response, confidence) 
     `).bind(pattern, context, response, confidence.toString()).run();
   } catch (error) {
     await logError(db, 'updateContextualRule', error, { pattern, context, response, confidence });
-    throw error;
-  }
-}
-
-async function analyzeEmotionalPattern(db, emotions, context) {
-  try {
-    const patterns = await db.prepare("SELECT * FROM emotional_patterns WHERE last_used IS NULL OR last_used < datetime('now', '-7 days') ORDER BY confidence DESC").all();
-
-    for (const pattern of patterns.results) {
-      const emotionCombination = JSON.parse(pattern.emotion_combination);
-      const contextMatch = pattern.context_trigger === "" ||
-                           context.toLowerCase().includes(pattern.context_trigger.toLowerCase());
-
-      const emotionsMatch = Object.keys(emotionCombination).every(emotion =>
-        emotions[emotion] >= emotionCombination[emotion][0] &&
-        emotions[emotion] <= emotionCombination[emotion][1]
-      );
-
-      if (contextMatch && emotionsMatch) {
-        await db.prepare("UPDATE emotional_patterns SET last_used = datetime('now') WHERE id = ?1").bind(pattern.id).run();
-        return {
-          detected: true,
-          pattern_name: pattern.pattern_name,
-          response_template: pattern.response_template,
-          confidence: pattern.confidence
-        };
-      }
-    }
-    return { detected: false };
-  } catch (error) {
-    await logError(db, 'analyzeEmotionalPattern', error, { context });
-    return { detected: false };
-  }
-}
-
-async function updateEmotionalPattern(db, patternName, emotionCombination, contextTrigger, responseTemplate, confidence) {
-  try {
-    await db.prepare(`
-      INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, last_used)
-      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-      ON CONFLICT(pattern_name) DO UPDATE SET
-        emotion_combination = ?2,
-        context_trigger = ?3,
-        response_template = ?4,
-        confidence = ?5,
-        last_used = datetime('now')
-    `).bind(
-      patternName,
-      JSON.stringify(emotionCombination),
-      contextTrigger,
-      responseTemplate,
-      confidence.toString()
-    ).run();
-  } catch (error) {
-    await logError(db, 'updateEmotionalPattern', error, { patternName, emotionCombination, contextTrigger, responseTemplate, confidence });
-    throw error;
-  }
-}
-
-async function metaLearnEmotionalPatterns(db) {
-  try {
-    const learnings = await db.prepare("SELECT pattern, context, success_count, fail_count FROM learnings").all();
-
-    for (const learning of learnings.results) {
-      const successRate = learning.success_count / (learning.success_count + learning.fail_count || 1);
-
-      // Create emotional patterns based on learning patterns
-      const emotionCombination = {
-        curious: [Math.min(7, Math.max(3, Math.floor(successRate * 10)))],
-        focused: [Math.min(8, Math.max(4, Math.floor(successRate * 8)))]
-      };
-
-      await updateEmotionalPattern(
-        db,
-        `learning_${learning.pattern}`,
-        emotionCombination,
-        learning.context,
-        `When learning ${learning.pattern}, maintain focus and curiosity.`,
-        successRate
-      );
-    }
-  } catch (error) {
-    await logError(db, 'metaLearnEmotionalPatterns', error, { context: 'emotional pattern learning' });
     throw error;
   }
 }
