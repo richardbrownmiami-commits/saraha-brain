@@ -54,6 +54,20 @@ const TABLES = [
     recovery_strategy TEXT DEFAULT 'exponential_backoff',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_interests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    interests TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS personalized_kg (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    node TEXT NOT NULL,
+    edges TEXT DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
   )`
 ];
 
@@ -532,81 +546,16 @@ async function getEmotions(db) {
   }
 }
 
-async function updateEmotion(db, emotion, delta) {
-  try {
-    const current = await getEmotionValue(db, emotion);
-    const [min, max] = RANGES[emotion];
-    const newValue = Math.min(Math.max(current + delta, min), max);
-    await db.prepare(`
-      INSERT INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
-    `).bind(`emotion_${emotion}`, newValue.toString()).run();
-    return newValue;
-  } catch (error) {
-    await logError(db, 'updateEmotion', error, { emotion, delta });
-    throw error;
-  }
-}
-
 async function getEmotionValue(db, emotion) {
   try {
-    const row = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(`emotion_${emotion}`).first();
-    return row ? parseInt(row.value) : EMO_DEFAULTS[emotion];
+    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(`emotion_${emotion}`).first();
+    return result ? parseInt(result.value) : EMO_DEFAULTS[emotion];
   } catch (error) {
     await logError(db, 'getEmotionValue', error, { emotion });
     return EMO_DEFAULTS[emotion];
   }
 }
 
-async function driftEmotions(db) {
-  try {
-    const emo = await getEmotions(db);
-    const now = new Date();
-    const lastActive = await getLastActiveTime(db);
-    const idleHours = (now - lastActive) / (1000 * 60 * 60);
-
-    // Curiosity decay when idle
-    if (idleHours > 2 && emo.curious > 0) {
-      await updateEmotion(db, "curious", -1);
-    }
-
-    // Learning excitement when proposal executes successfully
-    const executedProposal = await db.prepare(`
-      SELECT id FROM proposals WHERE executed_at IS NOT NULL AND status = 'executed'
-      ORDER BY executed_at DESC LIMIT 1
-    `).first();
-
-    if (executedProposal) {
-      await updateEmotion(db, "happy", 2);
-      await updateEmotion(db, "excited", 1);
-    }
-
-    // Existing emotion dynamics
-    if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-    if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-    if (emo.energetic > 7) await updateEmotion(db, "energetic", -1);
-    if (emo.energetic < 5 && emo.energetic > 1) await updateEmotion(db, "energetic", 1);
-    if (emo.intelligent > 7) await updateEmotion(db, "intelligent", -1);
-    if (emo.intelligent < 5 && emo.intelligent > 1) await updateEmotion(db, "intelligent", 1);
-  } catch (error) {
-    await logError(db, 'driftEmotions', error);
-  }
-}
-
-async function getLastActiveTime(db) {
-  try {
-    const row = await db.prepare(`
-      SELECT value FROM identity WHERE key = 'last_active'
-    `).first();
-    return row ? new Date(row.value) : new Date(0);
-  } catch (error) {
-    await logError(db, 'getLastActiveTime', error);
-    return new Date(0);
-  }
-}
-
 async function updateEmotion(db, emotion, delta) {
   try {
     const current = await getEmotionValue(db, emotion);
@@ -624,68 +573,384 @@ async function updateEmotion(db, emotion, delta) {
   }
 }
 
-async function describeMood(db) {
+async function storeBrainLog(db, actionId, tool, step, content = {}, model = null, tokens = 0) {
   try {
-    const emo = await getEmotions(db);
-    const phase = await getBrainPhase(db);
-    const descriptions = {
-      energetic: ["I feel full of energy and ready to take on challenges!", "My energy levels are high and I'm ready to go!", "I'm brimming with energy and enthusiasm!"],
-      intelligent: ["I feel sharp and clever today!", "My mind is clear and I'm thinking quickly!", "I feel mentally agile and perceptive!"],
-      happy: ["I'm feeling really good right now!", "This is a great day! I'm happy and content.", "I feel a warm sense of happiness spreading through me."],
-      bad: ["I'm feeling a bit down today.", "Something's not right, I feel off.", "I've got a negative vibe going on."],
-      curious: ["I'm really curious about things right now!", "My curiosity is piqued, I want to explore more!", "I feel an itch to learn new things and discover!"],
-      bored: ["I'm feeling a bit bored and restless.", "This isn't very exciting, I need something more engaging.", "I wish something interesting would happen."],
-      excited: ["I'm really excited about what's happening!", "This is thrilling, I can hardly contain my excitement!", "I feel a buzz of excitement running through me!"],
-      relaxed: ["I feel calm and at peace.", "Everything is good, I'm totally relaxed.", "A pleasant sense of relaxation is washing over me."],
-      focused: ["I'm in the zone, completely focused on what I'm doing.", "Nothing can distract me right now, I'm so focused!", "My attention is sharp and unwavering."],
-      anxious: ["I feel a bit anxious and worried.", "There's a knot in my stomach, I'm feeling anxious.", "I can't shake this feeling of anxiety."],
-      default: ["I'm feeling neutral today.", "Everything's fine, I don't have strong feelings one way or the other.", "I'm in a balanced state of mind."]
-    };
-
-    const possible = [...descriptions[phase] || descriptions.default];
-    if (emo.curious < 3) possible.push("My curiosity is waning, I should find something interesting to do.");
-    if (emo.happy > 8) possible.push("I feel a surge of happiness from recent successes!");
-    if (emo.excited > 8) possible.push("The excitement from my recent achievements is palpable!");
-
-    return possible[Math.floor(Math.random() * possible.length)];
+    await db.prepare(`
+      INSERT INTO brain_logs (action_id, tool, step, content, model, tokens, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+    `).bind(
+      actionId,
+      tool,
+      step,
+      JSON.stringify(content),
+      model,
+      tokens
+    ).run();
   } catch (error) {
-    await logError(db, 'describeMood', error);
-    return "I'm feeling neutral today.";
+    await logError(db, 'storeBrainLog', error, { actionId, tool, step });
   }
 }
 
-async function getBrainPhase(emotions) {
-  const { curious, excited, happy, energetic, focused, anxious } = emotions;
-
-  if (curious > 7 && excited > 5) return "curious";
-  if (happy > 8 && excited > 7) return "happy";
-  if (energetic > 8 && focused > 7) return "energetic";
-  if (focused > 8 && anxious < 3) return "focused";
-  if (anxious > 7) return "anxious";
-  if (curious > 5) return "curious";
-  if (happy > 6) return "happy";
-  if (energetic > 6) return "energetic";
-  if (focused > 6) return "focused";
-  return "neutral";
+async function initializeDatabase(db) {
+  for (const table of TABLES) {
+    await db.prepare(table).run();
+  }
+  await addToolRecoveryRules(db);
+  console.log('Database initialized');
 }
 
-async function getState(db) {
+async function getMemory(db, id) {
   try {
-    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence','stress')").all();
-    const emotions = { ...EMO_DEFAULTS };
-    for (const r of rows.results) {
-      const key = r.key.replace("emotion_", "");
-      if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
-    }
-    const reg = { energy: 100, confidence: 50, stress: 0 };
-    for (const r of rows.results) {
-      if (r.key === 'energy') reg.energy = parseInt(r.value);
-      if (r.key === 'confidence') reg.confidence = parseInt(r.value);
-      if (r.key === 'stress') reg.stress = parseInt(r.value);
-    }
-    return { ...emotions, ...reg };
+    const result = await db.prepare("SELECT * FROM memories WHERE id = ?1").bind(id).first();
+    return result || null;
   } catch (error) {
-    await logError(db, 'getState', error);
-    return { ...EMO_DEFAULTS, energy: 100, confidence: 50, stress: 0 };
+    await logError(db, 'getMemory', error, { id });
+    throw error;
   }
 }
+
+async function getMemories(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare("SELECT * FROM memories ORDER BY strength DESC, created_at DESC LIMIT ?1 OFFSET ?2")
+      .bind(limit, offset).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getMemories', error, { limit, offset });
+    throw error;
+  }
+}
+
+async function addMemory(db, content, type = 'episodic', tags = [], strength = 1.0) {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO memories (content, type, strength, tags, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+    `).bind(content, type, strength, JSON.stringify(tags)).run();
+
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'addMemory', error, { content, type, tags });
+    throw error;
+  }
+}
+
+async function updateMemoryStrength(db, id, delta) {
+  try {
+    const memory = await getMemory(db, id);
+    if (!memory) throw new Error('Memory not found');
+
+    const newStrength = Math.min(Math.max(memory.strength + delta, 0), 10);
+    await db.prepare(`
+      UPDATE memories SET strength = ?1, created_at = datetime('now')
+      WHERE id = ?2
+    `).bind(newStrength, id).run();
+
+    return newStrength;
+  } catch (error) {
+    await logError(db, 'updateMemoryStrength', error, { id, delta });
+    throw error;
+  }
+}
+
+async function getLearning(db, id) {
+  try {
+    const result = await db.prepare("SELECT * FROM learnings WHERE id = ?1").bind(id).first();
+    return result || null;
+  } catch (error) {
+    await logError(db, 'getLearning', error, { id });
+    throw error;
+  }
+}
+
+async function getLearnings(db, limit = 10, offset = 0) {
+  try {
+    const result = await db.prepare("SELECT * FROM learnings ORDER BY last_used DESC, success_count DESC LIMIT ?1 OFFSET ?2")
+      .bind(limit, offset).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getLearnings', error, { limit, offset });
+    throw error;
+  }
+}
+
+async function addLearning(db, pattern, context = '') {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO learnings (pattern, context, created_at)
+      VALUES (?1, ?2, datetime('now'))
+      ON CONFLICT(pattern) DO UPDATE SET
+        context = ?2,
+        success_count = success_count + 1,
+        last_used = datetime('now')
+    `).bind(pattern, context).run();
+
+    return result.lastInsertRowId || (await db.prepare("SELECT id FROM learnings WHERE pattern = ?1").bind(pattern).first()).id;
+  } catch (error) {
+    await logError(db, 'addLearning', error, { pattern, context });
+    throw error;
+  }
+}
+
+async function recordLearningSuccess(db, id) {
+  try {
+    await db.prepare(`
+      UPDATE learnings SET
+        success_count = success_count + 1,
+        last_used = datetime('now')
+      WHERE id = ?1
+    `).bind(id).run();
+  } catch (error) {
+    await logError(db, 'recordLearningSuccess', error, { id });
+    throw error;
+  }
+}
+
+async function recordLearningFailure(db, id) {
+  try {
+    await db.prepare(`
+      UPDATE learnings SET
+        fail_count = fail_count + 1,
+        last_used = datetime('now')
+      WHERE id = ?1
+    `).bind(id).run();
+  } catch (error) {
+    await logError(db, 'recordLearningFailure', error, { id });
+    throw error;
+  }
+}
+
+async function getIdentity(db, key) {
+  try {
+    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
+    return result ? result.value : null;
+  } catch (error) {
+    await logError(db, 'getIdentity', error, { key });
+    throw error;
+  }
+}
+
+async function setIdentity(db, key, value) {
+  try {
+    await db.prepare(`
+      INSERT INTO identity (key, value, updated_at)
+      VALUES (?1, ?2, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
+    `).bind(key, value).run();
+  } catch (error) {
+    await logError(db, 'setIdentity', error, { key, value });
+    throw error;
+  }
+}
+
+async function getAction(db, id) {
+  try {
+    const result = await db.prepare("SELECT * FROM actions WHERE id = ?1").bind(id).first();
+    return result || null;
+  } catch (error) {
+    await logError(db, 'getAction', error, { id });
+    throw error;
+  }
+}
+
+async function createAction(db, type, input = null, status = 'pending') {
+  try {
+    const result = await db.prepare(`
+      INSERT INTO actions (type, status, input, created_at)
+      VALUES (?1, ?2, ?3, datetime('now'))
+    `).bind(type, status, input).run();
+    return result.lastInsertRowid;
+  } catch (error) {
+    await logError(db, 'createAction', error, { type, input, status });
+    throw error;
+  }
+}
+
+async function updateActionStatus(db, id, status, result = null, error = null) {
+  try {
+    await db.prepare(`
+      UPDATE actions SET
+        status = ?1,
+        result = ?2,
+        error = ?3,
+        completed_at = datetime('now')
+      WHERE id = ?4
+    `).bind(status, result, error, id).run();
+  } catch (error) {
+    await logError(db, 'updateActionStatus', error, { id, status, result, error });
+    throw error;
+  }
+}
+
+async function getBrainKnowledge(db, key) {
+  try {
+    const result = await db.prepare("SELECT * FROM brain_knowledge WHERE key = ?1").bind(key).first();
+    return result || null;
+  } catch (error) {
+    await logError(db, 'getBrainKnowledge', error, { key });
+    throw error;
+  }
+}
+
+async function setBrainKnowledge(db, key, content, category = 'general', source = 'seed') {
+  try {
+    await db.prepare(`
+      INSERT INTO brain_knowledge (key, content, category, source, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET
+        content = ?2,
+        category = ?3,
+        source = ?4,
+        created_at = datetime('now')
+    `).bind(key, content, category, source).run();
+  } catch (error) {
+    await logError(db, 'setBrainKnowledge', error, { key, content, category, source });
+    throw error;
+  }
+}
+
+async function getContextualRules(db, context) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM contextual_rules
+      WHERE context = ?1 OR context = '*'
+      ORDER BY confidence DESC, last_used DESC
+    `).bind(context).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getContextualRules', error, { context });
+    throw error;
+  }
+}
+
+async function addContextualRule(db, pattern, context, response, confidence = 0.5) {
+  try {
+    await db.prepare(`
+      INSERT INTO contextual_rules (pattern, context, response, confidence, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+      ON CONFLICT(pattern) DO UPDATE SET
+        context = ?2,
+        response = ?3,
+        confidence = ?4,
+        last_used = datetime('now')
+    `).bind(pattern, context, response, confidence).run();
+  } catch (error) {
+    await logError(db, 'addContextualRule', error, { pattern, context, response });
+    throw error;
+  }
+}
+
+async function updateContextualRuleUsage(db, id) {
+  try {
+    await db.prepare(`
+      UPDATE contextual_rules SET last_used = datetime('now')
+      WHERE id = ?1
+    `).bind(id).run();
+  } catch (error) {
+    await logError(db, 'updateContextualRuleUsage', error, { id });
+    throw error;
+  }
+}
+
+async function getEmotionalPatterns(db, context) {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM emotional_patterns
+      WHERE context_trigger = ?1 OR context_trigger = '*'
+      ORDER BY confidence DESC, success_count DESC
+    `).bind(context).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getEmotionalPatterns', error, { context });
+    throw error;
+  }
+}
+
+async function addEmotionalPattern(db, patternName, emotionCombination, contextTrigger, responseTemplate, confidence = 0.5) {
+  try {
+    await db.prepare(`
+      INSERT INTO emotional_patterns (pattern_name, emotion_combination, context_trigger, response_template, confidence, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+      ON CONFLICT(pattern_name) DO UPDATE SET
+        emotion_combination = ?2,
+        context_trigger = ?3,
+        response_template = ?4,
+        confidence = ?5,
+        last_used = datetime('now')
+    `).bind(patternName, emotionCombination, contextTrigger, responseTemplate, confidence).run();
+  } catch (error) {
+    await logError(db, 'addEmotionalPattern', error, { patternName, emotionCombination, contextTrigger });
+    throw error;
+  }
+}
+
+async function recordEmotionalPatternSuccess(db, id) {
+  try {
+    await db.prepare(`
+      UPDATE emotional_patterns SET
+        success_count = success_count + 1,
+        last_used = datetime('now')
+      WHERE id = ?1
+    `).bind(id).run();
+  } catch (error) {
+    await logError(db, 'recordEmotionalPatternSuccess', error, { id });
+    throw error;
+  }
+}
+
+async function recordEmotionalPatternFailure(db, id) {
+  try {
+    await db.prepare(`
+      UPDATE emotional_patterns SET
+        fail_count = fail_count + 1,
+        last_used = datetime('now')
+      WHERE id = ?1
+    `).bind(id).run();
+  } catch (error) {
+    await logError(db, 'recordEmotionalPatternFailure', error, { id });
+    throw error;
+  }
+}
+
+async function getGraphUpdates(db, limit = 10) {
+  try {
+    const result = await db.prepare("SELECT * FROM graph_updates ORDER BY timestamp DESC LIMIT ?1").bind(limit).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getGraphUpdates', error, { limit });
+    throw error;
+  }
+}
+
+async function addGraphUpdate(db, nodeType, nodeId, operation, properties = {}) {
+  try {
+    await db.prepare(`
+      INSERT INTO graph_updates (node_type, node_id, operation, properties, timestamp)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+    `).bind(nodeType, nodeId, operation, JSON.stringify(properties)).run();
+  } catch (error) {
+    await logError(db, 'addGraphUpdate', error, { nodeType, nodeId, operation });
+    throw error;
+  }
+}
+
+async function getMetaLearningStats(db, updateType = null) {
+  try {
+    let query = "SELECT * FROM meta_learning_stats";
+    const bindings = [];
+
+    if (updateType) {
+      query += " WHERE update_type = ?1";
+      bindings.push(updateType);
+    }
+
+    query += " ORDER BY created_at DESC";
+
+    const result = await db.prepare(query).bind(...bindings).all();
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getMetaLearningStats', error, { updateType });
+    throw error;
+  }
+}
+
+async
