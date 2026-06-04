@@ -573,6 +573,58 @@ async function apiProbe(db, url, method = 'GET', headers = {}, body = null) {
   }
 }
 
+async function wikiSearch(db, input) {
+  try {
+    const { action, query, limit = 5 } = input;
+
+    if (action === 'search') {
+      // Search Wikipedia articles
+      const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srsearch=${encodeURIComponent(query)}&srlimit=${limit}`;
+      const searchResponse = await fetch(searchUrl);
+      if (!searchResponse.ok) {
+        throw new Error(`Wikipedia search failed with status ${searchResponse.status}`);
+      }
+      const searchData = await searchResponse.json();
+
+      const results = searchData.query?.search?.map(item => ({
+        title: item.title,
+        snippet: item.snippet,
+        wordcount: item.wordcount,
+        timestamp: item.timestamp
+      })) || [];
+
+      return {
+        results,
+        query,
+        source: 'wikipedia',
+        action: 'search'
+      };
+    } else if (action === 'summary') {
+      // Get summary for a specific page
+      const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`;
+      const summaryResponse = await fetch(summaryUrl);
+      if (!summaryResponse.ok) {
+        throw new Error(`Wikipedia summary fetch failed with status ${summaryResponse.status}`);
+      }
+      const summaryData = await summaryResponse.json();
+
+      return {
+        title: summaryData.title,
+        extract: summaryData.extract,
+        url: summaryData.content_urls?.desktop?.page || summaryData.fullurl,
+        thumbnail: summaryData.thumbnail?.source,
+        source: 'wikipedia',
+        action: 'summary'
+      };
+    } else {
+      throw new Error(`Unknown wiki_search action: ${action}. Valid actions are 'search' or 'summary'`);
+    }
+  } catch (error) {
+    await logError(db, 'wikiSearch', error, input);
+    throw error;
+  }
+}
+
 async function getEmotions(db) {
   try {
     const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
@@ -1034,7 +1086,8 @@ const isToolSafe = {
   github_read: false,
   github_write: false,
   code_interpreter: false,
-  api_probe: true
+  api_probe: true,
+  wiki_search: true
 };
 
 async function runTool(db, tool, input) {
@@ -1054,6 +1107,8 @@ async function runTool(db, tool, input) {
         return await apiProbe(db, input.url, input.method, input.headers, input.body);
       case 'hn_fetch':
         return await hnFetch(db, input);
+      case 'wiki_search':
+        return await wikiSearch(db, input);
       default:
         throw new Error(`Unknown tool: ${tool}`);
     }
@@ -1074,6 +1129,7 @@ You have access to the following tools:
 - code_interpreter: Execute code safely
 - api_probe: Test and access free APIs (Safe=true, read-only)
 - hn_fetch: Fetch top stories and items from HackerNews API
+- wiki_search: Search Wikipedia and fetch article summaries
 
 You can use these tools to gather information, perform tasks, and solve complex problems. Always consider the safety and ethical implications of your actions.
 
@@ -1087,6 +1143,11 @@ For the hn_fetch tool, you can specify:
 - action: topstories or item
 - limit: The number of top stories to fetch (default: 10)
 - id: The ID of the item to fetch
+
+For the wiki_search tool, you can specify:
+- action: search or summary
+- query: The search term or page title
+- limit: The number of results to return (for search action, default: 5)
 
 Remember to:
 1. Analyze the user's request carefully
@@ -1179,6 +1240,7 @@ export {
   web_fetch,
   code_interpreter,
   apiProbe,
+  wikiSearch,
   getEmotions,
   setEmotion,
   decayEmotions,
