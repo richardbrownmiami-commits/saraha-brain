@@ -1212,3 +1212,66 @@ async function runTool(db, tool, input) {
     return { error: error.message };
   }
 }
+
+async function wikiSearch(db, input) {
+  try {
+    const { action, query, limit } = input;
+    let result;
+
+    if (action === 'search') {
+      const response = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srsearch=${query}`);
+      const data = await response.json();
+      const pages = data.query.search.slice(0, limit);
+
+      result = pages.map(page => ({
+        title: page.title,
+        extract: page.snippet,
+        url: `https://en.wikipedia.org/?curid=${page.pageid}`
+      }));
+    } else if (action === 'summary') {
+      const response = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${query}`);
+      const data = await response.json();
+      result = {
+        title: data.title,
+        extract: data.extract,
+        url: data.content_urls.desktop.page
+      };
+    } else {
+      throw new Error(`Unknown action: ${action}`);
+    }
+
+    return result;
+  } catch (error) {
+    await logError(db, 'wikiSearch', error, input);
+    throw error;
+  }
+}
+
+const isToolSafe = {
+  ...isToolSafe,
+  wiki_search: true
+};
+
+async function runTool(db, tool, input) {
+  try {
+    switch (tool) {
+      // ...
+      case 'wiki_search':
+        return await wikiSearch(db, input);
+      // ...
+    }
+  } catch (error) {
+    await logError(db, 'runTool', error, { tool, input });
+    return { error: error.message };
+  }
+}
+
+const SEED_KNOWLEDGE = `
+${SEED_KNOWLEDGE}
+- wiki_search: Search Wikipedia and fetch article summaries
+
+When using the wiki_search tool, you can specify:
+- action: search or summary
+- query: The search query or article title
+- limit: The number of search results to return (default: 10)
+`;
