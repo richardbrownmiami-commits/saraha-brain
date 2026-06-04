@@ -3,7 +3,16 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS brain_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id INTEGER NOT NULL,
+    tool TEXT DEFAULT 'cognition',
+    step TEXT NOT NULL,
+    content TEXT,
+    model TEXT,
+    tokens INTEGER,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, what_diff TEXT, how_diff TEXT, resource_type TEXT NOT NULL, risk_pct INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', research_sources TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT, executed_at TEXT)`,
@@ -247,6 +256,24 @@ async function invokeToolWithRecovery(db, toolName, args, maxRetries = 3) {
   return { error, shouldEscalate: true };
 }
 
+async function getRecentToolErrors(db, toolName, limit = 5) {
+  try {
+    const result = await db.prepare(`
+      SELECT el.error_type, el.error_message, el.context, el.created_at
+      FROM error_logs el
+      JOIN brain_logs bl ON json_extract(el.context, '$.action_id') = bl.action_id
+      WHERE bl.tool = ?1 AND el.handled = 0
+      ORDER BY el.created_at DESC
+      LIMIT ?2
+    `).bind(toolName, limit).all();
+
+    return result.results || [];
+  } catch (error) {
+    await logError(db, 'getRecentToolErrors', error, { toolName, limit });
+    return [];
+  }
+}
+
 async function github_write(db, input, context = {}) {
   return invokeToolWithRecovery(db, 'github_write', [input, context]);
 }
@@ -431,11 +458,19 @@ async function driftEmotions(db) {
   }
 }
 
-async function storeThought(db, content) {
+async function storeThought(db, content, action_id = null, tool = 'cognition') {
   try {
-    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+    await db.prepare(`
+      INSERT INTO brain_logs
+      (action_id, tool, step, content, created_at)
+      VALUES (?1, ?2, 'thought', ?3, datetime('now'))
+    `).bind(
+      action_id,
+      tool,
+      content
+    ).run();
   } catch (error) {
-    await logError(db, 'storeThought', error, { content });
+    await logError(db, 'storeThought', error, { content, action_id, tool });
     throw error;
   }
 }
@@ -465,127 +500,19 @@ async function getBrainPhase(db, emotions, reg) {
         if (o.until > Date.now()) return o.phase;
         await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
       } catch (e) {
-        await logError(db, 'getBrainPhase', e, { context: 'phase override cleanup' });
+        await logError(db, 'getBrainPhase', e, { override: ov.results[0]?.value });
       }
     }
-    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-    if (reg.energy <= 20) return "tired";
-    if (reg.energy > 40 && emotions.energetic >= 4 && reg.focus >= 5) return "focused";
-    if (reg.energy > 60 && emotions.curious >= 7) return "exploring";
-    if (reg.stress > 5) return "overwhelmed";
-    if (reg.focus >= 7 && emotions.focused >= 7) return "concentrating";
-    return "awake";
+
+    if (emotions.bad >= 2) return "recovery";
+    if (emotions.anxious >= 7) return "panic";
+    if (reg.energy < 20) return "sleep";
+    if (reg.focus < 3 && emotions.focused < 4) return "distracted";
+    if (emotions.energetic < 3 && reg.energy < 40) return "lethargic";
+    if (emotions.bored >= 7 && emotions.excited < 4) return "bored";
+    return "default";
   } catch (error) {
-    await logError(db, 'getBrainPhase', error, { context: 'phase determination' });
-    return "awake";
-  }
-}
-
-async function getBusyUntil(db) {
-  try {
-    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0").bind().first().then(r => r.count);
-    const busyValue = parseInt(r.results[0]?.value) || 0;
-    return busyValue + (errorCount * 1000 * 60); // Add 1 minute per error as additional busy time
-  } catch (error) {
-    await logError(db, 'getBusyUntil', error, { context: 'busy status check' });
-    return 0;
-  }
-}
-
-async function setBusyUntil(db, seconds) {
-  try {
-    const val = Date.now() + seconds * 1000;
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
-  } catch (error) {
-    await logError(db, 'setBusyUntil', error, { seconds });
-    throw error;
-  }
-}
-
-async function storeStreamThought(db, content, mood, source) {
-  try {
-    await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run();
-  } catch (error) {
-    await logError(db, 'storeStreamThought', error, { content, mood, source });
-  }
-}
-
-async function applyEvolutionChange(db, proposal, proposalId, reason) {
-  try {
-    const change = {
-      title: proposal.title,
-      what: proposal.what_diff || "",
-      how: proposal.how_diff || "",
-      type: proposal.resource_type || "unknown",
-      reason: reason || "self-improvement",
-      risk: proposal.risk_pct || 0,
-      applied_at: new Date().toISOString(),
-      status: "active"
-    };
-
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
-      .bind("evolution_log:" + proposalId, JSON.stringify(change))
-      .run();
-
-    // Store tool errors as anti-patterns if they exist
-    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0 AND created_at > datetime('now', '-1 hour')").bind().first().then(r => r.count);
-    if (errorCount > 0) {
-      await db.prepare(`
-        INSERT INTO anti_patterns (pattern, root_cause, fix, count, linked_proposal_id)
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        ON CONFLICT(pattern) DO UPDATE SET
-          count = count + 1,
-          last_seen = datetime('now')
-      `).bind(
-        `tool_errors_${proposalId}`,
-        `Multiple tool errors occurred during proposal execution`,
-        `Review error logs and implement recovery procedures`,
-        errorCount,
-        proposalId
-      ).run();
-    }
-
-    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-    overrides.push({
-      from: proposalId,
-      title: proposal.title,
-      what: proposal.what_diff,
-      how: proposal.how_diff,
-      applied_at: change.applied_at
-    });
-
-    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
-      .bind(JSON.stringify(overrides))
-      .run();
-  } catch (error) {
-    await logError(db, 'applyEvolutionChange', error, {
-      proposalId,
-      title: proposal.title
-    });
-    throw error;
-  }
-}
-
-async function governanceGate(db, proposal) {
-  try {
-    const errorCount = await db.prepare("SELECT COUNT(*) as count FROM error_logs WHERE handled = 0 AND created_at > datetime('now', '-1 hour')").bind().first().then(r => r.count);
-    const riskScore = proposal.risk_pct || 0;
-
-    // Increase risk score based on recent errors
-    const adjustedRisk = riskScore + (errorCount * 5);
-    if (adjustedRisk > 100) {
-      throw new Error(`Proposal rejected due to high error rate (${errorCount} recent errors)`);
-    }
-
-    return adjustedRisk <= 75; // Original threshold was 75
-  } catch (error) {
-    await logError(db, 'governanceGate', error, {
-      proposalId: proposal.id,
-      title: proposal.title
-    });
-    throw error;
+    await logError(db, 'getBrainPhase', error, { emotions, reg });
+    return "default";
   }
 }
