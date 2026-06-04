@@ -14,7 +14,7 @@ const TABLES = [
     created_at TEXT DEFAULT (datetime('now'))
   )`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', energy INTEGER DEFAULT 5, phase TEXT DEFAULT 'active', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, what_diff TEXT, how_diff TEXT, resource_type TEXT NOT NULL, risk_pct INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', research_sources TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT, executed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
@@ -395,7 +395,7 @@ async function invokeToolWithRecovery(db, toolName, args, context = {}) {
       return result;
     } catch (error) {
       lastError = error;
-      error.context = { tool: toolName, args, attempt: retryCount + 1 };
+      error.context = { tool: tool: toolName, args, attempt: retryCount + 1 };
 
       if (await isToolRecoverable(db, toolName, error) && retryCount < strategy.max_retries - 1) {
         retryCount++;
@@ -542,136 +542,38 @@ async function getEmotions(db) {
     }
     return result;
   } catch (error) {
-    await logError(db, 'getEmotions', error, { context: 'emotion retrieval' });
+    await logError(db, 'getEmotions', error);
     return { ...EMO_DEFAULTS };
   }
 }
 
-async function getEmotionValue(db, emotion) {
-  const emotions = await getEmotions(db);
-  return emotions[emotion] || EMO_DEFAULTS[emotion];
-}
-
-async function updateEmotion(db, emotion, delta) {
+async function storeThought(db, content, mood, energy, phase) {
   try {
-    const current = await getEmotionValue(db, emotion);
-    const [min, max] = RANGES[emotion];
-    const newValue = Math.max(min, Math.min(max, current + delta));
+    const currentMood = mood || await getIdentity(db, 'current_mood') || "neutral";
+    const currentEnergy = energy || await getIdentity(db, 'current_energy') || 5;
+    const currentPhase = phase || await getIdentity(db, 'current_phase') || "active";
+
     await db.prepare(`
-      INSERT INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
-    `).bind(`emotion_${emotion}`, newValue.toString()).run();
-    return newValue;
-  } catch (error) {
-    await logError(db, 'updateEmotion', error, { emotion, delta });
-    throw error;
-  }
-}
-
-async function driftEmotions(db) {
-  const emo = await getEmotions(db);
-  for (const [name, decayRate] of Object.entries(EMO_DECAY)) {
-    const [min, max] = RANGES[name];
-    const decay = decayRate * (emo[name] - (name === 'bad' ? 0 : 5));
-    const newVal = Math.max(min, Math.min(max, emo[name] - decay + (Math.random() < 0.1 ? 1 : 0)));
-    await updateEmotion(db, name, newVal - emo[name]);
-  }
-}
-
-async function storeBrainLog(db, actionId, tool, step, content = {}, model = null, tokens = 0) {
-  try {
-    await db.prepare(`
-      INSERT INTO brain_logs
-      (action_id, tool, step, content, model, tokens, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+      INSERT INTO thought_stream
+      (content, mood, energy, phase, source, created_at)
+      VALUES (?1, ?2, ?3, ?4, 'user', datetime('now'))
     `).bind(
-      actionId,
-      tool,
-      step,
-      JSON.stringify(content),
-      model,
-      tokens
-    ).run();
-  } catch (error) {
-    await logError(db, 'storeBrainLog', error, { actionId, tool, step });
-  }
-}
-
-async function getBrainLog(db, actionId) {
-  try {
-    const result = await db.prepare(`
-      SELECT * FROM brain_logs WHERE action_id = ?1 ORDER BY created_at
-    `).bind(actionId).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getBrainLog', error, { actionId });
-    return [];
-  }
-}
-
-async function createProposal(db, title, whatDiff, howDiff, resourceType, riskPct = 0, researchSources = []) {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO proposals
-      (title, what_diff, how_diff, resource_type, risk_pct, research_sources, status, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', datetime('now'))
-    `).bind(
-      title,
-      whatDiff,
-      howDiff,
-      resourceType,
-      riskPct,
-      JSON.stringify(researchSources)
+      content,
+      currentMood,
+      currentEnergy,
+      currentPhase
     ).run();
 
-    return result.lastInsertRowid;
+    return true;
   } catch (error) {
-    await logError(db, 'createProposal', error, { title, resourceType });
-    throw error;
-  }
-}
-
-async function updateProposalStatus(db, proposalId, status, decidedAt = null) {
-  try {
-    await db.prepare(`
-      UPDATE proposals
-      SET status = ?1, decided_at = ?2
-      WHERE id = ?3
-    `).bind(
-      status,
-      decidedAt || new Date().toISOString(),
-      proposalId
-    ).run();
-  } catch (error) {
-    await logError(db, 'updateProposalStatus', error, { proposalId, status });
-    throw error;
-  }
-}
-
-async function executeProposal(db, proposalId) {
-  try {
-    const proposal = await db.prepare(`
-      SELECT * FROM proposals WHERE id = ?1
-    `).bind(proposalId).first();
-
-    if (!proposal) {
-      throw new Error('Proposal not found');
-    }
-
-    await updateProposalStatus(db, proposalId, 'executed', new Date().toISOString());
-    return { success: true, proposal };
-  } catch (error) {
-    await logError(db, 'executeProposal', error, { proposalId });
-    throw error;
+    await logError(db, 'storeThought', error, { content, mood, energy, phase });
+    return false;
   }
 }
 
 async function getIdentity(db, key) {
   try {
-    const result = await db.prepare(`
-      SELECT value FROM identity WHERE key = ?1
-    `).bind(key).first();
+    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
     return result?.value || null;
   } catch (error) {
     await logError(db, 'getIdentity', error, { key });
@@ -679,51 +581,57 @@ async function getIdentity(db, key) {
   }
 }
 
-async function setIdentity(db, key, value) {
+async function storeBrainLog(db, action_id, tool, step, content = {}, model = null, tokens = 0) {
   try {
     await db.prepare(`
-      INSERT INTO identity (key, value, updated_at)
+      INSERT INTO brain_logs
+      (action_id, tool, step, content, model, tokens, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+    `).bind(
+      action_id,
+      tool,
+      step,
+      JSON.stringify(content),
+      model,
+      tokens
+    ).run();
+  } catch (error) {
+    await logError(db, 'storeBrainLog', error, { action_id, tool, step });
+  }
+}
+
+async function updateIdentity(db, key, value) {
+  try {
+    await db.prepare(`
+      INSERT OR REPLACE INTO identity (key, value, updated_at)
       VALUES (?1, ?2, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')
     `).bind(key, value).run();
   } catch (error) {
-    await logError(db, 'setIdentity', error, { key });
-    throw error;
+    await logError(db, 'updateIdentity', error, { key, value });
   }
 }
 
-async function initializeDatabase(db) {
-  for (const table of TABLES) {
-    await db.prepare(table).run();
-  }
-  await addToolRecoveryRules(db);
-
-  // Initialize emotions if they don't exist
-  for (const [key, value] of Object.entries(EMO_DEFAULTS)) {
-    await db.prepare(`
-      INSERT OR IGNORE INTO identity (key, value, updated_at)
-      VALUES (?1, ?2, datetime('now'))
-    `).bind(`emotion_${key}`, value.toString()).run();
-  }
-}
-
-async function getMemories(db, limit = 10, offset = 0) {
+async function getMemories(db, limit = 10, type = 'episodic', tags = []) {
   try {
-    const result = await db.prepare(`
-      SELECT * FROM memories
-      ORDER BY strength DESC, created_at DESC
-      LIMIT ?1 OFFSET ?2
-    `).bind(limit, offset).all();
+    let query = "SELECT * FROM memories WHERE type = ?1 ORDER BY created_at DESC LIMIT ?2";
+    const bindings = [type, limit];
+
+    if (tags.length > 0) {
+      query = "SELECT m.* FROM memories m JOIN json_each(m.tags) t WHERE t.value IN (" + tags.map(() => "?").join(",") + ") AND m.type = ?" + (bindings.length + 1) + " ORDER BY m.created_at DESC LIMIT ?" + (bindings.length + 2);
+      bindings.push(...tags, type, limit);
+    }
+
+    const result = await db.prepare(query).bind(...bindings).all();
     return result.results || [];
   } catch (error) {
-    await logError(db, 'getMemories', error, { limit, offset });
+    await logError(db, 'getMemories', error, { limit, type, tags });
     return [];
   }
 }
 
-async function addMemory(db, content, type = 'episodic', strength = 1.0, tags = []) {
+async function storeMemory(db, content, type = 'episodic', strength = 1.0, tags = []) {
   try {
-    const result = await db.prepare(`
+    await db.prepare(`
       INSERT INTO memories (content, type, strength, tags, created_at)
       VALUES (?1, ?2, ?3, ?4, datetime('now'))
     `).bind(
@@ -732,106 +640,40 @@ async function addMemory(db, content, type = 'episodic', strength = 1.0, tags = 
       strength,
       JSON.stringify(tags)
     ).run();
-    return result.lastInsertRowid;
   } catch (error) {
-    await logError(db, 'addMemory', error, { content, type });
-    throw error;
+    await logError(db, 'storeMemory', error, { content, type, strength, tags });
   }
 }
 
-async function updateMemoryStrength(db, memoryId, strengthChange) {
+async function getLearnings(db, limit = 10) {
   try {
-    const memory = await db.prepare(`
-      SELECT strength FROM memories WHERE id = ?1
-    `).bind(memoryId).first();
-
-    if (!memory) {
-      throw new Error('Memory not found');
-    }
-
-    const newStrength = Math.max(0.1, memory.strength + strengthChange);
-    await db.prepare(`
-      UPDATE memories
-      SET strength = ?1, updated_at = datetime('now')
-      WHERE id = ?2
-    `).bind(newStrength, memoryId).run();
-    return newStrength;
-  } catch (error) {
-    await logError(db, 'updateMemoryStrength', error, { memoryId, strengthChange });
-    throw error;
-  }
-}
-
-async function getLearnings(db, limit = 10, offset = 0) {
-  try {
-    const result = await db.prepare(`
-      SELECT * FROM learnings
-      ORDER BY last_used DESC, success_count DESC
-      LIMIT ?1 OFFSET ?2
-    `).bind(limit, offset).all();
+    const result = await db.prepare("SELECT * FROM learnings ORDER BY last_used DESC, success_count DESC LIMIT ?1").bind(limit).all();
     return result.results || [];
   } catch (error) {
-    await logError(db, 'getLearnings', error, { limit, offset });
+    await logError(db, 'getLearnings', error, { limit });
     return [];
   }
 }
 
-async function recordLearning(db, pattern, context = '', success = true) {
+async function updateLearning(db, id, updates) {
   try {
-    const existing = await db.prepare(`
-      SELECT id, success_count, fail_count FROM learnings
-      WHERE pattern = ?1 AND context = ?2
-    `).bind(pattern, context).first();
-
-    if (existing) {
-      const updates = success
-        ? { success_count: existing.success_count + 1, last_used: new Date().toISOString() }
-        : { fail_count: existing.fail_count + 1, last_used: new Date().toISOString() };
-
-      await db.prepare(`
-        UPDATE learnings
-        SET ${Object.keys(updates).map(k => `${k} = ?${Object.keys(updates).indexOf(k) + 1}`).join(', ')}
-        WHERE id = ?${Object.keys(updates).length + 1}
-      `).bind(
-        ...Object.values(updates),
-        existing.id
-      ).run();
-    } else {
-      await db.prepare(`
-        INSERT INTO learnings (pattern, context, success_count, fail_count, last_used, created_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
-      `).bind(
-        pattern,
-        context,
-        success ? 1 : 0,
-        success ? 0 : 1,
-        new Date().toISOString()
-      ).run();
-    }
-  } catch (error) {
-    await logError(db, 'recordLearning', error, { pattern, context, success });
-    throw error;
-  }
-}
-
-async function getActions(db, status = null, limit = 10, offset = 0) {
-  try {
-    let query = `SELECT * FROM actions WHERE 1=1`;
+    const setParts = [];
     const bindings = [];
 
-    if (status) {
-      query += ` AND status = ?${bindings.length + 1}`;
-      bindings.push(status);
+    for (const [key, value] of Object.entries(updates)) {
+      setParts.push(`${key} = ?${bindings.length + 1}`);
+      bindings.push(value);
     }
 
-    query += ` ORDER BY created_at DESC LIMIT ?${bindings.length + 1} OFFSET ?${bindings.length + 2}`;
-    bindings.push(limit, offset);
+    bindings.push(id);
 
-    const result = await db.prepare(query).bind(...bindings).all();
-    return result.results || [];
+    await db.prepare(`
+      UPDATE learnings
+      SET ${setParts.join(', ')}, last_used = datetime('now')
+      WHERE id = ?${bindings.length}
+    `).bind(...bindings).run();
   } catch (error) {
-    await logError(db, 'getActions', error, { status, limit, offset });
-    return [];
+    await logError(db, 'updateLearning', error, { id, updates });
   }
 }
 
@@ -841,6 +683,7 @@ async function createAction(db, type, input = null) {
       INSERT INTO actions (type, input, status, created_at)
       VALUES (?1, ?2, 'pending', datetime('now'))
     `).bind(type, input).run();
+
     return result.lastInsertRowid;
   } catch (error) {
     await logError(db, 'createAction', error, { type, input });
@@ -848,101 +691,76 @@ async function createAction(db, type, input = null) {
   }
 }
 
-async function updateActionStatus(db, actionId, status, result = null, error = null) {
+async function updateAction(db, id, updates) {
   try {
+    const setParts = [];
+    const bindings = [];
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (key !== 'id') {
+        setParts.push(`${key} = ?${bindings.length + 1}`);
+        bindings.push(value);
+      }
+    }
+
+    bindings.push(id);
+
     await db.prepare(`
       UPDATE actions
-      SET status = ?1, result = ?2, error = ?3, completed_at = datetime('now')
-      WHERE id = ?4
-    `).bind(
-      status,
-      result ? JSON.stringify(result) : null,
-      error ? JSON.stringify({ message: error.message, stack: error.stack }) : null,
-      actionId
-    ).run();
+      SET ${setParts.join(', ')}, completed_at = datetime('now')
+      WHERE id = ?${bindings.length}
+    `).bind(...bindings).run();
   } catch (error) {
-    await logError(db, 'updateActionStatus', error, { actionId, status });
-    throw error;
+    await logError(db, 'updateAction', error, { id, updates });
   }
 }
 
-async function getPendingApprovals(db) {
+async function getPendingActions(db, limit = 5) {
   try {
-    const result = await db.prepare(`
-      SELECT * FROM pending_approvals
-      WHERE status = 'pending'
-      ORDER BY created_at
-    `).all();
+    const result = await db.prepare("SELECT * FROM actions WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?1").bind(limit).all();
     return result.results || [];
   } catch (error) {
-    await logError(db, 'getPendingApprovals', error);
+    await logError(db, 'getPendingActions', error, { limit });
     return [];
   }
 }
 
-async function addPendingApproval(db, actionId, tool, input) {
+async function getAction(db, id) {
   try {
-    const result = await db.prepare(`
-      INSERT INTO pending_approvals (action_id, tool, input, status, created_at)
-      VALUES (?1, ?2, ?3, 'pending', datetime('now'))
-    `).bind(actionId, tool, input).run();
-    return result.lastInsertRowid;
+    const result = await db.prepare("SELECT * FROM actions WHERE id = ?1").bind(id).first();
+    return result || null;
   } catch (error) {
-    await logError(db, 'addPendingApproval', error, { actionId, tool });
-    throw error;
+    await logError(db, 'getAction', error, { id });
+    return null;
   }
 }
 
-async function updatePendingApprovalStatus(db, approvalId, status, decidedAt = null) {
-  try {
-    await db.prepare(`
-      UPDATE pending_approvals
-      SET status = ?1, decided_at = ?2
-      WHERE id = ?3
-    `).bind(
-      status,
-      decidedAt || new Date().toISOString(),
-      approvalId
-    ).run();
-  } catch (error) {
-    await logError(db, 'updatePendingApprovalStatus', error, { approvalId, status });
-    throw error;
-  }
-}
-
-async function getThoughtStream(db, limit = 10, offset = 0) {
+async function getThoughtsByMood(db, mood, limit = 10) {
   try {
     const result = await db.prepare(`
       SELECT * FROM thought_stream
+      WHERE mood = ?1
       ORDER BY created_at DESC
-      LIMIT ?1 OFFSET ?2
-    `).bind(limit, offset).all();
+      LIMIT ?2
+    `).bind(mood, limit).all();
     return result.results || [];
   } catch (error) {
-    await logError(db, 'getThoughtStream', error, { limit, offset });
+    await logError(db, 'getThoughtsByMood', error, { mood, limit });
     return [];
   }
 }
 
-async function addThought(db, content, mood = 'neutral', source = 'cron') {
+async function getThoughtsByContext(db, mood, energy, phase, limit = 10) {
   try {
     const result = await db.prepare(`
-      INSERT INTO thought_stream (content, mood, source, created_at)
-      VALUES (?1, ?2, ?3, datetime('now'))
-    `).bind(content, mood, source).run();
-    return result.lastInsertRowid;
+      SELECT * FROM thought_stream
+      WHERE mood = ?1 AND energy = ?2 AND phase = ?3
+      ORDER BY created_at DESC
+      LIMIT ?4
+    `).bind(mood, energy, phase, limit).all();
+    return result.results || [];
   } catch (error) {
-    await logError(db, 'addThought', error, { content, mood });
-    throw error;
+    await logError(db, 'getThoughtsByContext', error, { mood, energy, phase, limit });
+    return [];
   }
 }
-
-async function getAntiPatterns(db, limit = 10, offset = 0) {
-  try {
-    const result = await db.prepare(`
-      SELECT * FROM anti_patterns
-      ORDER BY count DESC, last_seen DESC
-      LIMIT ?1 OFFSET ?2
-    `).bind(limit, offset).all();
-    return result.results || [];
-  } catch
