@@ -395,7 +395,7 @@ async function invokeToolWithRecovery(db, toolName, args, context = {}) {
       return result;
     } catch (error) {
       lastError = error;
-      error.context = { tool: tool: toolName, args, attempt: retryCount + 1 };
+      error.context = { tool: toolName, args, attempt: retryCount + 1 };
 
       if (await isToolRecoverable(db, toolName, error) && retryCount < strategy.max_retries - 1) {
         retryCount++;
@@ -538,7 +538,7 @@ async function getEmotions(db) {
     const result = { ...EMO_DEFAULTS };
     for (const r of rows.results) {
       const key = r.key.replace("emotion_", "");
-      if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+      if (key in result) result[key] = Math.min(parseInt(r.value) || EMO_DEFAULTS[key], RANGES[key][1]);
     }
     return result;
   } catch (error) {
@@ -547,91 +547,260 @@ async function getEmotions(db) {
   }
 }
 
-async function storeThought(db, content, mood, energy, phase) {
+async function setEmotion(db, emotion, value) {
   try {
-    const currentMood = mood || await getIdentity(db, 'current_mood') || "neutral";
-    const currentEnergy = energy || await getIdentity(db, 'current_energy') || 5;
-    const currentPhase = phase || await getIdentity(db, 'current_phase') || "active";
-
-    await db.prepare(`
-      INSERT INTO thought_stream
-      (content, mood, energy, phase, source, created_at)
-      VALUES (?1, ?2, ?3, ?4, 'user', datetime('now'))
-    `).bind(
-      content,
-      currentMood,
-      currentEnergy,
-      currentPhase
-    ).run();
-
-    return true;
+    const normalizedValue = Math.min(Math.max(value, RANGES[emotion][0]), RANGES[emotion][1]);
+    await db.prepare("INSERT OR REPLACE INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now'))")
+      .bind(`emotion_${emotion}`, normalizedValue.toString()).run();
+    return normalizedValue;
   } catch (error) {
-    await logError(db, 'storeThought', error, { content, mood, energy, phase });
+    await logError(db, 'setEmotion', error, { emotion, value });
+    throw error;
+  }
+}
+
+async function decayEmotions(db) {
+  try {
+    const emotions = await getEmotions(db);
+    let changed = false;
+    const updates = [];
+
+    for (const [emotion, value] of Object.entries(emotions)) {
+      const decay = EMO_DECAY[emotion] || 0;
+      if (decay > 0 && value > 0) {
+        const newValue = Math.max(0, value - decay);
+        if (newValue !== value) {
+          updates.push(db.prepare("UPDATE identity SET value = ?1, updated_at = datetime('now') WHERE key = ?2")
+            .bind(newValue.toString(), `emotion_${emotion}`));
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      await Promise.all(updates);
+    }
+    return changed;
+  } catch (error) {
+    await logError(db, 'decayEmotions', error);
     return false;
   }
 }
 
 async function getIdentity(db, key) {
   try {
-    const result = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
-    return result?.value || null;
+    const row = await db.prepare("SELECT value FROM identity WHERE key = ?1").bind(key).first();
+    return row?.value || null;
   } catch (error) {
     await logError(db, 'getIdentity', error, { key });
     return null;
   }
 }
 
-async function storeBrainLog(db, action_id, tool, step, content = {}, model = null, tokens = 0) {
-  try {
-    await db.prepare(`
-      INSERT INTO brain_logs
-      (action_id, tool, step, content, model, tokens, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
-    `).bind(
-      action_id,
-      tool,
-      step,
-      JSON.stringify(content),
-      model,
-      tokens
-    ).run();
-  } catch (error) {
-    await logError(db, 'storeBrainLog', error, { action_id, tool, step });
-  }
-}
-
-async function updateIdentity(db, key, value) {
+async function setIdentity(db, key, value) {
   try {
     await db.prepare(`
       INSERT OR REPLACE INTO identity (key, value, updated_at)
       VALUES (?1, ?2, datetime('now'))
     `).bind(key, value).run();
+    return value;
   } catch (error) {
-    await logError(db, 'updateIdentity', error, { key, value });
+    await logError(db, 'setIdentity', error, { key, value });
+    throw error;
   }
 }
 
-async function getMemories(db, limit = 10, type = 'episodic', tags = []) {
+async function getBrainKnowledge(db, key) {
   try {
-    let query = "SELECT * FROM memories WHERE type = ?1 ORDER BY created_at DESC LIMIT ?2";
-    const bindings = [type, limit];
-
-    if (tags.length > 0) {
-      query = "SELECT m.* FROM memories m JOIN json_each(m.tags) t WHERE t.value IN (" + tags.map(() => "?").join(",") + ") AND m.type = ?" + (bindings.length + 1) + " ORDER BY m.created_at DESC LIMIT ?" + (bindings.length + 2);
-      bindings.push(...tags, type, limit);
-    }
-
-    const result = await db.prepare(query).bind(...bindings).all();
-    return result.results || [];
+    const row = await db.prepare("SELECT content FROM brain_knowledge WHERE key = ?1").bind(key).first();
+    return row?.content || null;
   } catch (error) {
-    await logError(db, 'getMemories', error, { limit, type, tags });
+    await logError(db, 'getBrainKnowledge', error, { key });
+    return null;
+  }
+}
+
+async function setBrainKnowledge(db, key, content, category = 'general', source = 'user') {
+  try {
+    await db.prepare(`
+      INSERT OR REPLACE INTO brain_knowledge (key, content, category, source, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'))
+    `).bind(key, content, category, source).run();
+    return content;
+  } catch (error) {
+    await logError(db, 'setBrainKnowledge', error, { key, category });
+    throw error;
+  }
+}
+
+async function searchBrainKnowledge(db, query) {
+  try {
+    const rows = await db.prepare(`
+      SELECT key, content, category, source,
+             CASE
+               WHEN key LIKE ?1 THEN 3
+               WHEN content LIKE ?1 THEN 2
+               ELSE 1
+             END as relevance
+      FROM brain_knowledge
+      WHERE key LIKE ?1 OR content LIKE ?1
+      ORDER BY relevance DESC, created_at DESC
+      LIMIT 10
+    `).bind(`%${query}%`, `%${query}%`).all();
+
+    return rows.results.map(row => ({
+      key: row.key,
+      content: row.content,
+      category: row.category,
+      source: row.source,
+      relevance: row.relevance
+    }));
+  } catch (error) {
+    await logError(db, 'searchBrainKnowledge', error, { query });
     return [];
   }
 }
 
-async function storeMemory(db, content, type = 'episodic', strength = 1.0, tags = []) {
+async function storeBrainLog(db, actionId, tool, step, content = null, model = null, tokens = null) {
   try {
     await db.prepare(`
+      INSERT INTO brain_logs (action_id, tool, step, content, model, tokens, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+    `).bind(
+      actionId,
+      tool,
+      step,
+      content ? JSON.stringify(content) : null,
+      model,
+      tokens
+    ).run();
+  } catch (error) {
+    await logError(db, 'storeBrainLog', error, { actionId, tool, step });
+  }
+}
+
+async function getContextualRules(db, context) {
+  try {
+    const rows = await db.prepare(`
+      SELECT pattern, context, response, confidence, last_used
+      FROM contextual_rules
+      WHERE context = ?1 OR pattern LIKE ?2
+      ORDER BY confidence DESC, last_used ASC
+    `).bind(context, `%${context}%`).all();
+
+    return rows.results.map(row => ({
+      pattern: row.pattern,
+      context: row.context,
+      response: row.response,
+      confidence: row.confidence,
+      last_used: row.last_used
+    }));
+  } catch (error) {
+    await logError(db, 'getContextualRules', error, { context });
+    return [];
+  }
+}
+
+async function addContextualRule(db, pattern, context, response, confidence = 0.5) {
+  try {
+    await db.prepare(`
+      INSERT OR REPLACE INTO contextual_rules (pattern, context, response, confidence, last_used, created_at)
+      VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))
+    `).bind(pattern, context, response, confidence).run();
+  } catch (error) {
+    await logError(db, 'addContextualRule', error, { pattern, context });
+    throw error;
+  }
+}
+
+async function updateContextualRuleUsage(db, pattern) {
+  try {
+    await db.prepare(`
+      UPDATE contextual_rules
+      SET last_used = datetime('now')
+      WHERE pattern = ?1
+    `).bind(pattern).run();
+  } catch (error) {
+    await logError(db, 'updateContextualRuleUsage', error, { pattern });
+  }
+}
+
+async function getLearnings(db, pattern = null) {
+  try {
+    let query = "SELECT pattern, context, success_count, fail_count, last_used FROM learnings";
+    const binds = [];
+
+    if (pattern) {
+      query += " WHERE pattern LIKE ?1";
+      binds.push(`%${pattern}%`);
+    }
+
+    query += " ORDER BY last_used DESC";
+
+    const rows = await db.prepare(query).bind(...binds).all();
+    return rows.results.map(row => ({
+      pattern: row.pattern,
+      context: row.context,
+      success_count: row.success_count,
+      fail_count: row.fail_count,
+      last_used: row.last_used
+    }));
+  } catch (error) {
+    await logError(db, 'getLearnings', error, { pattern });
+    return [];
+  }
+}
+
+async function recordLearning(db, pattern, context = '', success = true) {
+  try {
+    const now = new Date().toISOString();
+    await db.prepare(`
+      INSERT INTO learnings (pattern, context, success_count, fail_count, last_used, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT(pattern) DO UPDATE SET
+        ${success ? 'success_count = success_count + 1' : 'fail_count = fail_count + 1'},
+        last_used = ?5
+    `).bind(pattern, context, success ? 1 : 0, success ? 0 : 1, now, now).run();
+  } catch (error) {
+    await logError(db, 'recordLearning', error, { pattern, success });
+    throw error;
+  }
+}
+
+async function getMemories(db, type = null, limit = 50) {
+  try {
+    let query = "SELECT id, content, type, strength, tags, created_at FROM memories";
+    const binds = [];
+
+    const conditions = [];
+    if (type) {
+      conditions.push("type = ?1");
+      binds.push(type);
+    }
+    if (conditions.length > 0) {
+      query += " WHERE " + conditions.join(" AND ");
+    }
+    query += " ORDER BY strength DESC, created_at DESC LIMIT ?2";
+    binds.push(limit);
+
+    const rows = await db.prepare(query).bind(...binds).all();
+    return rows.results.map(row => ({
+      id: row.id,
+      content: row.content,
+      type: row.type,
+      strength: row.strength,
+      tags: JSON.parse(row.tags),
+      created_at: row.created_at
+    }));
+  } catch (error) {
+    await logError(db, 'getMemories', error, { type, limit });
+    return [];
+  }
+}
+
+async function addMemory(db, content, type = 'episodic', strength = 1.0, tags = []) {
+  try {
+    const result = await db.prepare(`
       INSERT INTO memories (content, type, strength, tags, created_at)
       VALUES (?1, ?2, ?3, ?4, datetime('now'))
     `).bind(
@@ -640,127 +809,151 @@ async function storeMemory(db, content, type = 'episodic', strength = 1.0, tags 
       strength,
       JSON.stringify(tags)
     ).run();
-  } catch (error) {
-    await logError(db, 'storeMemory', error, { content, type, strength, tags });
-  }
-}
-
-async function getLearnings(db, limit = 10) {
-  try {
-    const result = await db.prepare("SELECT * FROM learnings ORDER BY last_used DESC, success_count DESC LIMIT ?1").bind(limit).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getLearnings', error, { limit });
-    return [];
-  }
-}
-
-async function updateLearning(db, id, updates) {
-  try {
-    const setParts = [];
-    const bindings = [];
-
-    for (const [key, value] of Object.entries(updates)) {
-      setParts.push(`${key} = ?${bindings.length + 1}`);
-      bindings.push(value);
-    }
-
-    bindings.push(id);
-
-    await db.prepare(`
-      UPDATE learnings
-      SET ${setParts.join(', ')}, last_used = datetime('now')
-      WHERE id = ?${bindings.length}
-    `).bind(...bindings).run();
-  } catch (error) {
-    await logError(db, 'updateLearning', error, { id, updates });
-  }
-}
-
-async function createAction(db, type, input = null) {
-  try {
-    const result = await db.prepare(`
-      INSERT INTO actions (type, input, status, created_at)
-      VALUES (?1, ?2, 'pending', datetime('now'))
-    `).bind(type, input).run();
 
     return result.lastInsertRowid;
   } catch (error) {
-    await logError(db, 'createAction', error, { type, input });
+    await logError(db, 'addMemory', error, { type, strength });
     throw error;
   }
 }
 
-async function updateAction(db, id, updates) {
+async function updateMemoryStrength(db, memoryId, strengthChange) {
   try {
-    const setParts = [];
-    const bindings = [];
+    await db.prepare(`
+      UPDATE memories
+      SET strength = strength + ?1,
+          created_at = datetime('now')
+      WHERE id = ?2
+    `).bind(strengthChange, memoryId).run();
+  } catch (error) {
+    await logError(db, 'updateMemoryStrength', error, { memoryId, strengthChange });
+    throw error;
+  }
+}
 
-    for (const [key, value] of Object.entries(updates)) {
-      if (key !== 'id') {
-        setParts.push(`${key} = ?${bindings.length + 1}`);
-        bindings.push(value);
-      }
-    }
+async function searchMemories(db, query, limit = 20) {
+  try {
+    const rows = await db.prepare(`
+      SELECT id, content, type, strength, tags, created_at,
+             CASE
+               WHEN content LIKE ?1 THEN 3
+               WHEN tags LIKE ?1 THEN 2
+               ELSE 1
+             END as relevance
+      FROM memories
+      WHERE content LIKE ?1 OR tags LIKE ?1
+      ORDER BY relevance DESC, strength DESC, created_at DESC
+      LIMIT ?2
+    `).bind(`%${query}%`, limit).all();
 
-    bindings.push(id);
+    return rows.results.map(row => ({
+      id: row.id,
+      content: row.content,
+      type: row.type,
+      strength: row.strength,
+      tags: JSON.parse(row.tags),
+      created_at: row.created_at,
+      relevance: row.relevance
+    }));
+  } catch (error) {
+    await logError(db, 'searchMemories', error, { query, limit });
+    return [];
+  }
+}
 
+async function getPendingActions(db) {
+  try {
+    const rows = await db.prepare(`
+      SELECT id, type, status, input, result, error, created_at, completed_at
+      FROM actions
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+    `).all();
+
+    return rows.results.map(row => ({
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      input: row.input,
+      result: row.result,
+      error: row.error,
+      created_at: row.created_at,
+      completed_at: row.completed_at
+    }));
+  } catch (error) {
+    await logError(db, 'getPendingActions', error);
+    return [];
+  }
+}
+
+async function updateActionStatus(db, actionId, status, result = null, error = null) {
+  try {
+    const completedAt = status === 'completed' ? "datetime('now')" : "NULL";
     await db.prepare(`
       UPDATE actions
-      SET ${setParts.join(', ')}, completed_at = datetime('now')
-      WHERE id = ?${bindings.length}
-    `).bind(...bindings).run();
+      SET status = ?1, result = ?2, error = ?3, completed_at = ${completedAt}
+      WHERE id = ?4
+    `).bind(status, result, error, actionId).run();
   } catch (error) {
-    await logError(db, 'updateAction', error, { id, updates });
+    await logError(db, 'updateActionStatus', error, { actionId, status });
+    throw error;
   }
 }
 
-async function getPendingActions(db, limit = 5) {
-  try {
-    const result = await db.prepare("SELECT * FROM actions WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?1").bind(limit).all();
-    return result.results || [];
-  } catch (error) {
-    await logError(db, 'getPendingActions', error, { limit });
-    return [];
-  }
-}
-
-async function getAction(db, id) {
-  try {
-    const result = await db.prepare("SELECT * FROM actions WHERE id = ?1").bind(id).first();
-    return result || null;
-  } catch (error) {
-    await logError(db, 'getAction', error, { id });
-    return null;
-  }
-}
-
-async function getThoughtsByMood(db, mood, limit = 10) {
+async function createAction(db, type, input) {
   try {
     const result = await db.prepare(`
-      SELECT * FROM thought_stream
-      WHERE mood = ?1
-      ORDER BY created_at DESC
-      LIMIT ?2
-    `).bind(mood, limit).all();
-    return result.results || [];
+      INSERT INTO actions (type, status, input, created_at)
+      VALUES (?1, 'pending', ?2, datetime('now'))
+    `).bind(type, input).run();
+
+    return result.lastInsertRowid;
   } catch (error) {
-    await logError(db, 'getThoughtsByMood', error, { mood, limit });
+    await logError(db, 'createAction', error, { type });
+    throw error;
+  }
+}
+
+async function getThoughtStream(db, limit = 100) {
+  try {
+    const rows = await db.prepare(`
+      SELECT id, content, mood, energy, phase, source, created_at
+      FROM thought_stream
+      ORDER BY created_at DESC
+      LIMIT ?1
+    `).bind(limit).all();
+
+    return rows.results.map(row => ({
+      id: row.id,
+      content: row.content,
+      mood: row.mood,
+      energy: row.energy,
+      phase: row.phase,
+      source: row.source,
+      created_at: row.created_at
+    }));
+  } catch (error) {
+    await logError(db, 'getThoughtStream', error, { limit });
     return [];
   }
 }
 
-async function getThoughtsByContext(db, mood, energy, phase, limit = 10) {
+async function addThought(db, content, mood = 'neutral', energy = null, phase = 'active', source = 'user') {
   try {
-    const result = await db.prepare(`
-      SELECT * FROM thought_stream
-      WHERE mood = ?1 AND energy = ?2 AND phase = ?3
-      ORDER BY created_at DESC
-      LIMIT ?4
-    `).bind(mood, energy, phase, limit).all();
-    return result.results || [];
+    if (energy === null) {
+      const emotions = await getEmotions(db);
+      energy = Math.round((Object.values(emotions).reduce((a, b) => a + b, 0) / Object.keys(emotions).length));
+    }
+
+    await db.prepare(`
+      INSERT INTO thought_stream (content, mood, energy, phase, source, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+    `).bind(content, mood, energy, phase, source).run();
   } catch (error) {
-    await logError(db, 'getThoughtsByContext', error, { mood, energy, phase, limit });
-    return [];
+    await logError(db, 'addThought', error, { mood, phase, source });
+    throw error;
   }
 }
+
+async function getProposals(db, status = null) {
+  try {
