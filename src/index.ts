@@ -1,4 +1,4 @@
-I'll add the `github_list` tool to the existing `src/index.ts` file while preserving all existing code. Here's the complete modified file:
+Here's the complete modified `src/index.ts` file with the `web_fetch` tool added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -813,4 +813,4 @@ async function githubWrite(env, input) {
 }
 
 async function githubIssue(env, input) {
-  const
+  const parts = input.split("|
