@@ -1,4 +1,4 @@
-I'll implement the complete changes for the web_fetch tool integration as described in the proposal. Here's the complete modified `src/index.ts` file with all existing code preserved and the new functionality added:
+Here's the complete modified `src/index.ts` file with the topic-driven proposal filtering system implemented:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -36,6 +36,12 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS tools (id INTEGER PRIMARY KEY, name TEXT UNIQUE, config TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, title TEXT NOT NULL, what TEXT, how TEXT, type TEXT, risk INTEGER DEFAULT 0, success_duration INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, user_feedback_lift INTEGER DEFAULT 0, applied_at TEXT DEFAULT (datetime('now')), status TEXT DEFAULT 'active')`,
   `CREATE TABLE IF NOT EXISTS memory_consolidation_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id INTEGER, original_ids TEXT, consolidated_content TEXT, strength_change REAL, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS topic_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL UNIQUE,
+    score REAL DEFAULT 0,
+    last_updated TEXT DEFAULT (datetime('now'))
+  )`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "curious", "bored", "bad"];
@@ -61,6 +67,20 @@ const EMO_DECAY_FACTORS = {
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const API_TIMEOUT_MS = 10000;
+
+// Topic scoring constants
+const TOPIC_PRIORITY = {
+  'tool_code': 1.5,
+  'github_write': 1.5,
+  'github_changes': 1.4,
+  'new_tools': 1.4,
+  'code_improvements': 1.3,
+  'emotion_improvements': 1.2,
+  'memory_improvements': 1.2,
+  'anti_patterns': 1.1,
+  'micro_optimizations': 0.8,
+  'minor_tweaks': 0.7
+};
 
 async function getLearningContext(db) {
   try {
@@ -421,7 +441,9 @@ function isToolSafe(tool) {
     driftEmotions: true,
     search_knowledge: true,
     seed_knowledge: true,
-    fetch: true
+    fetch: true,
+    updateTopicScores: true,
+    getTopicScores: true
   };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
@@ -825,6 +847,104 @@ async function autoConsolidateMemories(db) {
     console.error('Error in auto-consolidation:', error);
     await error_handler(db, 'database_error', 'autoConsolidateMemories');
     return { consolidated: 0, memory_ids: [] };
+  }
+}
+
+// Topic scoring functions
+async function updateTopicScores(db, topic, scoreChange) {
+  try {
+    // Get current score or initialize to 0
+    const current = await db.prepare("SELECT score FROM topic_scores WHERE topic = ?1").bind(topic).all();
+
+    const newScore = current.results.length > 0
+      ? Math.min(100, Math.max(0, current.results[0].score + scoreChange))
+      : Math.min(100, Math.max(0, scoreChange));
+
+    // Update or insert the topic score
+    await db.prepare(`
+      INSERT INTO topic_scores (topic, score, last_updated)
+      VALUES (?1, ?2, datetime('now'))
+      ON CONFLICT(topic) DO UPDATE SET
+        score = excluded.score,
+        last_updated = excluded.last_updated
+    `).bind(topic, newScore.toString()).run();
+
+    return { success: true, topic, newScore };
+  } catch (error) {
+    console.error('Error updating topic scores:', error);
+    await error_handler(db, 'database_error', `updateTopicScores:${topic}`);
+    return { success: false, error: error.message };
+  }
+}
+
+async function getTopicScores(db) {
+  try {
+    const results = await db.prepare("SELECT topic, score FROM topic_scores ORDER BY score DESC").all();
+    return results.results;
+  } catch (error) {
+    console.error('Error getting topic scores:', error);
+    await error_handler(db, 'database_error', 'getTopicScores');
+    return [];
+  }
+}
+
+async function adjustTopicScoresBasedOnFeedback(db) {
+  try {
+    // Get recent approved proposals
+    const approved = await db.prepare(`
+      SELECT resource_type
+      FROM authority_receipts
+      JOIN proposals ON authority_receipts.proposal_id = proposals.id
+      WHERE authority_receipts.outcome = 'success'
+      AND authority_receipts.created_at > datetime('now', '-7 days')
+    `).all();
+
+    // Get recent denied proposals
+    const denied = await db.prepare(`
+      SELECT resource_type
+      FROM authority_receipts
+      JOIN proposals ON authority_receipts.proposal_id = proposals.id
+      WHERE authority_receipts.outcome = 'denied'
+      AND authority_receipts.created_at > datetime('now', '-7 days')
+    `).all();
+
+    // Update scores based on feedback
+    const updates = [];
+
+    // Boost scores for approved topics
+    const approvedCounts = approved.results.reduce((acc, row) => {
+      acc[row.resource_type] = (acc[row.resource_type] || 0) + 1;
+      return acc;
+    }, {});
+
+    for (const [topic, count] of Object.entries(approvedCounts)) {
+      updates.push(updateTopicScores(db, topic, count * 5)); // +5 points per approval
+    }
+
+    // Reduce scores for denied topics
+    const deniedCounts = denied.results.reduce((acc, row) => {
+      acc[row.resource_type] = (acc[row.resource_type] || 0) + 1;
+      return acc;
+    }, {});
+
+    for (const [topic, count] of Object.entries(deniedCounts)) {
+      updates.push(updateTopicScores(db, topic, -count * 3)); // -3 points per denial
+    }
+
+    // Apply all updates
+    await Promise.all(updates);
+
+    // Log the adjustment
+    await storeStreamThought(
+      db,
+      `Adjusted topic scores based on recent feedback. Approved: ${Object.keys(approvedCounts).length} topics, Denied: ${Object.keys(deniedCounts).length} topics`,
+      'neutral',
+      'cron'
+    );
+
+  } catch (error) {
+    console.error('Error adjusting topic scores based on feedback:', error);
+    await error_handler(db, 'database_error', 'adjustTopicScoresBasedOnFeedback');
   }
 }
 
@@ -1422,12 +1542,4 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
-  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo?type=files|dirs|all&path=... to browse repository structures and discover files.\n\nParameters:\n- type: files (only files), dirs (only directories), all (both)\n- path: optional path prefix to filter results\n\nExamples:\n- TOOL:github_list:owner/repo?type=all - List all files and directories\n- TOOL:github_list:owner/repo?type=files - List only files\n- TOOL:github_list:owner/repo?type=dirs&path=src - List directories under src/", cat: "tools" },
-  { k: "tool_github_issue_search", c: "Use TOOL:github_issue_search:owner|repo|issueQuery|limit to search for GitHub issues, pull requests, or discussions in a specific repository. Returns an array of issue objects with number, title, html_url, state, created_at, and body.\n\nParameters:\n- owner: GitHub repository owner/organization\n- repo: Repository name\n- issueQuery: The search query for issues (e.g., 'bug', 'enhancement', 'help wanted')\n- limit: Maximum number of results to return (default: 10, max: 100)\n\nExamples:\n- TOOL:github_issue_search:owner|repo|bug|10 - Search for bug issues\n- TOOL:github_issue_search:facebook|react|enhancement|5 - Search for enhancement issues in React repo\n- TOOL:github_issue_search:microsoft|vscode|\"good first issue\"|20 - Search for good first issues in VS Code", cat: "tools" },
-  { k: "tool_math_eval", c: "Use TOOL:math_eval:expression to evaluate safe mathematical expressions. Supports basic operations (+, -, *, /), parentheses, and decimal numbers.\n\nExamples:\n- TOOL:math_eval:2 + 3 * 4\n- TOOL:math_eval:(10 + 5) / 3\n- TOOL:math_eval:sqrt(16)", cat: "tools" },
-  { k: "tool_memory_consolidate", c: "Use TOOL:memory_consolidate:threshold|time_window to analyze recent memories and extract actionable learnings.\n\nParameters:\n- threshold: minimum number of occurrences to consider a pattern significant (default: 3)\n- time_window: time window in hours to consider recent memories (default: 24)\n\nExample: TOOL:memory_consolidate:5|48 - Find patterns that occur at least 5 times in the last 48 hours", cat: "tools" },
-  { k: "tool_memory_snapshot", c: "Use TOOL:memory_snapshot to capture a snapshot of current brain state including memories, learnings, emotions, energy, brain phase, and pending approvals. Returns structured JSON with current cognitive state.", cat: "tools" },
-  { k: "tool_reflection_engine", c: "Use TOOL:reflection_engine to perform deep self-analysis of system metrics including memory health, tool usage patterns, proposal success rates, emotion drift, and anti-pattern frequency. Returns structured analysis with improvement recommendations.", cat: "tools" },
-  { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
-  { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
-  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk
+  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo?type=files|dirs|all&path=... to browse repository structures and discover files.\n\nParameters:\n- type: files (only files), dirs (only directories), all (both)\n- path: optional path prefix to filter results\n\nExamples:\n- TOOL:github
