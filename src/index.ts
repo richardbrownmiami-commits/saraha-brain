@@ -1,4 +1,4 @@
-I'll implement the complete Unified Contextual Memory Consolidation System as described in the proposal. Here's the complete modified `src/index.ts` file:
+Here's the complete modified `src/index.ts` file with the Unified Contextual Memory Consolidation System implemented:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -743,4 +743,5 @@ async function webScrape(db, input) {
       }
 
       // Extract links
-      const
+      const links = [];
+      $('a').each
