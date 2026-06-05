@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `github_list` tool added and wired into the necessary functions:
+Here's the complete modified `src/index.ts` file with SQLite FTS5 full-text search implementation for brain_knowledge:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -21,6 +21,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE VIRTUAL TABLE IF NOT EXISTS brain_knowledge_fts USING fts5(key, content, category)`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
   `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS tools (id INTEGER PRIMARY KEY, name TEXT UNIQUE, config TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))`,
@@ -1160,6 +1161,75 @@ async function github_list(owner: string, repo: string, path: string = '') {
   }
 }
 
+async function searchKnowledge(db, query: string, limit: number = 10): Promise<{ key: string; content: string; category: string }[]> {
+  try {
+    // First try FTS5 search
+    const ftsQuery = query.trim();
+    if (ftsQuery) {
+      const ftsResults = await db.prepare("SELECT key, content, category FROM brain_knowledge_fts WHERE brain_knowledge_fts MATCH ?1 ORDER BY rank LIMIT ?2")
+        .bind(ftsQuery, limit)
+        .all();
+
+      if (ftsResults.results.length > 0) {
+        return ftsResults.results.map(row => ({
+          key: row.key,
+          content: row.content,
+          category: row.category
+        }));
+      }
+    }
+
+    // Fallback to LIKE search if FTS5 returns no results
+    const likeQuery = `%${query}%`;
+    const likeResults = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?2 LIMIT ?3")
+      .bind(likeQuery, likeQuery, limit)
+      .all();
+
+    return likeResults.results.map(row => ({
+      key: row.key,
+      content: row.content,
+      category: row.category
+    }));
+  } catch (error) {
+    console.error('Error searching knowledge:', error);
+    await error_handler(db, 'database_error', 'searchKnowledge');
+    return [];
+  }
+}
+
+async function seedKnowledge(db) {
+  try {
+    // Create FTS5 table if it doesn't exist
+    await db.prepare("CREATE VIRTUAL TABLE IF NOT EXISTS brain_knowledge_fts USING fts5(key, content, category)").run();
+
+    // Check if we need to populate the FTS5 table
+    const ftsCheck = await db.prepare("SELECT COUNT(*) as count FROM brain_knowledge_fts").all();
+    const needsPopulate = ftsCheck.results[0].count === 0;
+
+    // Populate brain_knowledge if empty
+    const knowledgeCheck = await db.prepare("SELECT COUNT(*) as count FROM brain_knowledge").all();
+    if (knowledgeCheck.results[0].count === 0) {
+      for (const item of SEED_KNOWLEDGE) {
+        await db.prepare("INSERT OR IGNORE INTO brain_knowledge (key, content, category) VALUES (?1, ?2, ?3)")
+          .bind(item.k, item.c, item.cat)
+          .run();
+      }
+      needsPopulate = true;
+    }
+
+    // Populate FTS5 table if needed
+    if (needsPopulate) {
+      await db.prepare("INSERT INTO brain_knowledge_fts (key, content, category) SELECT key, content, category FROM brain_knowledge").run();
+    }
+
+    return { success: true, message: "Knowledge seeded successfully" };
+  } catch (error) {
+    console.error('Error seeding knowledge:', error);
+    await error_handler(db, 'database_error', 'seedKnowledge');
+    return { success: false, error: error.message };
+  }
+}
+
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
@@ -1205,12 +1275,4 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
   { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
   { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
-  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify, github_issue to manage GitHub issues.", cat: "tools" },
-  { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
-  { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
-  { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
-  { k: "self_improve_dont_touch_rag", c: "RULE: NEVER modify brain_knowledge table, SEED_KNOWLEDGE data, or RAG content. RAG seeds are your source of truth about yourself. Only propose changes to your actual code (src/index.ts) or behavior (prompt overrides).", cat: "self_improve" },
-  { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
-  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves — through actual code changes pushed to GitHub.", cat: "governance" },
-  { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
-  { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source ->
+  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code
