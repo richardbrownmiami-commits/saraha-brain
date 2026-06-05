@@ -1,4 +1,4 @@
-I'll modify the `src/index.ts` file to add the structured metadata columns to the `thought_stream` table and update the `storeStreamThought` function as described in the proposal. Here's the complete modified file:
+Here's the complete modified `src/index.ts` file with the structured metadata enhancement for thought stream logging:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -803,4 +803,4 @@ const p=ph.phase||'?',en=ph.energy||0,h=em.emotions||{},et=h.energetic||0,it=h.i
 const hc=em.confidence||0;const tools=cp?.features?.tools||[];const caps=cp?.features||{};
 const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries||[];
 const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/m*100)+'%;background:'+c+'"></div></div>';
-let html='<div class="node"><div onclick="toggle(this)"><
+let html='<div class="node"><div onclick="toggle(this)"><div class="arrow">▶</div><div>System Health <span class="badge blue">'+p+'</span
