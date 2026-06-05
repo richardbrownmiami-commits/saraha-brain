@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the `reflection_engine` tool added and all existing code preserved:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -362,6 +360,73 @@ async function autoConsolidateMemories(db) {
     new_consolidated_memories: consolidatedIds.length,
     memory_ids: consolidatedIds
   };
+}
+
+async function web_fetch(db, targetUrl, maxLength = 100000) {
+  try {
+    // Check cache first
+    const cacheCheck = await db.prepare("SELECT content FROM web_fetch_cache WHERE url = ?1").bind(targetUrl).all();
+    if (cacheCheck.results.length > 0) {
+      return { result: cacheCheck.results[0].content, url: targetUrl };
+    }
+
+    // Validate URL is http/https
+    const url = new URL(targetUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new Error('Invalid protocol');
+    }
+
+    // Simple allowlist check - allow major domains but not obviously dangerous ones
+    const allowlist = ['.github.com', '.wikipedia.org', '.arxiv.org', '.stackexchange.com', '.stackoverflow.com'];
+    if (!allowlist.some(domain => url.hostname.includes(domain))) {
+      throw new Error('Domain not in allowlist');
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+    const response = await fetch(url.toString(), {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Saraha/1.0 (+https://github.com/richardbrownmiami-commits/saraha-brain)'
+      }
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    let content = await response.text();
+
+    // Extract main content if HTML
+    if (content.includes('<!DOCTYPE html>') || content.includes('<html')) {
+      // Simple HTML content extraction - get text between body tags
+      const bodyMatch = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      if (bodyMatch) {
+        content = bodyMatch[1];
+      }
+
+      // Remove script and style tags
+      content = content.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+      content = content.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+    }
+
+    // Truncate if too long
+    if (content.length > maxLength) {
+      content = content.substring(0, maxLength) + '\n\n[Content truncated]';
+    }
+
+    // Store in cache
+    await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content, fetched_at) VALUES (?1, ?2, datetime('now'))")
+      .bind(targetUrl, content)
+      .run();
+
+    return { result: content, url: targetUrl };
+  } catch (error) {
+    return { error: error.message, url: targetUrl };
+  }
 }
 
 async function reflection_engine(db) {
@@ -729,16 +794,4 @@ const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/
 let html='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#9889; Status</span></div><div class="branch">'+
 '<div class="leaf"><span class="label">Phase:</span> <span class="val">'+p+'</span></div>'+
 '<div class="leaf"><span class="label">Energy:</span> '+en+'%'+bar(en,100,'#3fb950')+'</div>'+
-'<div class="leaf"><span class="label">Emotions:</span> <span class="badge green">&#128522;'+hp+'</span> <span class="badge red">&#128545;'+b+'</span> <span class="badge blue">&#9889;'+et+'</span> <span class="badge purple">&#129504;'+it+'</span></div>'+
-'<div class="leaf"><span class="label">Confidence:</span> '+hc+'%'+bar(hc,100,'#58a6ff')+'</div></div></div>';
-html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128736; Tools ('+tools.length+')</span></div><div class="branch">';
-for(const t of tools)html+='<div class="leaf"><span class="badge blue">&#9889;</span> <span class="val">'+t+'</span></div>';
-html+='</div></div>';
-html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#127919; Capabilities</span></div><div class="branch">';
-for(const[k,v]of Object.entries(caps)){if(k==='tools')continue;html+='<div class="leaf"><span class="label">'+k+':</span> <span class="val">'+(typeof v==='boolean'?(v?'&#10003;':'&#10007;'):v)+'</span></div>'}
-html+='</div></div>';
-html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#127754; Recent Evolutions ('+sts.length+')</span></div><div class="branch">';
-for(const s of sts){const c=s.content||'';html+='<div class="leaf">&#128527; <span class="val">'+c.slice(0,70)+(c.length>70?'...':'')+'</span> <span class="badge '+(s.mood==='bad'?'red':s.mood==='happy'?'green':s.mood==='curious'?'yellow':'blue')+'">'+s.source+'</span></div>'}
-html+='</div></div>';
-html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128196; Proposals ('+pros.length+')</span></div><div class="branch">';
-for(const s of pros){const c=s.title||'';html+='<div class="leaf"><span class="badge '+(s.status==='executed'?'green':s.status==='approved'?'blue':s.status==='pending'?'yellow':'red')+'">'+s.status+'</span> <span class="val
+'<div class="leaf"><span class="label">Emotions:</span> <span class="badge green">&#128522;'+hp+'</span> <span class="badge red">&#128545;'+b+'</span> <span class="badge blue">&#9889;'+et+'</span> <span class="badge purple">&#129504;'+it+'</
