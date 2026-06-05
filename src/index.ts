@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `github_list` tool added:
+Here's the complete modified `src/index.ts` file with the `github_list` tool added as specified:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -368,7 +368,7 @@ fetch('/brain/feedback').then(r=>r.json())
 ]);
 const p=ph.phase||'?',en=ph.energy||0,h=em.emotions||{},et=h.energetic||0,it=h.intelligent||0,hp=h.happy||0,b=h.bad||0;
 const hc=em.confidence||0;const tools=cp?.features?.tools||[];const caps=cp?.features||{};
-const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries||[];
+const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries[];
 const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/m*100)+'%;background:'+c+'"></div></div>';
 let html='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#9889; Status</span></div><div class="branch">'+
 '<div class="leaf"><span class="label">Phase:</span> <span class="val">'+p+'</span></div>'+
@@ -755,4 +755,4 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""}
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""
