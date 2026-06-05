@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the topic-driven proposal filtering system implemented:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -1422,15 +1420,55 @@ async function github_list(owner: string, repo: string, path: string = '') {
   try {
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${fullPath}`;
     const response = await fetch(url, {
-      headers: { 'Authorization': `token ${Deno.env.get('GITHUB_PAT')}` }
+      headers: {
+        'Authorization': `token ${Deno.env.get('GITHUB_PAT')}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha/1.0'
+      }
     });
-    if (!response.ok) throw new Error('GitHub API error');
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `GitHub API error: ${response.status}`);
+    }
+
     const items = await response.json();
-    const files = items.filter((item: any) => item.type === 'file').map((item: any) => item.name);
-    const dirs = items.filter((item: any) => item.type === 'dir').map((item: any) => item.name);
-    return { files, dirs, path: fullPath };
+
+    // Filter and categorize items
+    const files = items
+      .filter((item: any) => item.type === 'file')
+      .map((item: any) => ({
+        name: item.name,
+        path: item.path,
+        size: item.size,
+        sha: item.sha,
+        url: item.download_url
+      }));
+
+    const dirs = items
+      .filter((item: any) => item.type === 'dir')
+      .map((item: any) => ({
+        name: item.name,
+        path: item.path
+      }));
+
+    return {
+      files,
+      dirs,
+      path: fullPath,
+      total_items: items.length,
+      success: true
+    };
   } catch (error) {
-    return { files: [], dirs: [], error: error.message };
+    console.error('Error in github_list:', error);
+    await error_handler(db, 'github_api_error', `github_list:${owner}/${repo}`);
+    return {
+      files: [],
+      dirs: [],
+      path: fullPath,
+      error: error.message,
+      success: false
+    };
   }
 }
 
@@ -1541,5 +1579,4 @@ const SEED_KNOWLEDGE = [
   { k: "tool_web_scrape", c: "Use TOOL:web_scrape:url|selectors to extract structured content from web pages. Accepts URL and optional CSS selectors for tables, article bodies, or JSON-LD metadata. Returns clean JSON with extracted data.\n\nExamples:\n- TOOL:web_scrape:https://example.com|table - Extract all tables\n- TOOL:web_scrape:https://example.com|article - Extract article content\n- TOOL:web_scrape:https://example.com|#main-content - Extract element by CSS selector\n- TOOL:web_scrape:https://example.com|.product-info,.price - Extract multiple selectors", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
-  { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
-  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo?type=files|dirs|all&path=... to browse repository structures and discover files.\n\nParameters:\n- type: files (only files), dirs (only directories), all (both)\n- path: optional path prefix to filter results\n\nExamples:\n- TOOL:github
+  { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug
