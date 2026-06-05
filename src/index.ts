@@ -1061,50 +1061,176 @@ function classify(input) {
   return "think";
 }
 
-const AVATAR_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha – Avatar</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
-.scene{position:relative;width:300px;height:400px}
-.avatar{position:absolute;bottom:40px;left:50%;transform:translateX(-50%);animation:idle 3s ease-in-out infinite}
-@keyframes idle{0%,100%{transform:translateX(-50%) translateY(0)}50%{transform:translateX(-50%) translateY(-6px)}}
-.eye{animation:blink 4s ease-in-out infinite}
-@keyframes blink{0%,96%,100%{transform:scaleY(1)}98%{transform:scaleY(0.1)}}
-.mouth-closed{opacity:1}
-.mouth-open{opacity:0}
-.talking .mouth-closed{opacity:0}
-.talking .mouth-open{opacity:1;animation:talk 0.3s ease-in-out infinite alternate}
-@keyframes talk{0%{transform:scaleY(0.3)}100%{transform:scaleY(1)}}
-.cheek{opacity:0;transition:opacity 0.5s}
-.blush .cheek{opacity:0.4}
-.bubble{position:absolute;top:10px;right:-10px;background:#1E293B;color:#E2E8F0;padding:14px 18px;border-radius:16px 16px 4px 16px;max-width:260px;font-size:14px;line-height:1.5;border:1px solid #334155;opacity:0;transition:opacity 0.4s;box-shadow:0 4px 20px rgba(0,0,0,0.4)}
-.bubble.show{opacity:1}
-.bubble::after{content:'';position:absolute;bottom:-8px;right:16px;width:12px;height:12px;background:#1E293B;border-right:1px solid #334155;border-bottom:1px solid #334155;transform:rotate(45deg)}
-.cursor{display:inline-block;width:2px;height:16px;background:#38BDF8;margin-left:2px;animation:blink 0.8s step-end infinite;vertical-align:middle}
-.glow{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);width:120px;height:20px;background:radial-gradient(ellipse,#38BDF820 0%,transparent 70%);border-radius:50%;animation:pulse 3s ease-in-out infinite}
-@keyframes pulse{0%,100%{transform:translateX(-50%) scale(1);opacity:0.5}50%{transform:translateX(-50%) scale(1.2);opacity:0.8}}
-.controls{margin-top:30px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-.controls input{padding:10px 16px;border-radius:8px;border:1px solid #334155;border:1px solid #334155;background:#1E293B;color:#E2E8F0;font-size:14px;width:240px;outline:none}
-.controls input:focus{border-color:#38BDF8}
-.controls button{padding:10px 20px;border-radius:8px;border:none;background:#38BDF8;color:#0F172A;font-weight:bold;font-size:14px;cursor:pointer;transition:background 0.2s}
-.controls button:hover{background:#7DD3FC}
-.controls button.secondary{background:#334155;color:#E2E8F0}
-.controls button.secondary:hover{background:#475569}
-</style>
-</head>
-<body>
-<div class="scene">
-  <div class="glow"></div>
-  <div class="avatar" id="avatar">
-    <svg width="180" height="280" viewBox="0 0 180 280">
-      <ellipse cx="90" cy="100" rx="58" ry="68" fill="#1a1a2e"/>
-      <path d="M70 190 Q90 240 110 190 L100 260 L80 260 Z" fill="#2d2d5e" stroke="#1a1a2e" stroke-width="1"/>
-      <rect x="78" y="188" width="24" height="8" rx="3" fill="#38BDF8"/>
-      <rect x="82" y="148" width="16" height="20" rx="4" fill="#fce4d6"/>
-      <ellipse cx="90" cy="110" rx="42" ry="48" fill="#fce4d6"/>
-      <path d="M48
+async function runTool(db, tool, input) {
+  try {
+    const safe = isToolSafe(tool);
+    if (!safe.safe) {
+      return { error: `Tool ${tool} is not safe: ${safe.reason}` };
+    }
+
+    let result;
+    switch (tool) {
+      case 'web_search':
+        result = await web_search(db, input);
+        break;
+      case 'web_fetch':
+        result = await web_fetch(db, input);
+        break;
+      case 'web_summarize':
+        result = await web_summarize(db, input);
+        break;
+      case 'web_insights':
+        result = await web_insights(db, input);
+        break;
+      case 'web_scrape':
+        result = await web_scrape(db, input);
+        break;
+      case 'github_read':
+        result = await github_read(db, input);
+        break;
+      case 'github_write':
+        result = await github_write(db, input);
+        break;
+      case 'github_issue':
+        result = await github_issue(db, input);
+        break;
+      case 'github_list':
+        result = await github_list(db, input);
+        break;
+      case 'math_eval':
+        result = await math_eval(db, input);
+        break;
+      case 'memory_consolidate':
+        result = await memory_consolidate(db, input);
+        break;
+      case 'memory_snapshot':
+        result = await memory_snapshot(db);
+        break;
+      case 'reflection_engine':
+        result = await reflection_engine(db);
+        break;
+      case 'error_handler':
+        result = await error_handler(db, input);
+        break;
+      case 'retry_api_call':
+        result = await retry_api_call(db, ...input.split('|'));
+        break;
+      default:
+        return { error: `Unknown tool: ${tool}` };
+    }
+
+    // Log successful tool usage
+    await db.prepare(`
+      INSERT INTO brain_logs (action_id, step, content, model, tokens, created_at)
+      VALUES (NULL, 'tool', ?1, 'system', 0, datetime('now'))
+    `).bind(JSON.stringify({ tool, input, result })).run();
+
+    return { result };
+  } catch (error) {
+    console.error(`Error running tool ${tool}:`, error);
+    await error_handler(db, 'tool_error', `runTool:${tool}`);
+    return { error: error.message };
+  }
+}
+
+// GitHub List Tool Implementation
+async function github_list(db, input) {
+  try {
+    // Parse input: owner/repo?type=...&path=...
+    const [repoPath, queryParams] = input.split('?');
+    const [owner, repo, path = ''] = repoPath.split('/');
+
+    if (!owner || !repo) {
+      throw new Error('Invalid repository path. Expected format: owner/repo?type=...&path=...');
+    }
+
+    // Parse query parameters
+    const params = new URLSearchParams(queryParams || '');
+    const type = params.get('type') || 'all';
+    const pathParam = params.get('path') || path;
+
+    // Validate type parameter
+    const validTypes = ['files', 'dirs', 'all'];
+    if (!validTypes.includes(type)) {
+      throw new Error(`Invalid type parameter. Must be one of: ${validTypes.join(', ')}`);
+    }
+
+    // Build GitHub API endpoint
+    let endpoint = `/repos/${owner}/${repo}/contents/${pathParam}`;
+    const query = new URLSearchParams();
+
+    if (type !== 'all') {
+      query.set('type', type);
+    }
+
+    if (query.toString()) {
+      endpoint += `?${query.toString()}`;
+    }
+
+    // Make GitHub API request
+    const contents = await githubApiRequest(db, endpoint);
+
+    // Process results
+    const result = Array.isArray(contents) ? contents : [];
+
+    // Format the response
+    const formattedResult = result.map(item => {
+      const isFile = item.type === 'file';
+      const isDir = item.type === 'dir';
+
+      return {
+        path: item.path,
+        name: item.name,
+        type: item.type,
+        size: isFile ? item.size : null,
+        sha: item.sha,
+        url: item.url,
+        html_url: item.html_url,
+        download_url: isFile ? item.download_url : null,
+        is_file: isFile,
+        is_directory: isDir
+      };
+    });
+
+    return {
+      repository: `${owner}/${repo}`,
+      path: pathParam,
+      type: type,
+      count: formattedResult.length,
+      items: formattedResult
+    };
+  } catch (error) {
+    console.error('Error in github_list:', error);
+    await error_handler(db, 'github_api_error', `github_list:${input}`);
+    throw error;
+  }
+}
+
+// Existing GitHub tools (kept intact)
+async function github_read(db, input) {
+  try {
+    const [owner, repo, path = ''] = input.split('/');
+    if (!owner || !repo) throw new Error('Invalid repository path');
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `token ${BRAIN_KEY.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3.raw'
+      }
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`GitHub API error: ${res.status} ${err}`);
+    }
+    return { content: await res.text(), path: `${owner}/${repo}/${path}` };
+  } catch (error) {
+    console.error('Error in github_read:', error);
+    await error_handler(db, 'github_api_error', `github_read:${input}`);
+    throw error;
+  }
+}
+
+async function github_write(db, input) {
+  try {
+    const [path, message, content] = input.split('|');
+    const [owner, repo]
