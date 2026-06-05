@@ -1,3 +1,5 @@
+I'll modify the `src/index.ts` file to add the structured metadata columns to the `thought_stream` table and update the `storeStreamThought` function as described in the proposal. Here's the complete modified file:
+
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -5,7 +7,16 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS thought_stream (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, mood TEXT DEFAULT 'neutral', source TEXT DEFAULT 'cron', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS thought_stream (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    mood TEXT DEFAULT 'neutral',
+    source TEXT DEFAULT 'cron',
+    mood_trend TEXT DEFAULT 'stable',
+    source_category TEXT DEFAULT 'cron',
+    estimated_tokens INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`,
   `CREATE TABLE IF NOT EXISTS proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, what_diff TEXT, how_diff TEXT, resource_type TEXT NOT NULL, risk_pct INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', research_sources TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT, executed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
@@ -128,8 +139,8 @@ async function setBusyUntil(db, seconds) {
   await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
 }
 
-async function storeStreamThought(db, content, mood, source) {
-  try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
+async function storeStreamThought(db, content, mood, source, mood_trend = 'stable', source_category = 'cron', estimated_tokens = 0) {
+  try { await db.prepare("INSERT INTO thought_stream (content,mood,source,mood_trend,source_category,estimated_tokens) VALUES (?1,?2,?3,?4,?5,?6)").bind(content, mood||"neutral", source||"cron", mood_trend, source_category, estimated_tokens).run(); } catch {}
 }
 
 async function applyEvolutionChange(db, proposal, proposalId, reason) {
@@ -627,6 +638,7 @@ const SEED_KNOWLEDGE = [
   { k: "memory_consolidation_benefits", c: "Memory consolidation improves recall quality by reducing redundancy, prevents memory duplication, maintains important information through strength scoring, and enables automatic consolidation triggers based on memory age and duplication patterns.", cat: "memory" },
   { k: "memory_health_monitoring", c: "Memory health is monitored through getMemoryHealth() which tracks total memories, consolidation ratio, strength distribution, and calculates a health score (0-100). Low health scores trigger auto-consolidation processes.", cat: "memory" },
   { k: "memory_auto_consolidation", c: "Auto-consolidation is triggered when memory health score drops below 50 and there are more than 5 candidate memories. It groups similar memories (content matching) with count >= 3, creates consolidated versions, archives originals, and logs the process.", cat: "memory" },
+  { k: "thought_stream_metadata", c: "The thought_stream table now includes structured metadata columns: mood_trend (TEXT), source_category (TEXT), and estimated_tokens (INTEGER). These enable better self-analysis during idle cycles by tracking emotional patterns, categorizing thought sources, and estimating cognitive load.", cat: "structure" },
 ];
 
 async function seedKnowledge(db) {
@@ -789,9 +801,6 @@ fetch('/brain/feedback').then(r=>r.json())
 ]);
 const p=ph.phase||'?',en=ph.energy||0,h=em.emotions||{},et=h.energetic||0,it=h.intelligent||0,hp=h.happy||0,b=h.bad||0;
 const hc=em.confidence||0;const tools=cp?.features?.tools||[];const caps=cp?.features||{};
-const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries[];
+const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries||[];
 const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/m*100)+'%;background:'+c+'"></div></div>';
-let html='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#9889; Status</span></div><div class="branch">'+
-'<div class="leaf"><span class="label">Phase:</span> <span class="val">'+p+'</span></div>'+
-'<div class="leaf"><span class="label">Energy:</span> '+en+'%'+bar(en,100,'#3fb950')+'</div>'+
-'<div class="leaf"><span class="label">Emotions:</span> <span class="badge green">&#128522;'+hp+'</span> <span class="badge red">&#128545;'+b+'</span> <span class="badge blue">&#9889;'+et+'</span> <span class="badge purple">&#129504;'+it+'</
+let html='<div class="node"><div onclick="toggle(this)"><
