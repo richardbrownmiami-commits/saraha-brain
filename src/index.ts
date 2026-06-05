@@ -1,4 +1,4 @@
-I'll enhance the error handling and reliability in the `src/index.ts` file by adding comprehensive try-catch blocks, retry mechanisms for external API calls, and more informative error messages. Here's the complete modified file:
+Here's the complete modified `src/index.ts` file with enhanced error handling and reliability improvements:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -48,6 +48,7 @@ async function getEmotions(db) {
     return result;
   } catch (error) {
     console.error('Error fetching emotions:', error);
+    await error_handler(db, 'database_error', 'getEmotions');
     return { ...EMO_DEFAULTS };
   }
 }
@@ -68,6 +69,7 @@ async function getState(db) {
     return { emotions, reg };
   } catch (error) {
     console.error('Error fetching state:', error);
+    await error_handler(db, 'database_error', 'getState');
     return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
   }
 }
@@ -81,6 +83,7 @@ async function updateEmotion(db, name, delta) {
     return newVal;
   } catch (error) {
     console.error(`Error updating emotion ${name}:`, error);
+    await error_handler(db, 'database_error', `updateEmotion:${name}`);
     return emotions[name] + delta;
   }
 }
@@ -93,6 +96,7 @@ async function getRegulator(db) {
     return { energy: vals.energy, confidence: vals.confidence };
   } catch (error) {
     console.error('Error fetching regulator values:', error);
+    await error_handler(db, 'database_error', 'getRegulator');
     return { energy: 100, confidence: 50 };
   }
 }
@@ -101,9 +105,10 @@ async function adjustEnergy(db, delta) {
   try {
     const { energy } = await getRegulator(db);
     const newVal = Math.max(0, Math.min(100, energy + delta));
-    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(newVal.toString()).run();
   } catch (error) {
     console.error('Error adjusting energy:', error);
+    await error_handler(db, 'database_error', 'adjustEnergy');
   }
 }
 
@@ -133,6 +138,7 @@ async function driftEmotions(db) {
     if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
   } catch (error) {
     console.error('Error drifting emotions:', error);
+    await error_handler(db, 'emotion_error', 'driftEmotions');
   }
 }
 
@@ -141,6 +147,7 @@ async function storeThought(db, content) {
     await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
   } catch (error) {
     console.error('Error storing thought:', error);
+    await error_handler(db, 'database_error', 'storeThought');
   }
 }
 
@@ -151,6 +158,7 @@ async function recall(db, limit = 10) {
     return rows.results.map((m) => `[${m.type}] ${m.content} (strength: ${m.strength.toFixed(1)}, ${m.created_at})`).join("\n");
   } catch (error) {
     console.error('Error recalling memories:', error);
+    await error_handler(db, 'database_error', 'recall');
     return "Error retrieving memories.";
   }
 }
@@ -193,6 +201,7 @@ async function getBrainPhase(db, emotions, reg) {
     return "awake";
   } catch (error) {
     console.error('Error determining brain phase:', error);
+    await error_handler(db, 'database_error', 'getBrainPhase');
     return "awake";
   }
 }
@@ -203,6 +212,7 @@ async function getBusyUntil(db) {
     return parseInt(r.results[0]?.value) || 0;
   } catch (error) {
     console.error('Error fetching busy until:', error);
+    await error_handler(db, 'database_error', 'getBusyUntil');
     return 0;
   }
 }
@@ -213,6 +223,7 @@ async function setBusyUntil(db, seconds) {
     await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
   } catch (error) {
     console.error('Error setting busy until:', error);
+    await error_handler(db, 'database_error', 'setBusyUntil');
   }
 }
 
@@ -223,6 +234,7 @@ async function storeStreamThought(db, content, mood, source, mood_trend = 'stabl
       .run();
   } catch (error) {
     console.error('Error storing stream thought:', error);
+    await error_handler(db, 'database_error', 'storeStreamThought');
   }
 }
 
@@ -258,6 +270,7 @@ async function applyEvolutionChange(db, proposal, proposalId, reason) {
       .run();
   } catch (error) {
     console.error('Error applying evolution change:', error);
+    await error_handler(db, 'database_error', 'applyEvolutionChange');
   }
 }
 
@@ -274,6 +287,7 @@ async function governanceGate(db, resourceType, riskPct) {
     return { action: "pending", reason: resourceType + " at " + riskPct + "% requires human approval (>20% risk)" };
   } catch (error) {
     console.error('Error in governance gate:', error);
+    await error_handler(db, 'governance_error', 'governanceGate');
     return { action: "pending", reason: "Governance check failed, requiring human approval" };
   }
 }
@@ -284,6 +298,7 @@ async function isKillSwitchActive(db) {
     return r.results[0]?.value === "true";
   } catch (error) {
     console.error('Error checking kill switch:', error);
+    await error_handler(db, 'database_error', 'isKillSwitchActive');
     return false;
   }
 }
@@ -295,6 +310,7 @@ async function getMasterCronInterval(db) {
     return v ? parseInt(v) : 0;
   } catch (error) {
     console.error('Error fetching master cron interval:', error);
+    await error_handler(db, 'database_error', 'getMasterCronInterval');
     return 0;
   }
 }
@@ -304,6 +320,7 @@ async function updateLastCycleTime(db) {
     await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
   } catch (error) {
     console.error('Error updating last cycle time:', error);
+    await error_handler(db, 'database_error', 'updateLastCycleTime');
   }
 }
 
@@ -318,6 +335,7 @@ async function checkDuplicateProposal(db, title, whatDiff) {
     return { duplicate: false };
   } catch (error) {
     console.error('Error checking duplicate proposal:', error);
+    await error_handler(db, 'database_error', 'checkDuplicateProposal');
     return { duplicate: false };
   }
 }
@@ -329,6 +347,7 @@ async function recordEvolutionMetrics(db, proposalId, metrics) {
       .run();
   } catch (error) {
     console.error('Error recording evolution metrics:', error);
+    await error_handler(db, 'database_error', 'recordEvolutionMetrics');
   }
 }
 
@@ -354,6 +373,7 @@ async function getEvolutionScore(db, proposalId) {
     };
   } catch (error) {
     console.error('Error getting evolution score:', error);
+    await error_handler(db, 'database_error', 'getEvolutionScore');
     return null;
   }
 }
@@ -373,6 +393,7 @@ async function getTopBottomEvolutionScores(db, limit = 10) {
     }));
   } catch (error) {
     console.error('Error getting top/bottom evolution scores:', error);
+    await error_handler(db, 'database_error', 'getTopBottomEvolutionScores');
     return [];
   }
 }
@@ -426,6 +447,7 @@ async function getMemoryHealth(db) {
     };
   } catch (error) {
     console.error('Error getting memory health:', error);
+    await error_handler(db, 'database_error', 'getMemoryHealth');
     return {
       total_memories: 0,
       candidate_memories: 0,
@@ -466,6 +488,7 @@ async function memoryHealthCheck(db) {
     return health;
   } catch (error) {
     console.error('Error in memory health check:', error);
+    await error_handler(db, 'database_error', 'memoryHealthCheck');
     return {
       total_memories: 0,
       candidate_memories: 0,
@@ -558,6 +581,7 @@ async function autoConsolidateMemories(db) {
     };
   } catch (error) {
     console.error('Error in auto-consolidation:', error);
+    await error_handler(db, 'database_error', 'autoConsolidateMemories');
     return { consolidated: 0, memory_ids: [] };
   }
 }
@@ -646,6 +670,7 @@ async function web_fetch(db, targetUrl, maxLength = 100000) {
     return { error: `Failed after ${MAX_RETRIES} attempts: ${lastError?.message || 'Unknown error'}`, url: targetUrl };
   } catch (error) {
     console.error('Error in web_fetch:', error);
+    await error_handler(db, 'network_error', 'web_fetch');
     return { error: error.message, url: targetUrl };
   }
 }
@@ -787,6 +812,7 @@ async function reflection_engine(db) {
   } catch (error) {
     await storeStreamThought(db, `Reflection engine failed: ${error.message}`, 'bad', 'cron');
     console.error('Error in reflection_engine:', error);
+    await error_handler(db, 'reflection_error', 'reflection_engine');
     return {
       error: error.message,
       safe: false
@@ -972,10 +998,12 @@ async function seedKnowledge(db) {
         await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run();
       } catch (error) {
         console.error(`Error seeding knowledge for key ${item.k}:`, error);
+        await error_handler(db, 'database_error', `seedKnowledge:${item.k}`);
       }
     }
   } catch (error) {
     console.error('Error in seedKnowledge:', error);
+    await error_handler(db, 'database_error', 'seedKnowledge');
   }
 }
 
@@ -986,6 +1014,7 @@ async function searchKnowledge(db, query, limit = 5) {
     return r.results;
   } catch (error) {
     console.error('Error searching knowledge:', error);
+    await error_handler(db, 'database_error', 'searchKnowledge');
     return [];
   }
 }
@@ -1045,17 +1074,4 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       <ellipse cx="90" cy="110" rx="42" ry="48" fill="#fce4d6"/>
       <path d="M48 100 Q50 55 70 48 Q80 45 90 46 Q100 45 110 48 Q130 55 132 100 Q135 85 128 72 Q120 60 105 54 Q95 50 90 50 Q85 50 75 54 Q60 60 52 72 Q45 85 48 100Z" fill="#1a1a2e"/>
       <path d="M60 60 Q75 48 90 50 Q105 48 120 60 Q115 55 105 52 Q95 49 85 52 Q75 55 60 60Z" fill="#16213e"/>
-      <path d="M55 70 Q65 55 80 52 Q72 58 68 70 Q62 80 58 90Z" fill="#16213e"/>
-      <path d="M125 70 Q115 55 100 52 Q108 58 112 70 Q118 80 122 90Z" fill="#16213e"/>
-      <path d="M48 100 Q44 130 46 160 Q48 170 50 165 Q50 135 52 105Z" fill="#1a1a2e"/>
-      <path d="M132 100 Q136 130 134 160 Q132 170 130 165 Q130 135 128 105Z" fill="#1a1a2e"/>
-      <g class="eye">
-        <ellipse cx="70" cy="108" rx="13" ry="15" fill="#fff"/>
-        <ellipse cx="70" cy="110" rx="9" ry="11" fill="#38BDF8"/>
-        <ellipse cx="70" cy="108" rx="5" ry="6" fill="#0F172A"/>
-        <ellipse cx="75" cy="104" rx="3" ry="2.5" fill="#fff"/>
-        <ellipse cx="68" cy="114" rx="2" ry="1.5" fill="#fff" opacity="0.5"/>
-      </g>
-      <g class="eye">
-        <ellipse cx="110" cy="108" rx="13" ry="15" fill="#fff"/>
-        <ellipse
+      <path d="M55 70 Q65 55 80 52 Q72 58 68 70
