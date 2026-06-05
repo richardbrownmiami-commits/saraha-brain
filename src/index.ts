@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the self-healing `driftEmotions()` function added:
+Here's the complete modified `src/index.ts` file with the self-healing `driftEmotions()` function added and wired into the system:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -266,7 +266,8 @@ function isToolSafe(tool) {
     reflection_engine: true,
     error_handler: true,
     retry_api_call: true,
-    score_proposal_quality: true
+    score_proposal_quality: true,
+    driftEmotions: true
   };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
@@ -1161,6 +1162,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
   { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
   { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons, breakdown} where passed indicates if score >= 7/10.\n\nExample: TOOL:score_proposal_quality|{\"title\":\"Improve memory system\",\"what_diff\":\"Add memory consolidation feature\",\"how_diff\":\"Implement auto-consolidation logic\",\"resource_type\":\"memory\",\"risk_pct\":15}", cat: "tools" },
+  { k: "tool_driftEmotions", c: "Use TOOL:driftEmotions to automatically adjust emotions toward healthy ranges. Handles emotion drift failures with self-healing logic that detects persistent issues and resets emotions to defaults if needed. Returns success status and any errors encountered.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -1197,5 +1199,4 @@ const SEED_KNOWLEDGE = [
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
   { k: "evolution_scoring", c: "Evolution scoring tracks effectiveness of self-improvement proposals using metrics: success_duration (time without errors), error_count (failures), and user_feedback_lift (positive user feedback). The /brain/evolution_score endpoint returns weighted scores where lower scores indicate higher priority for evolution focus.", cat: "governance" },
   { k: "governance_web_summarize", c: "URL summarization changes <=30% risk auto-approved. >30% needs human approval.", cat: "governance" },
-  { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events, and maintains memory health scores. Memories are marked with consolidation_status (candidate/consolidated/archived) and original_count tracks how many memories were merged.", cat: "memory" },
-  { k: "memory_consolidation_benefits", c: "Memory consolidation improves recall quality by reducing redundancy, prevents memory duplication, maintains important information through strength scoring, and enables
+  { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events,
