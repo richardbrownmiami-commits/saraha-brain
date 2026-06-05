@@ -191,8 +191,8 @@ function describeMood(emotions, energy) {
   else if (emotions.happy >= 4) parts.push("quiet and neutral");
   else parts.push("feeling low");
 
-  if (emotions.curiosity >= 8) parts.push("feeling curious and inquisitive");
-  else if (emotions.curiosity <= 3) parts.push("feeling bored and restless");
+  if (emotions.curios >= 8) parts.push("feeling curious and inquisitive");
+  else if (emotions.curios <= 3) parts.push("feeling bored and restless");
 
   if (emotions.bad >= 2) parts.push("with a trace of unease");
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
@@ -1429,4 +1429,4 @@ const SEED_KNOWLEDGE = [
   { k: "tool_reflection_engine", c: "Use TOOL:reflection_engine to perform deep self-analysis of system metrics including memory health, tool usage patterns, proposal success rates, emotion drift, and anti-pattern frequency. Returns structured analysis with improvement recommendations.", cat: "tools" },
   { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
   { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
-  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons,
+  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons, breakdown:
