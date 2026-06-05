@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with SQLite FTS5 full-text search implementation for brain_knowledge:
+Here's the complete modified `src/index.ts` file with SQLite FTS5 full-text search implementation for the `brain_knowledge` table:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -21,7 +21,16 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE VIRTUAL TABLE IF NOT EXISTS brain_knowledge_fts USING fts5(key, content, category)`,
+  `CREATE VIRTUAL TABLE IF NOT EXISTS brain_knowledge_fts USING fts5(key, content, category, tokenize="unicode61 remove_diacritics 2");`,
+  `CREATE TRIGGER IF NOT EXISTS brain_knowledge_ai AFTER INSERT ON brain_knowledge BEGIN
+     INSERT INTO brain_knowledge_fts(rowid, key, content, category) VALUES (new.id, new.key, new.content, new.category);
+   END;`,
+  `CREATE TRIGGER IF NOT EXISTS brain_knowledge_au AFTER UPDATE ON brain_knowledge BEGIN
+     UPDATE brain_knowledge_fts SET key = new.key, content = new.content, category = new.category WHERE rowid = new.id;
+   END;`,
+  `CREATE TRIGGER IF NOT EXISTS brain_knowledge_ad AFTER DELETE ON brain_knowledge BEGIN
+     DELETE FROM brain_knowledge_fts WHERE rowid = old.id;
+   END;`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
   `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS tools (id INTEGER PRIMARY KEY, name TEXT UNIQUE, config TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))`,
@@ -268,7 +277,9 @@ function isToolSafe(tool) {
     error_handler: true,
     retry_api_call: true,
     score_proposal_quality: true,
-    driftEmotions: true
+    driftEmotions: true,
+    search_knowledge: true,
+    seed_knowledge: true
   };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
@@ -1250,6 +1261,8 @@ const SEED_KNOWLEDGE = [
   { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
   { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons, breakdown} where passed indicates if score >= 7/10.\n\nExample: TOOL:score_proposal_quality|{\"title\":\"Improve memory system\",\"what_diff\":\"Add memory consolidation feature\",\"how_diff\":\"Implement auto-consolidation logic\",\"resource_type\":\"memory\",\"risk_pct\":15}", cat: "tools" },
   { k: "tool_driftEmotions", c: "Use TOOL:driftEmotions to automatically adjust emotions toward healthy ranges. Handles emotion drift failures with self-healing logic that detects persistent issues and resets emotions to defaults if needed. Returns success status and any errors encountered.", cat: "tools" },
+  { k: "tool_search_knowledge", c: "Use TOOL:search_knowledge:query|limit to search the brain_knowledge table using full-text search (FTS5) for better RAG retrieval. Returns an array of {key, content, category} objects.\n\nParameters:\n- query: The search term or phrase\n- limit: Maximum number of results to return (default: 10)\n\nExample: TOOL:search_knowledge:SQLite full-text search|5", cat: "tools" },
+  { k: "tool_seed_knowledge", c: "Use TOOL:seed_knowledge to populate the brain_knowledge table with seed knowledge if it's empty. Creates the FTS5 virtual table and populates it with the initial knowledge base.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -1268,11 +1281,4 @@ const SEED_KNOWLEDGE = [
   { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
   { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
   { k: "self_improve_prompt", c: "Improve how you talk: add step-by-step reasoning, explain trade-offs, ask clarifying questions, cite sources from tools.", cat: "self_improve" },
-  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization, github_issue for GitHub issue management.", cat: "self_improve" },
-  { k: "self_improve_error", c: "Better error handling: retry on 429, fallback when LLM is down, graceful degradation when tools fail.", cat: "self_improve" },
-  { k: "self_improve_memory", c: "Improve memory: store important facts from conversations, recall relevant context automatically, forget stale memories.", cat: "self_improve" },
-  { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
-  { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
-  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
-  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
-  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code
+  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math
