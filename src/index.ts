@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `data_processor` tool added while preserving all existing code:
+Here's the complete modified `src/index.ts` file with the `code_analyzer` tool implementation added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -12,6 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS code_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, path TEXT, analysis_type TEXT NOT NULL, metrics TEXT DEFAULT '{}', issues TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -96,7 +97,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_list: true, data_processor: true };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_list: true, data_processor: true, code_analyzer: true };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -172,6 +173,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to browse repository contents and discover files. Returns directory listing with file metadata.", cat: "tools" },
   { k: "tool_data_processor", c: "Use TOOL:data_processor:{action:'parse_csv',data:'...',options:{...}} to parse and analyze CSV/Table data. Supports actions: parse_csv, analyze, detect_structure, filter_sort.", cat: "tools" },
+  { k: "tool_code_analyzer", c: "Use TOOL:code_analyzer:{path:'src/index.ts',analysis_type:'complexity|metrics|duplication'} to analyze code for complexity, metrics, and duplication. Returns structured analysis with findings and refactoring suggestions.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -179,7 +181,7 @@ const SEED_KNOWLEDGE = [
   { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
   { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
+  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), code_analysis(tool results). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
   { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
@@ -190,12 +192,12 @@ const SEED_KNOWLEDGE = [
   { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
   { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
   { k: "self_improve_prompt", c: "Improve how you talk: add step-by-step reasoning, explain trade-offs, ask clarifying questions, cite sources from tools.", cat: "self_improve" },
-  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization, data_processor for CSV/Table analysis.", cat: "self_improve" },
+  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization, data_processor for CSV/Table analysis, code_analyzer for static analysis and refactoring.", cat: "self_improve" },
   { k: "self_improve_error", c: "Better error handling: retry on 429, fallback when LLM is down, graceful degradation when tools fail.", cat: "self_improve" },
   { k: "self_improve_memory", c: "Improve memory: store important facts from conversations, recall relevant context automatically, forget stale memories.", cat: "self_improve" },
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
-  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
+  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer, static analysis capabilities.", cat: "self_improve" },
   { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
   { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify, github_list to browse repositories.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
@@ -257,7 +259,7 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 .glow{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);width:120px;height:20px;background:radial-gradient(ellipse,#38BDF820 0%,transparent 70%);border-radius:50%;animation:pulse 3s ease-in-out infinite}
 @keyframes pulse{0%,100%{transform:translateX(-50%) scale(1);opacity:0.5}50%{transform:translateX(-50%) scale(1.2);opacity:0.8}}
 .controls{margin-top:30px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-.controls input{padding:10px 16px;border-radius:8px;border:1px solid #334155;background:#1E293B;color:#E2E8F0;font-size:14px;width:240px;outline:none}
+.controls input{padding:10px 16px;border-radius:8px;border:1px solid #334155;border:1px solid #334155;background:#1E293B;color:#E2E8F0;font-size:14px;width:240px;outline:none}
 .controls input:focus{border-color:#38BDF8}
 .controls button{padding:10px 20px;border-radius:8px;border:none;background:#38BDF8;color:#0F172A;font-weight:bold;font-size:14px;cursor:pointer;transition:background 0.2s}
 .controls button:hover{background:#7DD3FC}
@@ -780,6 +782,246 @@ async function data_processor(env, input) {
   }
 }
 
+async function code_analyzer(env, input) {
+  try {
+    const { path, analysis_type } = typeof input === 'string' ? JSON.parse(input) : input;
+
+    if (!path || !analysis_type) {
+      return JSON.stringify({
+        ok: false,
+        error: "Both 'path' and 'analysis_type' parameters are required",
+        required: { path: "string", analysis_type: "complexity|metrics|duplication" }
+      });
+    }
+
+    // Read the code file
+    const codeResult = await githubRead(env, path);
+    if (typeof codeResult !== 'string' || codeResult.startsWith("GitHub error")) {
+      return JSON.stringify({
+        ok: false,
+        error: "Failed to read code file: " + codeResult,
+        path: path
+      });
+    }
+
+    const code = codeResult;
+    const findings = [];
+    const metrics = {
+      lines_of_code: code.split('\n').length,
+      file_size: code.length,
+      analysis_timestamp: new Date().toISOString()
+    };
+
+    // Store analysis results in database
+    await env.DB.prepare("INSERT INTO code_analysis (tool, path, analysis_type, metrics, issues) VALUES (?1, ?2, ?3, ?4, ?5)")
+      .bind("code_analyzer", path, analysis_type, JSON.stringify(metrics), JSON.stringify(findings))
+      .run();
+
+    if (analysis_type === 'complexity') {
+      // Analyze cyclomatic complexity
+      const functions = extractFunctions(code);
+      const complexFunctions = [];
+
+      for (const func of functions) {
+        const complexity = calculateCyclomaticComplexity(func.body);
+        if (complexity > 10) {
+          complexFunctions.push({
+            function_name: func.name,
+            complexity: complexity,
+            start_line: func.startLine,
+            end_line: func.endLine,
+            issues: ["High cyclomatic complexity (>10)"],
+            suggestions: [
+              `Consider breaking down function '${func.name}' into smaller, focused functions`,
+              `Extract complex conditional logic into separate helper functions`,
+              `Use early returns to reduce nesting depth`
+            ]
+          });
+        }
+      }
+
+      findings.push(...complexFunctions);
+      metrics.function_count = functions.length;
+      metrics.complex_functions = complexFunctions.length;
+      metrics.average_complexity = functions.reduce((sum, f) => sum + calculateCyclomaticComplexity(f.body), 0) / functions.length;
+
+    } else if (analysis_type === 'metrics') {
+      // Calculate code metrics
+      const functions = extractFunctions(code);
+      const metricsData = {
+        total_functions: functions.length,
+        average_function_length: functions.reduce((sum, f) => sum + f.body.split('\n').length, 0) / functions.length,
+        max_function_length: Math.max(...functions.map(f => f.body.split('\n').length)),
+        comment_ratio: calculateCommentRatio(code),
+        function_metrics: functions.map(f => ({
+          name: f.name,
+          lines: f.body.split('\n').length,
+          parameters: countParameters(f.signature),
+          complexity: calculateCyclomaticComplexity(f.body)
+        }))
+      };
+
+      Object.assign(metrics, metricsData);
+      findings.push({
+        type: "metrics_summary",
+        data: metricsData
+      });
+
+    } else if (analysis_type === 'duplication') {
+      // Detect duplicate code
+      const duplicates = detectDuplicateFunctions(code);
+      findings.push(...duplicates);
+      metrics.duplicate_functions = duplicates.length;
+      metrics.duplicate_blocks = duplicates.reduce((sum, d) => sum + d.instances.length, 0);
+    }
+
+    // Update database with findings
+    await env.DB.prepare("UPDATE code_analysis SET metrics = ?1, issues = ?2 WHERE tool = 'code_analyzer' AND path = ?3 AND analysis_type = ?4")
+      .bind(JSON.stringify(metrics), JSON.stringify(findings), path, analysis_type)
+      .run();
+
+    return JSON.stringify({
+      ok: true,
+      path: path,
+      analysis_type: analysis_type,
+      metrics: metrics,
+      findings: findings,
+      summary: {
+        total_findings: findings.length,
+        critical_issues: findings.filter(f => f.issues && f.issues.some(i => i.includes("High") || i.includes("critical"))).length,
+        suggestions_count: findings.reduce((sum, f) => sum + (f.suggestions ? f.suggestions.length : 0), 0)
+      }
+    });
+
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: error.message,
+      stack: error.stack,
+      input: input
+    });
+  }
+}
+
+// Helper functions for code analysis
+function extractFunctions(code) {
+  const functionRegex = /(async\s+)?function\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*\(([^)]*)\)\s*\{([\s\S]*?)\}/g;
+  const arrowFunctionRegex = /(const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*=\s*(\([^)]*\)|[a-zA-Z_$][0-9a-zA-Z_$]*)\s*=>\s*\{([\s\S]*?)\}/g;
+
+  const functions = [];
+  let match;
+
+  // Extract regular functions
+  while ((match = functionRegex.exec(code)) !== null) {
+    functions.push({
+      type: match[1] ? 'async_function' : 'function',
+      name: match[2],
+      parameters: match[3],
+      signature: match[1] ? `async function ${match[2]}(${match[3]})` : `function ${match[2]}(${match[3]})`,
+      body: match[4],
+      startLine: code.substring(0, match.index).split('\n').length,
+      endLine: code.substring(0, functionRegex.lastIndex).split('\n').length
+    });
+  }
+
+  // Extract arrow functions
+  while ((match = arrowFunctionRegex.exec(code)) !== null) {
+    functions.push({
+      type: 'arrow_function',
+      name: match[2],
+      parameters: match[3],
+      signature: `${match[2]} = ${match[3]} =>`,
+      body: match[4],
+      startLine: code.substring(0, match.index).split('\n').length,
+      endLine: code.substring(0, arrowFunctionRegex.lastIndex).split('\n').length
+    });
+  }
+
+  return functions;
+}
+
+function calculateCyclomaticComplexity(code) {
+  // Count decision points: if, else if, switch, for, while, do, catch, ternary, logical operators
+  const complexityPoints = code
+    .replace(/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/g, '') // Remove comments
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .reduce((count, line) => {
+      // Count if, else if, switch, for, while, do, catch
+      const ifCount = (line.match(/\b(if|else\s+if|switch)\b/g) || []).length;
+      const loopCount = (line.match(/\b(for|while|do)\b/g) || []).length;
+      const catchCount = (line.match(/\bcatch\b/g) || []).length;
+
+      // Count ternary operators
+      const ternaryCount = (line.match(/\?/g) || []).length;
+
+      // Count logical operators
+      const logicalCount = (line.match(/\b(and|or|&&|\|\|)\b/g) || []).length;
+
+      return count + ifCount + loopCount + catchCount + ternaryCount + logicalCount;
+    }, 1); // Start with 1 for the base complexity
+
+  return complexityPoints;
+}
+
+function countParameters(parameters) {
+  if (!parameters || parameters.trim() === '') return 0;
+  return parameters.split(',').filter(p => p.trim() !== '').length;
+}
+
+function calculateCommentRatio(code) {
+  const totalLines = code.split('\n').length;
+  if (totalLines === 0) return 0;
+
+  const commentLines = (code.match(/^\s*\/\/.*$|^\s*\/\*[\s\S]*?\*\//gm) || []).length;
+  return commentLines / totalLines;
+}
+
+function detectDuplicateFunctions(code) {
+  const functions = extractFunctions(code);
+  const duplicates = [];
+
+  // Compare function bodies (simplified approach)
+  for (let i = 0; i < functions.length; i++) {
+    for (let j = i + 1; j < functions.length; j++) {
+      if (functions[i].body.trim() === functions[j].body.trim()) {
+        // Found a duplicate
+        const existing = duplicates.find(d => d.body === functions[i].body.trim());
+        if (existing) {
+          existing.instances.push({
+            function_name: functions[j].name,
+            start_line: functions[j].startLine
+          });
+        } else {
+          duplicates.push({
+            body: functions[i].body.trim(),
+            function_name: functions[i].name,
+            start_line: functions[i].startLine,
+            instances: [
+              {
+                function_name: functions[i].name,
+                start_line: functions[i].startLine
+              },
+              {
+                function_name: functions[j].name,
+                start_line: functions[j].startLine
+              }
+            ],
+            issues: ["Duplicate function implementation"],
+            suggestions: [
+              `Consider consolidating duplicate functions '${functions[i].name}' and '${functions[j].name}' into a single function`,
+              `Use a shared utility function instead of duplicating code`
+            ]
+          });
+        }
+      }
+    }
+  }
+
+  return duplicates;
+}
+
 async function runTool(env, actionId, tool, input) {
   const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
@@ -823,144 +1065,8 @@ async function runTool(env, actionId, tool, input) {
     const data = await data_processor(env, input);
     return { ok: true, data: data.slice(0, 2000) };
   }
-  return { ok: false, error: "Tool not implemented: " + tool };
-}
-
-export default {
-  async fetch(req, env) {
-    const url = new URL(req.url);
-    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now'))").run(); } } catch {}
-
-    const json = (body, status = 200) => new Response(JSON.stringify(body), {
-      status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-    });
-
-    const logStep = async (aid, step, content, model, tokens) => {
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1,?2,?3,?4,?5)").bind(aid, step, content, model||null, tokens||null).run(); } catch {}
-    };
-
-    if (url.pathname === "/avatar") {
-      return new Response(AVATAR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
-    }
-    if (url.pathname === "/status") {
-      let dbOk = false;
-      try { await env.DB.prepare("SELECT 1").run(); dbOk = true; } catch {}
-      return json({ alive: true, db: dbOk, version: "1.0.0" });
-    }
-
-    if (url.pathname === "/think" && req.method === "POST") {
-      try {
-        let input;
-        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
-        if (!input) return json({ error: "input required" }, 400);
-        await setBusyUntil(env.DB, 90);
-
-        const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
-        const aid = r.results[0].id;
-        await logStep(aid, "thalamus", `Classified: ${classify(input)}`);
-
-        // Gather context: identity, emotions, energy, memories
-        const rows = await env.DB.prepare("SELECT key, value FROM identity LIMIT 20").all();
-        const identity = {};
-        for (const r of rows.results) identity[r.key] = r.value;
-        const emotions = await getEmotions(env.DB);
-        const reg = await getRegulator(env.DB);
-        const memories = await recall(env.DB, 5);
-
-        const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:github_list:owner/repo/path, TOOL:data_processor:action|data|options`;
-        const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-        const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
-        if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
-        await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
-
-        const body = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
-        await logStep(aid, "planner", `Calling ${body.model}`);
-        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
-        });
-        if (!resp.ok) {
-          await updateEmotion(env.DB, "bad", 1);
-          await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
-        }
-        const data = await resp.json();
-        let content = data.choices?.[0]?.message?.content || "";
-        let tokens = data.usage?.total_tokens || 0;
-        let finalModel = data.model;
-        await logStep(aid, "executor", `Got response (${content.length} chars)`, finalModel, tokens);
-
-        if (content.includes("TOOL:")) {
-          const toolStart = content.indexOf("TOOL:");
-          const afterTool = content.slice(toolStart + 5);
-          const parts = afterTool.split(":");
-          const tool = parts[0].trim();
-          const toolInput = parts.slice(1).join(":").trim();
-          await logStep(aid, "planner", `Tool requested: ${tool}(${toolInput})`);
-          const result = await runTool(env, aid, tool, toolInput);
-          if (result.pending) {
-            content = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
-            await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
-          } else if (!result.ok) {
-            content = `I tried to use ${tool} but got: ${result.error}`;
-          } else {
-            const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
-            const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-              method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
-            });
-            if (followResp.ok) {
-              const followData = await followResp.json();
-              content = followData.choices?.[0]?.message?.content || content;
-              tokens += followData.usage?.total_tokens || 0;
-              finalModel = followData.model;
-              if (followData.choices && !followData.choices[0]?.message?.content) {
-                await logStep(aid, "executor", `Follow-up: no content in response: ${JSON.stringify(followData).slice(0,300)}`, finalModel, tokens);
-              }
-            } else {
-              await logStep(aid, "executor", `Follow-up LLM returned ${followResp.status}`, finalModel, tokens);
-            }
-            await logStep(aid, "executor", `Tool executed: ${tool}, final ${content.length} chars`, finalModel, tokens);
-          }
-        }
-
-        await updateEmotion(env.DB, "happy", 1);
-        await updateEmotion(env.DB, "energetic", -1);
-        await adjustEnergy(env.DB, -5);
-        await storeThought(env.DB, `User asked: ${input} - I replied: ${content.slice(0, 200)}`);
-
-        await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
-        await logStep(aid, "result", content, finalModel, tokens);
-        return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
-      } catch (e) { return json({ error: e.message }, 500); }
-    }
-
-    if (url.pathname === "/evolve" && req.method === "POST") {
-      return json({ message: "Evolution runs automatically every idle cycle. Brain generates self-improvement proposals (prompts, tools, config, memory, emotions) and applies them. Use /brain/prompts to see current changes." });
-    }
-
-    if (url.pathname === "/brain/emotions") {
-      const emotions = await getEmotions(env.DB);
-      const reg = await getRegulator(env.DB);
-      return json({ emotions, energy: reg.energy, confidence: reg.confidence });
-    }
-
-    if (url.pathname === "/brain/activity") {
-      const { results } = await env.DB.prepare("SELECT * FROM actions ORDER BY created_at DESC LIMIT 20").all();
-      return json({ entries: results });
-    }
-
-    if (url.pathname === "/brain/logs") {
-      const actionId = url.searchParams.get("action_id");
-      if (actionId) {
-        const { results } = await env.DB.prepare("SELECT * FROM brain_logs WHERE action_id=?1 ORDER BY id").bind(parseInt(actionId)).all();
-        return json({ entries: results });
-      }
-      const { results } = await env.DB.prepare("SELECT * FROM brain_logs ORDER BY created_at DESC LIMIT 50").all();
-      return json({ entries: results });
-    }
-
-    if (url.pathname === "/monitor/api/pending") {
-      const p = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC").all();
-      const h = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status!='pending' ORDER BY decided_at DESC LIMIT 20").all();
-      return json({ pending: p.results, history: h.results });
-    }
-    if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
+  if (tool === "code_analyzer") {
+    const data = await code_analyzer(env, input);
+    return { ok: true, data: data.slice(0, 2000) };
+  }
+  return { ok: false, error: "Tool not implemented:
