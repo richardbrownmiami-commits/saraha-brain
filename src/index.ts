@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `math_eval` tool added:
+Here's the complete modified `src/index.ts` file with the `math_eval` tool added and properly integrated:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -758,4 +758,4 @@ async function githubList(env, input) {
   }
 }
 
-async function runTool(env, actionId,
+async function runTool(env,
