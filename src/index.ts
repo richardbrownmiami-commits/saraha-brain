@@ -1,4 +1,4 @@
-I'll add the `github_list` tool to the `src/index.ts` file as requested. Here's the complete modified file with all existing code preserved and the new tool integrated:
+Here's the complete modified `src/index.ts` file with the `github_list` tool added and wired into all necessary components:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
