@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the `github_issue_search` tool added while preserving all existing code:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -745,13 +743,13 @@ async function scoreProposalQuality(db, proposal) {
     // Higher score if recent approvals > denials
     if (recentApprovals > recentDenials) {
       score += 3;
-      reasons.push(`Feedback alignment: recent approvals (${recentApprovals}) > denials (${re recentDenials})`);
+      reasons.push(`Feedback alignment: recent approvals (${recentApprovals}) > denials (${recentDenials})`);
     } else if (recentApprovals === recentDenials && recentApprovals > 0) {
       score += 2;
       reasons.push(`Feedback alignment: balanced recent feedback (${recentApprovals} approvals, ${recentDenials} denials)`);
     } else if (recentDenials > recentApprovals) {
       score += 1;
-      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${recentApprovals})`);
+      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${rerecentDenials})`);
     } else {
       score += 0;
       reasons.push("Feedback alignment: no recent feedback available");
@@ -1307,4 +1305,8 @@ const SEED_KNOWLEDGE = [
 ];
 
 const tools = {
-  web_search
+  web_search,
+  web_fetch,
+  web_summarize: async (db, url) => {
+    try {
+      const response =
