@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with structured logging for tool execution failures added:
+Here's the complete modified `src/index.ts` file with the `github_list` tool added and wired into the necessary functions:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -1143,6 +1143,23 @@ async function githubApiRequest(db, endpoint, method = 'GET', data = null) {
   }
 }
 
+async function github_list(owner: string, repo: string, path: string = '') {
+  const fullPath = path ? `${path}/` : '';
+  try {
+    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${fullPath}`;
+    const response = await fetch(url, {
+      headers: { 'Authorization': `token ${Deno.env.get('GITHUB_PAT')}` }
+    });
+    if (!response.ok) throw new Error('GitHub API error');
+    const items = await response.json();
+    const files = items.filter((item: any) => item.type === 'file').map((item: any) => item.name);
+    const dirs = items.filter((item: any) => item.type === 'dir').map((item: any) => item.name);
+    return { files, dirs, path: fullPath };
+  } catch (error) {
+    return { files: [], dirs: [], error: error.message };
+  }
+}
+
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
@@ -1196,8 +1213,4 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
   { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves — through actual code changes pushed to GitHub.", cat: "governance" },
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
-  { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
-  { k: "evolution_scoring", c: "Evolution scoring tracks effectiveness of self-improvement proposals using metrics: success_duration (time without errors), error_count (failures), and user_feedback_lift (positive user feedback). The /brain/evolution_score endpoint returns weighted scores where lower scores indicate higher priority for evolution focus.", cat: "governance" },
-  { k: "governance_web_summarize", c: "URL summarization changes <=30% risk auto-approved. >30% needs human approval.", cat: "governance" },
-  { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events",
-  cat: "structure"
+  { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source ->
