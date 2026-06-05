@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the `web_insights` tool fully integrated:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -735,21 +733,38 @@ async function webSearch(env, query) {
 }
 
 async function webFetch(db, url) {
+  // Validate URL format
+  if (!/^https?:\/\//.test(url)) throw new Error('Invalid URL format');
+
   // Check cache first
   const cached = await db.prepare("SELECT content FROM web_fetch_cache WHERE url=?1").bind(url).all();
   if (cached.results[0]) return { result: cached.results[0].content };
 
-  // Fetch fresh content
+  // Fetch fresh content with timeout and rate limiting
   try {
-    const response = await fetch(url);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Saraha-Brain/1.0' }
+    });
+    clearTimeout(timeout);
+
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
     const html = await response.text();
 
     // Cache it
     await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content) VALUES (?1, ?2)").bind(url, html).run();
 
+    // Log the successful fetch
+    await storeStreamThought(db, `Web fetch: ${url}`, 'neutral', 'tool');
+
     return { result: html };
   } catch (e) {
+    // Log the failed fetch
+    await storeStreamThought(db, `Web fetch failed: ${url} | ${e.message}`, 'bad', 'tool');
     return { error: "Failed to fetch URL: " + e.message };
   }
 }
@@ -798,14 +813,4 @@ async function githubWrite(env, input) {
 async function githubIssue(env, input) {
   const parts = input.split("|");
   const repoParts = parts[0].split("/");
-  const owner = repoParts[0], repo = repoParts[1];
-  const action = parts[1];
-  const token = env.GITHUB_PAT;
-  if (!owner || !repo || !action) return "Invalid format. Use: owner/repo/action|issue_data";
-  if (!token) return "GitHub token not configured";
-
-  try {
-    if (action === "list_issues") {
-      const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-        headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        signal
+  const owner = repoParts[0], repo = repo
