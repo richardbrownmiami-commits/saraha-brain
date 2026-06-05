@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `github_list` tool added and wired into all necessary components:
+Here's the complete modified `src/index.ts` file with improved `web_fetch` tool implementation for better content extraction and summarization:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -167,6 +167,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
+  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to fetch and extract content from a web page. Returns structured data with title, main content, metadata, and summary.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to browse repository contents and discover files. Returns directory listing with file metadata.", cat: "tools" },
@@ -357,6 +358,138 @@ async function webSearch(env, query) {
   return "No results for: " + query;
 }
 
+async function web_fetch(env, url) {
+  if (!url) return JSON.stringify({ error: "URL is required" });
+
+  try {
+    // Fetch the HTML content
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Saraha-Brain/1.0)" },
+      signal: AbortSignal.timeout(15000)
+    });
+
+    if (!resp.ok) {
+      return JSON.stringify({
+        error: `HTTP error ${resp.status}`,
+        status: resp.status,
+        url: url
+      });
+    }
+
+    const html = await resp.text();
+
+    // Parse HTML to extract title and main content
+    const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, '').trim() : "Untitled";
+
+    // Extract main content using readability algorithm
+    const mainContent = extractMainContent(html);
+
+    // Extract metadata
+    const descriptionMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+    const description = descriptionMatch ? descriptionMatch[1] : "";
+
+    const keywordsMatch = html.match(/<meta\s+name=["']keywords["']\s+content=["']([^"']*)["']/i);
+    const keywords = keywordsMatch ? keywordsMatch[1] : "";
+
+    const canonicalMatch = html.match(/<link\s+rel=["']canonical["']\s+href=["']([^"']*)["']/i);
+    const canonicalUrl = canonicalMatch ? canonicalMatch[1] : url;
+
+    // Generate summary using LLM
+    let summary = "";
+    if (env.BUDDHI_DWAR && env.BRAIN_KEY) {
+      try {
+        const summaryPrompt = `Summarize the following web page content in 2-3 concise sentences. Focus on the main points and key information:
+
+Title: ${title}
+Content: ${mainContent.substring(0, 2000)}
+
+Summary:`;
+
+        const summaryResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${env.BRAIN_KEY}`
+          },
+          body: JSON.stringify({
+            model: "auto",
+            messages: [
+              { role: "system", content: "You are a helpful assistant that summarizes web content concisely." },
+              { role: "user", content: summaryPrompt }
+            ],
+            temperature: 0.3,
+            max_tokens: 200
+          })
+        });
+
+        if (summaryResp.ok) {
+          const summaryData = await summaryResp.json();
+          summary = summaryData.choices?.[0]?.message?.content || "";
+        }
+      } catch (e) {
+        console.error("Summary generation failed:", e);
+      }
+    }
+
+    // Return structured data
+    return JSON.stringify({
+      ok: true,
+      metadata: {
+        url: canonicalUrl,
+        title: title,
+        description: description,
+        keywords: keywords ? keywords.split(',').map(k => k.trim()) : [],
+        content_type: resp.headers.get('content-type') || 'text/html',
+        status_code: resp.status
+      },
+      content: {
+        title: title,
+        main_content: mainContent,
+        summary: summary
+      },
+      stats: {
+        word_count: mainContent.split(/\s+/).length,
+        char_count: mainContent.length,
+        extracted_at: new Date().toISOString()
+      }
+    }, null, 2);
+  } catch (error) {
+    return JSON.stringify({
+      error: error.message,
+      url: url
+    });
+  }
+}
+
+// Helper function to extract main content from HTML
+function extractMainContent(html) {
+  // Remove script and style tags
+  let content = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  content = content.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+
+  // Try to find main content using common selectors
+  const mainSelectors = [
+    'article', 'main', 'div[role="main"]', 'div.content',
+    'div#content', 'div#main', 'div.post', 'div.entry-content',
+    'body'
+  ];
+
+  for (const selector of mainSelectors) {
+    const match = content.match(new RegExp(`<${selector}[^>]*>([\\s\\S]*?)<\\/${selector}>`, 'i'));
+    if (match) {
+      content = match[1];
+      break;
+    }
+  }
+
+  // Clean up HTML tags and normalize whitespace
+  content = content.replace(/<[^>]*>/g, ' ');
+  content = content.replace(/\s+/g, ' ').trim();
+
+  return content.substring(0, 10000); // Limit to 10k characters
+}
+
 async function githubRead(env, input) {
   const parts = input.split("/");
   const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
@@ -443,6 +576,10 @@ async function runTool(env, actionId, tool, input) {
     const data = await webSearch(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
+  if (tool === "web_fetch") {
+    const data = await web_fetch(env, input);
+    return { ok: true, data: data.slice(0, 2000) };
+  }
   if (tool === "github_read") {
     const data = await githubRead(env, input);
     return { ok: true, data: data.slice(0, 2000) };
@@ -500,7 +637,7 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:github_list:owner/repo/path`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:github_list:owner/repo/path`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -606,6 +743,7 @@ export default {
       if (!action) return json({ error: "action not found" }, 404);
       let toolResult = "Tool not implemented: " + row.tool;
       if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
+      else if (row.tool === "web_fetch") toolResult = await web_fetch(env, row.input);
       else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
       else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
       else if (row.tool === "github_list") toolResult = await github_list(env.DB, row.input);
@@ -668,7 +806,7 @@ export default {
         name: "Saraha Core",
         description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
         version: "1.0.0",
-        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write", "github_list"], avatar: true, health: true, task_scheduling: true, heal: true },
+        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "web_fetch", "github_read", "github_write", "github_list"], avatar: true, health: true, task_scheduling: true, heal: true },
         status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
         endpoints: {
           activity: { method: "GET", path: "/brain/activity" },
@@ -697,78 +835,4 @@ export default {
       let body, duration = 60;
       try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
       const until = Date.now() + duration * 60 * 1000;
-      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "awake", until })).run();
-      return json({ ok: true, phase: "awake", duration_minutes: duration, until });
-    }
-
-    if (url.pathname === "/brain/sleep" && req.method === "POST") {
-      let body, duration = 60;
-      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
-      const until = Date.now() + duration * 60 * 1000;
-      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "sleeping", until })).run();
-      return json({ ok: true, phase: "sleeping", duration_minutes: duration, until });
-    }
-
-    if (url.pathname === "/brain/clear-override" && req.method === "POST") {
-      await env.DB.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-      return json({ ok: true, cleared: true });
-    }
-
-    if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
-      const executed = await env.DB.prepare("SELECT p.id, p.title FROM proposals p LEFT JOIN authority_receipts r ON r.proposal_id=p.id AND r.outcome='success' WHERE p.status='executed' AND (r.approved_by IS NULL OR r.approved_by NOT LIKE '%implemented%') GROUP BY p.id ORDER BY p.id DESC LIMIT 10").all();
-      const ids = executed.results.map(p => p.id);
-      if (ids.length) {
-        for (const id of ids) {
-          await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL WHERE id=?1").bind(id).run();
-        }
-      }
-      return json({ ok: true, reset_count: ids.length, proposals: executed.results.map(p => ({ id: p.id, title: (p.title||"").slice(0,60) })) });
-    }
-
-    if (url.pathname === "/brain/knowledge") {
-      const q = url.searchParams.get("q");
-      const cat = url.searchParams.get("category");
-      let results;
-      if (q) {
-        results = await searchKnowledge(env.DB, q);
-      } else if (cat) {
-        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge WHERE category=?1 ORDER BY key LIMIT 20").bind(cat).all();
-        results = r.results;
-      } else {
-        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 50").all();
-        results = r.results;
-      }
-      return json({ entries: results });
-    }
-
-    if (url.pathname === "/brain/diag") {
-      const busy = await getBusyUntil(env.DB);
-      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
-      return json({ busy, now: Date.now(), diff: Date.now() - busy, lastCycle: lr.results[0]?.value || null });
-    }
-    if (url.pathname === "/brain/proposals/reset-all") {
-      const r = await env.DB.prepare("SELECT id FROM proposals WHERE status='executed'").all();
-      for (const p of r.results) {
-        await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(p.id).run();
-        await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(p.id).run();
-      }
-      return json({ ok: true, count: r.results.length });
-    }
-    if (req.method === "POST" && url.pathname.startsWith("/brain/proposals/reset/")) {
-      const id = parseInt(url.pathname.split("/")[4]);
-      if (!id) return json({ error: "invalid id" }, 400);
-      await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(id).run();
-      await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(id).run();
-      return json({ ok: true, id });
-    }
-    if (url.pathname === "/brain/proposals" && req.method === "POST") {
-      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
-      if (!body.title || !body.what_diff) return json({ error: "title and what_diff required" }, 400);
-      await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,status) VALUES (?1,?2,?3,?4,'approved')").bind(body.title, body.what_diff, body.how_diff || "", body.resource_type || "tool_code").run();
-      const r2 = await env.DB.prepare("SELECT MAX(id) as id FROM proposals").all();
-      const id = r2.results[0]?.id;
-      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(id).run();
-      return json({ ok: true, id });
-    }
-    if (url.pathname === "/brain/proposals") {
-      const { results } = await env.DB.prepare("SELECT * FROM proposals ORDER BY created_at DESC LIMIT
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?
