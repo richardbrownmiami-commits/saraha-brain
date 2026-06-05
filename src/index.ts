@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `web_fetch` tool added as specified:
+Here's the complete modified `src/index.ts` file with the evolution scoring capability added:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -14,6 +14,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
   `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, title TEXT NOT NULL, what TEXT, how TEXT, type TEXT, risk INTEGER DEFAULT 0, success_duration INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, user_feedback_lift INTEGER DEFAULT 0, applied_at TEXT DEFAULT (datetime('now')), status TEXT DEFAULT 'active')`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -165,6 +166,46 @@ async function checkDuplicateProposal(db, title, whatDiff) {
   return { duplicate: false };
 }
 
+async function recordEvolutionMetrics(db, proposalId, metrics) {
+  await db.prepare("UPDATE evolution_log SET success_duration = success_duration + ?1, error_count = error_count + ?2, user_feedback_lift = user_feedback_lift + ?3 WHERE proposal_id = ?4")
+    .bind(metrics.success_duration || 0, metrics.error_count || 0, metrics.user_feedback_lift || 0, proposalId).run();
+}
+
+async function getEvolutionScore(db, proposalId) {
+  const row = await db.prepare("SELECT risk, success_duration, error_count, user_feedback_lift FROM evolution_log WHERE proposal_id = ?1").bind(proposalId).all();
+  if (!row.results.length) return null;
+
+  const r = row.results[0];
+  const success_rate = r.success_duration > 0 ? (r.success_duration / (r.success_duration + r.error_count)) : 0;
+  const user_feedback_score = r.user_feedback_lift || 0;
+
+  // Weighted score: risk_pct * (1 - success_rate) + user_feedback_score
+  const score = (r.risk || 0) * (1 - success_rate) + user_feedback_score;
+  return {
+    proposal_id: proposalId,
+    risk: r.risk || 0,
+    success_duration: r.success_duration || 0,
+    error_count: r.error_count || 0,
+    user_feedback_lift: r.user_feedback_lift || 0,
+    success_rate: success_rate,
+    score: score
+  };
+}
+
+async function getTopBottomEvolutionScores(db, limit = 10) {
+  const rows = await db.prepare(`
+    SELECT proposal_id, risk, success_duration, error_count, user_feedback_lift
+    FROM evolution_log
+    ORDER BY (risk * (1 - CASE WHEN (success_duration + error_count) > 0 THEN success_duration / (success_duration + error_count) ELSE 0 END) + user_feedback_lift) ASC
+    LIMIT ?1
+  `).bind(limit).all();
+
+  return await Promise.all(rows.results.map(async r => {
+    const score = await getEvolutionScore(db, r.proposal_id);
+    return score;
+  }));
+}
+
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
@@ -181,9 +222,9 @@ const SEED_KNOWLEDGE = [
   { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
   { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), github_issues(repo issue tracking). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
+  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), github_issues(repo issue tracking), evolution_log(evolution metrics). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
+  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST), /brain/evolution_score(GET).", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
@@ -723,46 +764,4 @@ async function runTool(env, actionId, tool, input) {
   }
   if (tool === "github_read") {
     const data = await githubRead(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
-  }
-  if (tool === "github_write") {
-    const data = await githubWrite(env, input);
-    return { ok: true, data: data.slice(0, 1500) };
-  }
-  if (tool === "github_issue") {
-    const data = await githubIssue(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
-  }
-  if (tool === "github_list") {
-    const data = await githubList(env, input);
-    return { ok: true, data: JSON.stringify(data, null, 2) };
-  }
-  return { ok: false, error: "Tool not implemented: " + tool };
-}
-
-export default {
-  async fetch(req, env) {
-    const url = new URL(req.url);
-    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now'))").run(); } } catch {}
-
-    const json = (body, status = 200) => new Response(JSON.stringify(body), {
-      status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-    });
-
-    const logStep = async (aid, step, content, model, tokens) => {
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1,?2,?3,?4,?5)").bind(aid, step, content, model||null, tokens||null).run(); } catch {}
-    };
-
-    if (url.pathname === "/avatar") {
-      return new Response(AVATAR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
-    }
-    if (url.pathname === "/status") {
-      let dbOk = false;
-      try { await env.DB.prepare("SELECT 1").run(); dbOk = true; } catch {}
-      return json({ alive: true, db: dbOk, version: "1.0.0" });
-    }
-
-    if (url.pathname === "/think" && req.method === "POST") {
-      try {
-        let input;
-        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid
+    return {
