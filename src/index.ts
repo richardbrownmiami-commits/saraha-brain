@@ -1126,11 +1126,17 @@ export default {
         const howStr = "How: " + (proposal.how||"") + "\nBenefit: " + (proposal.benefit||"");
         const gate = await governanceGate(env.DB, proposal.resource_type || "prompt", proposal.risk_pct || 0);
         if (gate.action === "auto") {
+          const needsImpl = proposal.resource_type === "tool_code" || proposal.resource_type === "core_architecture";
+          const st = needsImpl ? "approved" : "executed";
           const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
           await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
-          await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          if (needsImpl) {
+            await env.DB.prepare("UPDATE proposals SET status='approved' WHERE id=?1").bind(r.results[0].id).run();
+          } else {
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          }
           await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
-          await storeStreamThought(env.DB, "Auto-improved: " + proposal.title, "happy", "evolve");
+          await storeStreamThought(env.DB, (needsImpl ? "Queueing implementation: " : "Auto-improved: ") + proposal.title, "happy", "evolve");
         } else {
           const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
           await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
