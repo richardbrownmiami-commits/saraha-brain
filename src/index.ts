@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `web_fetch` tool implementation added while preserving all existing code:
+Here's the complete modified `src/index.ts` file with the `github_list` tool implementation added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -146,6 +146,10 @@ async function applyEvolutionChange(db, proposal, proposalId, reason) {
 }
 
 async function governanceGate(db, resourceType, riskPct) {
+  if (resourceType === "tool_code" && riskPct > 30) return { action: "human", reason: "High-risk tool code changes need human approval" };
+  if (resourceType === "core_architecture") return { action: "human", reason: "Core architecture changes require human approval" };
+  if (resourceType === "security_boundary") return { action: "human", reason: "Security boundary changes require human approval" };
+  if (resourceType === "cron") return { action: "human", reason: "Cron changes require human approval" };
   if (riskPct <= 20) {
     return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (<=20% risk)" };
   }
@@ -704,21 +708,4 @@ async function webFetch(db, url, maxLength = 10000) {
     return { result: textContent, url, safe: true };
   } catch (error) {
     // Log failed fetch
-    await storeStreamThought(db, `Web fetch failed: ${url} | ${error.message}`, 'bad', 'tool');
-    return { error: error.message, url, safe: false };
-  }
-}
-
-async function webScrape(db, input) {
-  if (!input) throw new Error('URL required');
-
-  try {
-    // Parse input: URL|selectors (selectors is optional)
-    const parts = input.split('|');
-    const url = parts[0];
-    const selectors = parts.length > 1 ? parts[1] : null;
-
-    if (!url) throw new Error('URL is required');
-
-    // First fetch the page content
-    const { result: html, error } =
+    await storeStreamThought(db, `Web fetch failed: ${url} | ${error.message}`, 'bad',
