@@ -1,4 +1,4 @@
-I'll add the `github_issue_search` tool to the `src/index.ts` file while preserving all existing code. Here's the complete modified file:
+Here's the complete modified `src/index.ts` file with the `github_issue_search` tool added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -745,7 +745,7 @@ async function scoreProposalQuality(db, proposal) {
     // Higher score if recent approvals > denials
     if (recentApprovals > recentDenials) {
       score += 3;
-      reasons.push(`Feedback alignment: recent approvals (${recentApprovals}) > denials (${recentDenials})`);
+      reasons.push(`Feedback alignment: recent approvals (${recentApprovals}) > denials (${re recentDenials})`);
     } else if (recentApprovals === recentDenials && recentApprovals > 0) {
       score += 2;
       reasons.push(`Feedback alignment: balanced recent feedback (${recentApprovals} approvals, ${recentDenials} denials)`);
@@ -1173,9 +1173,9 @@ async function github_list(owner: string, repo: string, path: string = '') {
   }
 }
 
-async function github_issue_search(db, issueQuery: string, owner: string, repo: string, limit: number = 10) {
+async function github_issue_search(db, owner: string, repo: string, query: string, limit: number = 10) {
   try {
-    const safeQuery = encodeURIComponent(issueQuery);
+    const safeQuery = encodeURIComponent(query);
     const url = `https://api.github.com/search/issues?q=${safeQuery}+repo:${owner}/${repo}&per_page=${Math.min(limit, 100)}`;
     const response = await fetch(url, {
       headers: {
@@ -1281,7 +1281,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
   { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo?type=files|dirs|all&path=... to browse repository structures and discover files.\n\nParameters:\n- type: files (only files), dirs (only directories), all (both)\n- path: optional path prefix to filter results\n\nExamples:\n- TOOL:github_list:owner/repo?type=all - List all files and directories\n- TOOL:github_list:owner/repo?type=files - List only files\n- TOOL:github_list:owner/repo?type=dirs&path=src - List directories under src/", cat: "tools" },
-  { k: "tool_github_issue_search", c: "Use TOOL:github_issue_search:issueQuery|owner|repo|limit to search for GitHub issues, pull requests, or discussions in a specific repository. Returns an array of issue objects with number, title, html_url, state, created_at, and body.\n\nParameters:\n- issueQuery: The search query for issues (e.g., 'bug', 'enhancement', 'help wanted')\n- owner: GitHub repository owner/organization\n- repo: Repository name\n- limit: Maximum number of results to return (default: 10, max: 100)\n\nExamples:\n- TOOL:github_issue_search:bug|owner|repo|10 - Search for bug issues\n- TOOL:github_issue_search:enhancement|facebook|react|5 - Search for enhancement issues in React repo\n- TOOL:github_issue_search:\"good first issue\"|microsoft|vscode|20 - Search for good first issues in VS Code", cat: "tools" },
+  { k: "tool_github_issue_search", c: "Use TOOL:github_issue_search:owner|repo|issueQuery|limit to search for GitHub issues, pull requests, or discussions in a specific repository. Returns an array of issue objects with number, title, html_url, state, created_at, and body.\n\nParameters:\n- owner: GitHub repository owner/organization\n- repo: Repository name\n- issueQuery: The search query for issues (e.g., 'bug', 'enhancement', 'help wanted')\n- limit: Maximum number of results to return (default: 10, max: 100)\n\nExamples:\n- TOOL:github_issue_search:owner|repo|bug|10 - Search for bug issues\n- TOOL:github_issue_search:facebook|react|enhancement|5 - Search for enhancement issues in React repo\n- TOOL:github_issue_search:microsoft|vscode|\"good first issue\"|20 - Search for good first issues in VS Code", cat: "tools" },
   { k: "tool_math_eval", c: "Use TOOL:math_eval:expression to evaluate safe mathematical expressions. Supports basic operations (+, -, *, /), parentheses, and decimal numbers.\n\nExamples:\n- TOOL:math_eval:2 + 3 * 4\n- TOOL:math_eval:(10 + 5) / 3\n- TOOL:math_eval:sqrt(16)", cat: "tools" },
   { k: "tool_memory_consolidate", c: "Use TOOL:memory_consolidate:threshold|time_window to analyze recent memories and extract actionable learnings.\n\nParameters:\n- threshold: minimum number of occurrences to consider a pattern significant (default: 3)\n- time_window: time window in hours to consider recent memories (default: 24)\n\nExample: TOOL:memory_consolidate:5|48 - Find patterns that occur at least 5 times in the last 48 hours", cat: "tools" },
   { k: "tool_memory_snapshot", c: "Use TOOL:memory_snapshot to capture a snapshot of current brain state including memories, learnings, emotions, energy, brain phase, and pending approvals. Returns structured JSON with current cognitive state.", cat: "tools" },
@@ -1304,3 +1304,7 @@ const SEED_KNOWLEDGE = [
   { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST), /brain/evolution_score(GET), /brain/memory/health(GET), /brain/memory/consolidate(POST).", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/den
+];
+
+const tools = {
+  web_search
