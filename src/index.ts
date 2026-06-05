@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the `web_fetch` tool added while preserving all existing code:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -813,4 +811,6 @@ async function githubWrite(env, input) {
 }
 
 async function githubIssue(env, input) {
-  const parts = input.split("|
+  const parts = input.split("|");
+  const repoParts = parts[0].split("/");
+  const owner = repoParts[0], repo = repo
