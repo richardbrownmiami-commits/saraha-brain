@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `memory_consolidate` tool added as described in the proposal:
+I'll implement the complete `memory_consolidate` tool as described in the proposal while preserving all existing code. Here's the complete modified `src/index.ts` file:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -880,4 +880,3 @@ async function webInsights(db, input) {
       domain: mainDomain,
       safe: true
     };
-  } catch (error) {
