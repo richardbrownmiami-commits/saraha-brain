@@ -1,4 +1,4 @@
-I'll implement the complete changes to add the `web_scrape` tool as described in the proposal. Here's the complete modified `src/index.ts` file:
+Here's the complete modified `src/index.ts` file with the `web_scrape` tool added as described in the proposal:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -893,4 +893,5 @@ async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
     try {
       const resp = await fetch("https://api.search.brave.com/res/v1/web/search?q=" + encodeURIComponent(query) + "&count=5", {
-        headers: { "X-Subscription-Token": env.B
+        headers: { "X-Subscription-Token": env.BRAVE_API_KEY }
+      });
