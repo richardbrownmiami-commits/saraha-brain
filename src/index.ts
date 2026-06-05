@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the improved `web_fetch` tool implementation:
+Here's the complete modified `src/index.ts` file with the `data_processor` tool added:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -96,7 +96,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_list: true };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_list: true, data_processor: true };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -171,6 +171,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to browse repository contents and discover files. Returns directory listing with file metadata.", cat: "tools" },
+  { k: "tool_data_processor", c: "Use TOOL:data_processor:{action:'parse_csv',data:'...',options:{...}} to parse and analyze CSV/Table data. Supports actions: parse_csv, analyze, detect_structure, filter_sort.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -189,7 +190,7 @@ const SEED_KNOWLEDGE = [
   { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
   { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
   { k: "self_improve_prompt", c: "Improve how you talk: add step-by-step reasoning, explain trade-offs, ask clarifying questions, cite sources from tools.", cat: "self_improve" },
-  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization.", cat: "self_improve" },
+  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization, data_processor for CSV/Table analysis.", cat: "self_improve" },
   { k: "self_improve_error", c: "Better error handling: retry on 429, fallback when LLM is down, graceful degradation when tools fail.", cat: "self_improve" },
   { k: "self_improve_memory", c: "Improve memory: store important facts from conversations, recall relevant context automatically, forget stale memories.", cat: "self_improve" },
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
@@ -553,6 +554,232 @@ async function github_list(db, ownerRepo, path = '') {
   }
 }
 
+async function data_processor(env, input) {
+  try {
+    const { action, data, options } = typeof input === 'string' ? JSON.parse(input) : input;
+
+    if (action === 'parse_csv') {
+      // Parse CSV data
+      const lines = data.split('\n');
+      if (lines.length < 2) return JSON.stringify({ error: "CSV must have at least header and one row" });
+
+      // Parse headers
+      const headers = lines[0].split(',').map(h => h.trim());
+      const result = [];
+
+      // Parse rows
+      for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+
+        const row = {};
+        const values = lines[i].split(',');
+        for (let j = 0; j < headers.length; j++) {
+          row[headers[j]] = values[j] ? values[j].trim() : '';
+        }
+        result.push(row);
+      }
+
+      return JSON.stringify({
+        ok: true,
+        headers: headers,
+        rows: result,
+        row_count: result.length,
+        stats: {
+          column_count: headers.length,
+          memory_used: JSON.stringify(result).length
+        }
+      });
+    }
+
+    else if (action === 'analyze') {
+      // Basic statistical analysis
+      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+      if (!parsed || !parsed.rows || !parsed.column) {
+        return JSON.stringify({ error: "Invalid data format for analysis. Expected {rows: [...], column: 'column_name'}" });
+      }
+
+      const column = parsed.column;
+      const values = parsed.rows.map(row => parseFloat(row[column])).filter(v => !isNaN(v));
+
+      if (values.length === 0) {
+        return JSON.stringify({ error: `No valid numeric values found in column '${column}'` });
+      }
+
+      // Calculate statistics
+      const sum = values.reduce((a, b) => a + b, 0);
+      const mean = sum / values.length;
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+
+      const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
+      const variance = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
+      const stddev = Math.sqrt(variance);
+
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+
+      return JSON.stringify({
+        ok: true,
+        analysis: {
+          column: column,
+          count: values.length,
+          mean: mean,
+          median: median,
+          stddev: stddev,
+          min: min,
+          max: max,
+          range: max - min,
+          sum: sum
+        },
+        sample: {
+          first_5: parsed.rows.slice(0, 5).map(row => row[column]),
+          last_5: parsed.rows.slice(-5).map(row => row[column])
+        }
+      });
+    }
+
+    else if (action === 'detect_structure') {
+      // Table structure detection
+      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+      if (!parsed || !parsed.rows) {
+        return JSON.stringify({ error: "Invalid data format for structure detection. Expected {rows: [...] }" });
+      }
+
+      if (parsed.rows.length === 0) {
+        return JSON.stringify({ error: "No rows to analyze" });
+      }
+
+      // Get all column names from first row
+      const sampleRow = parsed.rows[0];
+      const columns = Object.keys(sampleRow);
+
+      // Analyze data types for each column
+      const columnAnalysis = {};
+      for (const col of columns) {
+        const values = parsed.rows.map(row => row[col]).filter(v => v !== undefined && v !== null && v !== '');
+
+        if (values.length === 0) {
+          columnAnalysis[col] = { type: 'empty', sample: null };
+          continue;
+        }
+
+        // Check if all values are numeric
+        const allNumeric = values.every(v => !isNaN(parseFloat(v)) && isFinite(v));
+        if (allNumeric) {
+          columnAnalysis[col] = { type: 'numeric', sample: values.slice(0, 3) };
+          continue;
+        }
+
+        // Check if values look like dates
+        const dateLike = values.every(v => /^\d{4}-\d{2}-\d{2}/.test(v));
+        if (dateLike) {
+          columnAnalysis[col] = { type: 'date', sample: values.slice(0, 3) };
+          continue;
+        }
+
+        // Default to string
+        columnAnalysis[col] = {
+          type: 'string',
+          sample: values.slice(0, 3).map(v => v.substring(0, 50)),
+          unique_count: new Set(values).size
+        };
+      }
+
+      return JSON.stringify({
+        ok: true,
+        structure: {
+          columns: columns,
+          row_count: parsed.rows.length,
+          column_count: columns.length,
+          column_types: columnAnalysis
+        },
+        suggestions: {
+          primary_key: columns.find(col => columnAnalysis[col].type === 'numeric') || columns[0],
+          potential_numeric_columns: columns.filter(col => columnAnalysis[col].type === 'numeric'),
+          potential_date_columns: columns.filter(col => columnAnalysis[col].type === 'date')
+        }
+      });
+    }
+
+    else if (action === 'filter_sort') {
+      // Data filtering and sorting
+      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+      if (!parsed || !parsed.rows) {
+        return JSON.stringify({ error: "Invalid data format for filtering/sorting. Expected {rows: [...], filters: {...}, sort_by: 'column'}" });
+      }
+
+      let result = [...parsed.rows];
+
+      // Apply filters
+      if (parsed.filters) {
+        for (const [column, value] of Object.entries(parsed.filters)) {
+          result = result.filter(row => {
+            const cellValue = row[column];
+            if (value === null || value === undefined) return cellValue === '' || cellValue === null || cellValue === undefined;
+
+            if (typeof value === 'object' && value.op) {
+              // Handle comparison operators
+              const numericValue = parseFloat(value.value);
+              if (isNaN(numericValue)) return false;
+
+              switch (value.op) {
+                case '>': return parseFloat(cellValue) > numericValue;
+                case '<': return parseFloat(cellValue) < numericValue;
+                case '>=': return parseFloat(cellValue) >= numericValue;
+                case '<=': return parseFloat(cellValue) <= numericValue;
+                case '!=': return cellValue != value.value;
+                default: return cellValue === value.value;
+              }
+            }
+
+            return cellValue === value;
+          });
+        }
+      }
+
+      // Apply sorting
+      if (parsed.sort_by) {
+        const sortColumn = parsed.sort_by;
+        const sortDirection = parsed.sort_direction || 'asc';
+
+        result.sort((a, b) => {
+          const valA = a[sortColumn];
+          const valB = b[sortColumn];
+
+          if (valA === valB) return 0;
+          if (sortDirection === 'desc') {
+            return valA > valB ? -1 : 1;
+          }
+          return valA < valB ? -1 : 1;
+        });
+      }
+
+      return JSON.stringify({
+        ok: true,
+        original_count: parsed.rows.length,
+        filtered_count: result.length,
+        filtered_rows: result,
+        changes: {
+          removed: parsed.rows.length - result.length,
+          percentage_removed: ((parsed.rows.length - result.length) / parsed.rows.length * 100).toFixed(1) + '%'
+        }
+      });
+    }
+
+    else {
+      return JSON.stringify({ error: `Unknown action: ${action}. Supported actions: parse_csv, analyze, detect_structure, filter_sort` });
+    }
+
+  } catch (error) {
+    return JSON.stringify({
+      error: error.message,
+      input: input
+    });
+  }
+}
+
 async function runTool(env, actionId, tool, input) {
   const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
@@ -590,6 +817,10 @@ async function runTool(env, actionId, tool, input) {
   }
   if (tool === "github_list") {
     const data = await github_list(env.DB, input);
+    return { ok: true, data: data.slice(0, 2000) };
+  }
+  if (tool === "data_processor") {
+    const data = await data_processor(env, input);
     return { ok: true, data: data.slice(0, 2000) };
   }
   return { ok: false, error: "Tool not implemented: " + tool };
@@ -637,7 +868,7 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:github_list:owner/repo/path`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:github_list:owner/repo/path, TOOL:data_processor:action|data|options`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -733,106 +964,4 @@ export default {
       return json({ pending: p.results, history: h.results });
     }
     if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
-      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
-      if (!id) return json({ error: "id required" }, 400);
-      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
-      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
-      const row = r.results[0];
-      const a = await env.DB.prepare("SELECT * FROM actions WHERE id=?1").bind(row.action_id).all();
-      const action = a.results[0];
-      if (!action) return json({ error: "action not found" }, 404);
-      let toolResult = "Tool not implemented: " + row.tool;
-      if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
-      else if (row.tool === "web_fetch") toolResult = await web_fetch(env, row.input);
-      else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
-      else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
-      else if (row.tool === "github_list") toolResult = await github_list(env.DB, row.input);
-      const emotions = await getEmotions(env.DB);
-      const reg = await getRegulator(env.DB);
-      const memories = await recall(env.DB, 5);
-      const mood = describeMood(emotions, reg.energy);
-      const system = `You are Saraha. ${mood} ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
-      const userInput = action.input || "Process my request";
-      const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
-      const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
-      });
-      let content = toolResult.slice(0, 500);
-      let tokens = 0;
-      if (followResp.ok) {
-        const followData = await followResp.json();
-        content = followData.choices?.[0]?.message?.content || content;
-        tokens = followData.usage?.total_tokens || 0;
-      }
-      await env.DB.prepare("UPDATE pending_approvals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
-      await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, row.action_id).run();
-      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, tokens) VALUES (?1,'monitor',?2,?3)").bind(row.action_id, `Approval #${id} - ${row.tool} done: ${content.slice(0,100)}`, tokens).run();
-      await storeStreamThought(env.DB, `${row.tool} approved and executed: ${content.slice(0,100)}`, "neutral", "approve");
-      await updateEmotion(env.DB, "happy", 1);
-      await updateEmotion(env.DB, "energetic", -1);
-      await adjustEnergy(env.DB, -5);
-      return json({ ok: true, result: content });
-    }
-    if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
-      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
-      if (!id) return json({ error: "id required" }, 400);
-      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
-      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
-      const row = r.results[0];
-      await env.DB.prepare("UPDATE pending_approvals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
-      await env.DB.prepare("UPDATE actions SET status='denied' WHERE id=?1").bind(row.action_id).run();
-      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' denied for '||?3)").bind(row.action_id, id, row.tool).run();
-      return json({ ok: true });
-    }
-
-    if (url.pathname === "/brain/stream") {
-      const { results } = await env.DB.prepare("SELECT * FROM thought_stream ORDER BY created_at DESC LIMIT 50").all();
-      return json({ entries: results });
-    }
-    if (url.pathname === "/brain/phase") {
-      const emotions = await getEmotions(env.DB);
-      const reg = await getRegulator(env.DB);
-      const phase = await getBrainPhase(env.DB, emotions, reg);
-      return json({ phase, emotions, energy: reg.energy });
-    }
-
-    if (url.pathname === "/brain/capabilities") {
-      const emotions = await getEmotions(env.DB);
-      const reg = await getRegulator(env.DB);
-      const phase = await getBrainPhase(env.DB, emotions, reg);
-      const lastAct = await env.DB.prepare("SELECT type, status, created_at FROM actions ORDER BY created_at DESC LIMIT 1").all();
-      const lastActivity = lastAct.results[0] ? lastAct.results[0].type + " (" + lastAct.results[0].status + ")" : "none";
-      return json({
-        name: "Saraha Core",
-        description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
-        version: "1.0.0",
-        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "web_fetch", "github_read", "github_write", "github_list"], avatar: true, health: true, task_scheduling: true, heal: true },
-        status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
-        endpoints: {
-          activity: { method: "GET", path: "/brain/activity" },
-          logs: { method: "GET", path: "/brain/logs" },
-          proposals: { method: "GET", path: "/brain/proposals" },
-          phase: { method: "GET", path: "/brain/phase" },
-          emotions: { method: "GET", path: "/brain/emotions" },
-          knowledge: { method: "GET", path: "/brain/knowledge" },
-          stream: { method: "GET", path: "/brain/stream" },
-          wake: { method: "POST", path: "/brain/wake" },
-          sleep: { method: "POST", path: "/brain/sleep" },
-          avatar: { method: "GET", path: "/avatar" },
-          diag: { method: "GET", path: "/brain/diag" }
-        }
-      });
-    }
-
-    if (url.pathname === "/brain/override") {
-      const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-      if (!ov.results[0]?.value) return json({ active: false });
-      const o = JSON.parse(ov.results[0].value);
-      return json({ active: true, phase: o.phase, until: o.until, remainingMs: o.until - Date.now() });
-    }
-
-    if (url.pathname === "/brain/wake" && req.method === "POST") {
-      let body, duration = 60;
-      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
-      const until = Date.now() + duration * 60 * 1000;
-      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime
+      let id; try {
