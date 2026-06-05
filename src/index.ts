@@ -1,4 +1,4 @@
-I'll implement the complete modified `src/index.ts` file with the `github_list` tool added while preserving all existing code. Here's the complete file:
+I'll implement the complete modified `src/index.ts` file with the `web_fetch` tool added while preserving all existing code. Here's the complete file:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
