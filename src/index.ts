@@ -1066,6 +1066,63 @@ export default {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3||' impl='||?4)").bind(stamp, p.id.toString(), p.title.slice(0,60), implemented ? "yes" : "no").run(); } catch {}
       await updateEmotion(env.DB, "happy", 1);
     }
+    // Failure recovery: detect rolled-back proposals, improvise, retry
+    const failedStream = await env.DB.prepare("SELECT content FROM thought_stream WHERE content LIKE 'Rolled back proposal #%' AND created_at > datetime('now','-2 hours') ORDER BY created_at DESC").all();
+    const seenIds = new Set();
+    for (const fs of failedStream.results) {
+      const m = fs.content.match(/Rolled back proposal #(\d+)/);
+      if (!m) continue;
+      const fid = parseInt(m[1]);
+      if (seenIds.has(fid)) continue;
+      seenIds.add(fid);
+      const rcnt = failedStream.results.filter(r => r.content.includes("#" + fid)).length;
+      if (rcnt > 1) continue;
+      const fp = (await env.DB.prepare("SELECT * FROM proposals WHERE id=?1").bind(fid).all()).results?.[0];
+      if (!fp || fp.status !== 'executed') continue;
+      let currentCode = "";
+      if (env.GITHUB_PAT) {
+        try { const gc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); if (gc.ok) currentCode = await gc.text(); } catch {}
+      }
+      const fixSys = "You are Saraha's code fix engine for Cloudflare Workers. CRITICAL RULES: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP. Use btoa() for base64. Use env.X for secrets. ALL code in one file. Previous attempt FAILED because the code used Node.js APIs incompatible with Cloudflare Workers. Generate ONLY Workers-compatible code. Output the COMPLETE modified src/index.ts.";
+      const fixPrompt = "Proposal #" + fid + ": " + (fp.title || "") + "\n\nWhat was supposed to change:\n" + (fp.what_diff || "").slice(0, 800) + "\n\nImplementation plan:\n" + (fp.how_diff || "").slice(0, 800) + "\n\nCurrent src/index.ts:\n" + (currentCode || "(not available)") + "\n\nPrevious attempt FAILED (Cloudflare Workers rejected Node.js code). Generate FIXED code using ONLY fetch(), btoa(), env.X â€” no imports, no buffers, no npm packages. Output the COMPLETE modified src/index.ts.";
+      try {
+        const enc = new TextEncoder();
+        const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
+        const ir = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+          body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: fixSys }, { role: "user", content: fixPrompt }], temperature: 0.3, max_tokens: 16384 }),
+          signal: AbortSignal.timeout(90000)
+        });
+        if (ir.ok) {
+          const idata = await ir.json();
+          let newCode = idata.choices?.[0]?.message?.content || "";
+          newCode = newCode.replace(/```[a-z]*\n?/gi, "").trim();
+          if (newCode.length > 1000) {
+            let gRes = null;
+            try { gRes = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); } catch {}
+            const backupText = gRes?.ok ? await gRes.text() : null;
+            let backupSha = null;
+            try { const gRes2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); if (gRes2.ok) { const gd = await gRes2.json(); backupSha = gd.sha; } } catch {}
+            const wResult = await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|fix: proposal #" + fid + " retry (CF Workers compatible)|" + newCode);
+            if (wResult.startsWith("Written")) {
+              let healthy = false;
+              for (let retry = 0; retry < 3 && !healthy; retry++) {
+                if (retry > 0) await new Promise(r => setTimeout(r, 30000));
+                try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(8000) }); healthy = h.ok; } catch {}
+              }
+              if (!healthy && backupText) {
+                await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|rollback: proposal #" + fid + " retry failed|" + backupText);
+                await storeStreamThought(env.DB, "Retry rollback: proposal #" + fid + " still unhealthy", "bad", "evolve");
+              } else {
+                await storeStreamThought(env.DB, "Recovered proposal #" + fid + ": " + (fp.title || "").slice(0, 60), "happy", "evolve");
+              }
+            }
+          }
+        }
+      } catch (e) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'recover_err',?2)").bind(stamp, (e.message||e).slice(0,200)).run(); } catch {}
+      }
+    }
     if (reg.energy <= 30) {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Energy too low for LLM call')").bind(stamp).run(); } catch {}
       await adjustEnergy(env.DB, 5);
