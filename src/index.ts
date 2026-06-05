@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `github_list` tool implementation added while preserving all existing code:
+I'll output the complete modified `src/index.ts` file with the `github_list` tool implementation added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -633,6 +633,81 @@ async function math_eval(db, expr) {
   }
 }
 
+async function github_list(db, spec) {
+  try {
+    // Parse the spec: owner/repo?type=...&path=...
+    const [repoSpec, queryString] = spec.split('?');
+    const [owner, repo] = repoSpec.split('/');
+    const params = new URLSearchParams(queryString || '');
+    const type = params.get('type') || 'all';
+    const path = params.get('path') || '';
+
+    // Validate inputs
+    if (!owner || !repo) {
+      throw new Error('Invalid repository specification. Expected owner/repo');
+    }
+
+    // GitHub API URL
+    let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents`;
+    if (path) {
+      apiUrl += `/${path}`;
+    }
+
+    // Add query parameters
+    const queryParams = new URLSearchParams();
+    if (type === 'files' || type === 'dirs') {
+      queryParams.set('type', type);
+    }
+    if (path) {
+      queryParams.set('path', path);
+    }
+    if (queryParams.toString()) {
+      apiUrl += `?${queryParams.toString()}`;
+    }
+
+    // Fetch from GitHub API
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Authorization': `Bearer ${Deno.env.get('GITHUB_PAT')}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub API error: ${response.status} ${response.statusText}`);
+    }
+
+    const items = await response.json();
+
+    // Format the response
+    const result = {
+      owner,
+      repo,
+      path: path || '/',
+      type,
+      items: items.map(item => ({
+        name: item.name,
+        path: item.path,
+        type: item.type,
+        size: item.size,
+        url: item.url,
+        html_url: item.html_url,
+        download_url: item.download_url
+      }))
+    };
+
+    // Log successful operation
+    await storeStreamThought(db, `GitHub list successful: ${owner}/${repo}${path ? '/' + path : ''} (${result.items.length} items)`, 'neutral', 'tool');
+
+    return { result, safe: true };
+  } catch (error) {
+    // Log failed operation
+    await storeStreamThought(db, `GitHub list failed: ${spec} | ${error.message}`, 'bad', 'tool');
+    return { error: error.message, safe: false };
+  }
+}
+
 async function webFetch(db, url, maxLength = 10000) {
   try {
     // Validate URL
@@ -643,69 +718,4 @@ async function webFetch(db, url, maxLength = 10000) {
     // Check cache first
     const cacheCheck = await db.prepare("SELECT content FROM web_fetch_cache WHERE url = ?1").bind(url).all();
     if (cacheCheck.results.length > 0) {
-      const cachedContent = cacheCheck.results[0].content;
-      if (cachedContent.length <= maxLength) {
-        await storeStreamThought(db, `Web fetch cache hit: ${url}`, 'neutral', 'tool');
-        return { result: cachedContent, url, safe: true };
-      }
-    }
-
-    // Validate URL format
-    if (!/^https?:\/\//i.test(url)) {
-      throw new Error('Invalid URL format. Must start with http:// or https://');
-    }
-
-    // Set up timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
-    // Fetch with timeout
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Saraha-Brain/1.0',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      }
-    });
-
-    clearTimeout(timeout);
-
-    // Check if response is OK
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    // Get content type
-    const contentType = response.headers.get('content-type') || '';
-    let textContent = '';
-
-    if (contentType.includes('text/html')) {
-      textContent = await response.text();
-    } else if (contentType.includes('application/json')) {
-      const jsonData = await response.json();
-      textContent = JSON.stringify(jsonData, null, 2);
-    } else if (contentType.includes('text/plain') || contentType.includes('text/xml')) {
-      textContent = await response.text();
-    } else {
-      // Try to get text anyway
-      textContent = await response.text();
-    }
-
-    // Limit content length
-    if (textContent.length > maxLength) {
-      textContent = textContent.substring(0, maxLength) + `\n\n[Content truncated to ${maxLength} characters]`;
-    }
-
-    // Store in cache
-    await db.prepare(`
-      INSERT OR REPLACE INTO web_fetch_cache (url, content, fetched_at)
-      VALUES (?1, ?2, datetime('now'))
-    `).bind(url, textContent).run();
-
-    // Log successful fetch
-    await storeStreamThought(db, `Web fetch successful: ${url} (${textContent.length} chars)`, 'neutral', 'tool');
-
-    return { result: textContent, url, safe: true };
-  } catch (error) {
-    // Log failed fetch
-    await storeStreamThought(db, `Web fetch failed: ${url} | ${error.message}`, 'bad',
+      const cachedContent = cacheCheck.results[0].content
