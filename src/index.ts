@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `github_list` tool added as specified:
+Here's the complete modified `src/index.ts` file with the `web_fetch` tool added as specified:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -13,6 +13,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
+  `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -168,6 +169,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
+  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to retrieve the full HTML content of a web page for deep analysis and knowledge extraction.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:richardbrownmiami-commits/saraha-brain/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
@@ -422,6 +424,26 @@ async function webSearch(env, query) {
     if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
   } catch {}
   return "No results for: " + query;
+}
+
+async function webFetch(db, url) {
+  // Check cache first
+  const cached = await db.prepare("SELECT content FROM web_fetch_cache WHERE url=?1").bind(url).all();
+  if (cached.results[0]) return { result: cached.results[0].content };
+
+  // Fetch fresh content
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const html = await response.text();
+
+    // Cache it
+    await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content) VALUES (?1, ?2)").bind(url, html).run();
+
+    return { result: html };
+  } catch (e) {
+    return { error: "Failed to fetch URL: " + e.message };
+  }
 }
 
 async function githubRead(env, input) {
@@ -694,6 +716,11 @@ async function runTool(env, actionId, tool, input) {
     const data = await webSearch(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
+  if (tool === "web_fetch") {
+    const data = await webFetch(env.DB, input);
+    if (data.error) return { ok: false, error: data.error };
+    return { ok: true, data: data.result };
+  }
   if (tool === "github_read") {
     const data = await githubRead(env, input);
     return { ok: true, data: data.slice(0, 2000) };
@@ -738,21 +765,4 @@ export default {
     if (url.pathname === "/think" && req.method === "POST") {
       try {
         let input;
-        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
-        if (!input) return json({ error: "input required" }, 400);
-        await setBusyUntil(env.DB, 90);
-
-        const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
-        const aid = r.results[0].id;
-        await logStep(aid, "thalamus", `Classified: ${classify(input)}`);
-
-        // Gather context: identity, emotions, energy, memories
-        const rows = await env.DB.prepare("SELECT key, value FROM identity LIMIT 20").all();
-        const identity = {};
-        for (const r of rows.results) identity[r.key] = r.value;
-        const emotions = await getEmotions(env.DB);
-        const reg = await getRegulator(env.DB);
-        const memories = await recall(env.DB, 5);
-
-        const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""
+        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid
