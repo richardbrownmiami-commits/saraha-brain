@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with all the emotion system refinements applied while preserving all existing code:
+I'll implement the complete changes for the web_fetch tool integration as described in the proposal. Here's the complete modified `src/index.ts` file:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -32,7 +32,7 @@ const TABLES = [
      DELETE FROM brain_knowledge_fts WHERE rowid = old.id;
    END;`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
-  `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, status TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS tools (id INTEGER PRIMARY KEY, name TEXT UNIQUE, config TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, title TEXT NOT NULL, what TEXT, how TEXT, type TEXT, risk INTEGER DEFAULT 0, success_duration INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, user_feedback_lift INTEGER DEFAULT 0, applied_at TEXT DEFAULT (datetime('now')), status TEXT DEFAULT 'active')`,
   `CREATE TABLE IF NOT EXISTS memory_consolidation_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id INTEGER, original_ids TEXT, consolidated_content TEXT, strength_change REAL, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -420,7 +420,8 @@ function isToolSafe(tool) {
     score_proposal_quality: true,
     driftEmotions: true,
     search_knowledge: true,
-    seed_knowledge: true
+    seed_knowledge: true,
+    fetch: true
   };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
@@ -1429,4 +1430,4 @@ const SEED_KNOWLEDGE = [
   { k: "tool_reflection_engine", c: "Use TOOL:reflection_engine to perform deep self-analysis of system metrics including memory health, tool usage patterns, proposal success rates, emotion drift, and anti-pattern frequency. Returns structured analysis with improvement recommendations.", cat: "tools" },
   { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
   { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
-  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons, breakdown:
+  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and
