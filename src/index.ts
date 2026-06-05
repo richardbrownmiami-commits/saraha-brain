@@ -1,5 +1,3 @@
-Here's the complete modified `src/index.ts` file with the `code_analyzer` tool implementation added while preserving all existing code:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -12,7 +10,6 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS code_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, path TEXT, analysis_type TEXT NOT NULL, metrics TEXT DEFAULT '{}', issues TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -97,7 +94,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_list: true, data_processor: true, code_analyzer: true };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -168,12 +165,8 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
-  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to fetch and extract content from a web page. Returns structured data with title, main content, metadata, and summary.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
-  { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
-  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to browse repository contents and discover files. Returns directory listing with file metadata.", cat: "tools" },
-  { k: "tool_data_processor", c: "Use TOOL:data_processor:{action:'parse_csv',data:'...',options:{...}} to parse and analyze CSV/Table data. Supports actions: parse_csv, analyze, detect_structure, filter_sort.", cat: "tools" },
-  { k: "tool_code_analyzer", c: "Use TOOL:code_analyzer:{path:'src/index.ts',analysis_type:'complexity|metrics|duplication'} to analyze code for complexity, metrics, and duplication. Returns structured analysis with findings and refactoring suggestions.", cat: "tools" },
+  { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -181,9 +174,9 @@ const SEED_KNOWLEDGE = [
   { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
   { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), code_analysis(tool results). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
+  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
+  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
@@ -192,14 +185,14 @@ const SEED_KNOWLEDGE = [
   { k: "evolution_self", c: "Brain evolves itself autonomously. governanceGate always returns auto. Every executed proposal calls applyEvolutionChange() which stores evolution_log:{id} in identity with {title,what,how,type,reason,risk,applied_at,status} and updates system_prompt_overrides array. /think injects overrides as 'Self-evolution changes applied'. Monitor Prompts tab shows all changes.", cat: "governance" },
   { k: "schema_changes", c: "/brain/prompts endpoint returns base prompt + overrides array + changes array from evolution_log: keys.", cat: "structure" },
   { k: "self_improve_prompt", c: "Improve how you talk: add step-by-step reasoning, explain trade-offs, ask clarifying questions, cite sources from tools.", cat: "self_improve" },
-  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization, data_processor for CSV/Table analysis, code_analyzer for static analysis and refactoring.", cat: "self_improve" },
+  { k: "self_improve_tools", c: "Add or refine tools: web_fetch for full page content, github_list for repo browsing, math calculation, file summarization.", cat: "self_improve" },
   { k: "self_improve_error", c: "Better error handling: retry on 429, fallback when LLM is down, graceful degradation when tools fail.", cat: "self_improve" },
   { k: "self_improve_memory", c: "Improve memory: store important facts from conversations, recall relevant context automatically, forget stale memories.", cat: "self_improve" },
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
-  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer, static analysis capabilities.", cat: "self_improve" },
+  { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
   { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself — prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
-  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify, github_list to browse repositories.", cat: "tools" },
+  { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
   { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
@@ -259,7 +252,7 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 .glow{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);width:120px;height:20px;background:radial-gradient(ellipse,#38BDF820 0%,transparent 70%);border-radius:50%;animation:pulse 3s ease-in-out infinite}
 @keyframes pulse{0%,100%{transform:translateX(-50%) scale(1);opacity:0.5}50%{transform:translateX(-50%) scale(1.2);opacity:0.8}}
 .controls{margin-top:30px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-.controls input{padding:10px 16px;border-radius:8px;border:1px solid #334155;border:1px solid #334155;background:#1E293B;color:#E2E8F0;font-size:14px;width:240px;outline:none}
+.controls input{padding:10px 16px;border-radius:8px;border:1px solid #334155;background:#1E293B;color:#E2E8F0;font-size:14px;width:240px;outline:none}
 .controls input:focus{border-color:#38BDF8}
 .controls button{padding:10px 20px;border-radius:8px;border:none;background:#38BDF8;color:#0F172A;font-weight:bold;font-size:14px;cursor:pointer;transition:background 0.2s}
 .controls button:hover{background:#7DD3FC}
@@ -337,7 +330,72 @@ setTimeout(()=>startTalking("Hello! I'm Saraha."),1000);
 </script>
 </body>
 </html>`;
-
+const TREE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Saraha Brain Tree</title><style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:#0d1117;color:#e6edf3;min-height:100vh;padding:20px}
+h1{font-size:20px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:10px}
+.brain-icon{font-size:28px}
+.refresh{font-size:12px;color:#8b949e;margin-left:auto}
+.tree{margin-left:8px}
+.branch{display:none;margin-left:20px;border-left:1px solid #30363d;padding-left:12px}
+.branch.open{display:block}
+.node{margin:4px 0}.node>div{padding:6px 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:.15s;font-size:13px}
+.node>div:hover{background:#1c2128}.node>div .arrow{transition:transform .2s;font-size:10px;width:16px}
+.node>div .arrow.open{transform:rotate(90deg)}.leaf{padding:4px 10px;font-size:12px;color:#8b949e;margin:2px 0 2px 28px}
+.leaf .label{color:#e6edf3}.badge{font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px}
+.badge.green{background:#1b4721;color:#3fb950}.badge.yellow{background:#3d2e00;color:#d29922}
+.badge.red{background:#4c1a1a;color:#f85149}.badge.blue{background:#1c3a5c;color:#58a6ff}
+.badge.purple{background:#3c1f5c;color:#bc8cff}.leaf .val{color:#58a6ff;font-weight:500}
+.loading{text-align:center;padding:40px;color:#8b949e;font-size:14px}
+.error{padding:12px;background:#4c1a1a;color:#f85149;border-radius:8px;margin:10px 0;font-size:13px}
+.bar-bg{width:100px;height:6px;background:#21262d;border-radius:3px;display:inline-block;vertical-align:middle;margin-left:6px;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;transition:width .5s}
+</style></head><body>
+<h1><span class="brain-icon">🧠</span>Saraha Brain <span class="refresh" id="t">loading...</span></h1>
+<div class="tree" id="tree"><div class="loading">Loading tree...</div></div>
+<script>
+async function load(){const t=document.getElementById('t');const tree=document.getElementById('tree');try{
+const [ph,em,cp,st,pr,ap,fb]=await Promise.all([
+fetch('/brain/phase').then(r=>r.json()),fetch('/brain/emotions').then(r=>r.json()),
+fetch('/brain/capabilities').then(r=>r.json()),fetch('/brain/stream?limit=10').then(r=>r.json()),
+fetch('/brain/proposals?limit=10').then(r=>r.json()),fetch('/brain/anti-patterns?limit=10').then(r=>r.json()),
+fetch('/brain/feedback').then(r=>r.json())
+]);
+const p=ph.phase||'?',en=ph.energy||0,h=em.emotions||{},et=h.energetic||0,it=h.intelligent||0,hp=h.happy||0,b=h.bad||0;
+const hc=em.confidence||0;const tools=cp?.features?.tools||[];const caps=cp?.features||{};
+const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries||[];
+const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/m*100)+'%;background:'+c+'"></div></div>';
+let html='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#9889; Status</span></div><div class="branch">'+
+'<div class="leaf"><span class="label">Phase:</span> <span class="val">'+p+'</span></div>'+
+'<div class="leaf"><span class="label">Energy:</span> '+en+'%'+bar(en,100,'#3fb950')+'</div>'+
+'<div class="leaf"><span class="label">Emotions:</span> <span class="badge green">&#128522;'+hp+'</span> <span class="badge red">&#128545;'+b+'</span> <span class="badge blue">&#9889;'+et+'</span> <span class="badge purple">&#129504;'+it+'</span></div>'+
+'<div class="leaf"><span class="label">Confidence:</span> '+hc+'%'+bar(hc,100,'#58a6ff')+'</div></div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128736; Tools ('+tools.length+')</span></div><div class="branch">';
+for(const t of tools)html+='<div class="leaf"><span class="badge blue">&#9889;</span> <span class="val">'+t+'</span></div>';
+html+='</div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#127919; Capabilities</span></div><div class="branch">';
+for(const[k,v]of Object.entries(caps)){if(k==='tools')continue;html+='<div class="leaf"><span class="label">'+k+':</span> <span class="val">'+(typeof v==='boolean'?(v?'&#10003;':'&#10007;'):v)+'</span></div>'}
+html+='</div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#127754; Recent Evolutions ('+sts.length+')</span></div><div class="branch">';
+for(const s of sts){const c=s.content||'';html+='<div class="leaf">&#128527; <span class="val">'+c.slice(0,70)+(c.length>70?'...':'')+'</span> <span class="badge '+(s.mood==='bad'?'red':s.mood==='happy'?'green':s.mood==='curious'?'yellow':'blue')+'">'+s.source+'</span></div>'}
+html+='</div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128196; Proposals ('+pros.length+')</span></div><div class="branch">';
+for(const s of pros){const c=s.title||'';html+='<div class="leaf"><span class="badge '+(s.status==='executed'?'green':s.status==='approved'?'blue':s.status==='pending'?'yellow':'red')+'">'+s.status+'</span> <span class="val">'+c.slice(0,60)+(c.length>60?'...':'')+'</span></div>'}
+html+='</div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128027; Anti-Patterns ('+ants.length+')</span></div><div class="branch">';
+for(const s of ants)html+='<div class="leaf">&#9888; <span class="val">'+(s.pattern||'').slice(0,60)+'</span> <span class="badge red">x'+s.count+'</span></div>';
+if(!ants.length)html+='<div class="leaf">None recorded</div>';
+html+='</div></div>';
+html+='<div class="node"><div onclick="toggle(this)"><span class="arrow">&#9654;</span><span>&#128200; Feedback</span></div><div class="branch">'+
+'<div class="leaf">Approvals (24h): <span class="val">'+(fb.approvals24h||0)+'</span></div>'+
+'<div class="leaf">Denials (24h): <span class="val">'+(fb.denials24h||0)+'</span></div>'+
+'<div class="leaf">Total evolutions: <span class="val">'+(fb.evolutionCount||0)+'</span></div>'+
+'<div class="leaf">Kill switch: <span class="val">'+(fb.killSwitch?'ON':'OFF')+'</span></div></div></div>';
+tree.innerHTML=html;t.textContent='Updated '+new Date().toLocaleTimeString();
+}catch(e){tree.innerHTML='<div class="error">Failed to load: '+e.message+'</div>'}setTimeout(load,15000)}
+function toggle(el){const arrow=el.querySelector('.arrow');const branch=el.parentElement.querySelector('.branch');if(branch){branch.classList.toggle('open');if(arrow)arrow.classList.toggle('open')}}
+load();
+</script></body></html>`;
 async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
     try {
@@ -359,138 +417,6 @@ async function webSearch(env, query) {
     if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
   } catch {}
   return "No results for: " + query;
-}
-
-async function web_fetch(env, url) {
-  if (!url) return JSON.stringify({ error: "URL is required" });
-
-  try {
-    // Fetch the HTML content
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; Saraha-Brain/1.0)" },
-      signal: AbortSignal.timeout(15000)
-    });
-
-    if (!resp.ok) {
-      return JSON.stringify({
-        error: `HTTP error ${resp.status}`,
-        status: resp.status,
-        url: url
-      });
-    }
-
-    const html = await resp.text();
-
-    // Parse HTML to extract title and main content
-    const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, '').trim() : "Untitled";
-
-    // Extract main content using readability algorithm
-    const mainContent = extractMainContent(html);
-
-    // Extract metadata
-    const descriptionMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
-    const description = descriptionMatch ? descriptionMatch[1] : "";
-
-    const keywordsMatch = html.match(/<meta\s+name=["']keywords["']\s+content=["']([^"']*)["']/i);
-    const keywords = keywordsMatch ? keywordsMatch[1] : "";
-
-    const canonicalMatch = html.match(/<link\s+rel=["']canonical["']\s+href=["']([^"']*)["']/i);
-    const canonicalUrl = canonicalMatch ? canonicalMatch[1] : url;
-
-    // Generate summary using LLM
-    let summary = "";
-    if (env.BUDDHI_DWAR && env.BRAIN_KEY) {
-      try {
-        const summaryPrompt = `Summarize the following web page content in 2-3 concise sentences. Focus on the main points and key information:
-
-Title: ${title}
-Content: ${mainContent.substring(0, 2000)}
-
-Summary:`;
-
-        const summaryResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${env.BRAIN_KEY}`
-          },
-          body: JSON.stringify({
-            model: "auto",
-            messages: [
-              { role: "system", content: "You are a helpful assistant that summarizes web content concisely." },
-              { role: "user", content: summaryPrompt }
-            ],
-            temperature: 0.3,
-            max_tokens: 200
-          })
-        });
-
-        if (summaryResp.ok) {
-          const summaryData = await summaryResp.json();
-          summary = summaryData.choices?.[0]?.message?.content || "";
-        }
-      } catch (e) {
-        console.error("Summary generation failed:", e);
-      }
-    }
-
-    // Return structured data
-    return JSON.stringify({
-      ok: true,
-      metadata: {
-        url: canonicalUrl,
-        title: title,
-        description: description,
-        keywords: keywords ? keywords.split(',').map(k => k.trim()) : [],
-        content_type: resp.headers.get('content-type') || 'text/html',
-        status_code: resp.status
-      },
-      content: {
-        title: title,
-        main_content: mainContent,
-        summary: summary
-      },
-      stats: {
-        word_count: mainContent.split(/\s+/).length,
-        char_count: mainContent.length,
-        extracted_at: new Date().toISOString()
-      }
-    }, null, 2);
-  } catch (error) {
-    return JSON.stringify({
-      error: error.message,
-      url: url
-    });
-  }
-}
-
-// Helper function to extract main content from HTML
-function extractMainContent(html) {
-  // Remove script and style tags
-  let content = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  content = content.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-
-  // Try to find main content using common selectors
-  const mainSelectors = [
-    'article', 'main', 'div[role="main"]', 'div.content',
-    'div#content', 'div#main', 'div.post', 'div.entry-content',
-    'body'
-  ];
-
-  for (const selector of mainSelectors) {
-    const match = content.match(new RegExp(`<${selector}[^>]*>([\\s\\S]*?)<\\/${selector}>`, 'i'));
-    if (match) {
-      content = match[1];
-      break;
-    }
-  }
-
-  // Clean up HTML tags and normalize whitespace
-  content = content.replace(/<[^>]*>/g, ' ');
-  content = content.replace(/\s+/g, ' ').trim();
-
-  return content.substring(0, 10000); // Limit to 10k characters
 }
 
 async function githubRead(env, input) {
@@ -534,494 +460,6 @@ async function githubWrite(env, input) {
   } catch (e) { return "GitHub error: " + e.message; }
 }
 
-async function github_list(db, ownerRepo, path = '') {
-  const [owner, repo] = ownerRepo.split('/');
-  try {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    const res = await fetch(url, {
-      headers: { 'Authorization': `token ${Deno.env.get('GITHUB_PAT')}` }
-    });
-    if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-    const items = await res.json();
-    return JSON.stringify(items.map(item => ({
-      name: item.name,
-      path: item.path,
-      type: item.type,
-      size: item.size,
-      url: item.url,
-      html_url: item.html_url
-    })));
-  } catch (e) {
-    return JSON.stringify({ error: e.message });
-  }
-}
-
-async function data_processor(env, input) {
-  try {
-    const { action, data, options } = typeof input === 'string' ? JSON.parse(input) : input;
-
-    if (action === 'parse_csv') {
-      // Parse CSV data
-      const lines = data.split('\n');
-      if (lines.length < 2) return JSON.stringify({ error: "CSV must have at least header and one row" });
-
-      // Parse headers
-      const headers = lines[0].split(',').map(h => h.trim());
-      const result = [];
-
-      // Parse rows
-      for (let i = 1; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-
-        const row = {};
-        const values = lines[i].split(',');
-        for (let j = 0; j < headers.length; j++) {
-          row[headers[j]] = values[j] ? values[j].trim() : '';
-        }
-        result.push(row);
-      }
-
-      return JSON.stringify({
-        ok: true,
-        headers: headers,
-        rows: result,
-        row_count: result.length,
-        stats: {
-          column_count: headers.length,
-          memory_used: JSON.stringify(result).length
-        }
-      });
-    }
-
-    else if (action === 'analyze') {
-      // Basic statistical analysis
-      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-      if (!parsed || !parsed.rows || !parsed.column) {
-        return JSON.stringify({ error: "Invalid data format for analysis. Expected {rows: [...], column: 'column_name'}" });
-      }
-
-      const column = parsed.column;
-      const values = parsed.rows.map(row => parseFloat(row[column])).filter(v => !isNaN(v));
-
-      if (values.length === 0) {
-        return JSON.stringify({ error: `No valid numeric values found in column '${column}'` });
-      }
-
-      // Calculate statistics
-      const sum = values.reduce((a, b) => a + b, 0);
-      const mean = sum / values.length;
-
-      const sorted = [...values].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-
-      const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
-      const variance = squaredDiffs.reduce((a, b) => a + b, 0) / values.length;
-      const stddev = Math.sqrt(variance);
-
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-
-      return JSON.stringify({
-        ok: true,
-        analysis: {
-          column: column,
-          count: values.length,
-          mean: mean,
-          median: median,
-          stddev: stddev,
-          min: min,
-          max: max,
-          range: max - min,
-          sum: sum
-        },
-        sample: {
-          first_5: parsed.rows.slice(0, 5).map(row => row[column]),
-          last_5: parsed.rows.slice(-5).map(row => row[column])
-        }
-      });
-    }
-
-    else if (action === 'detect_structure') {
-      // Table structure detection
-      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-      if (!parsed || !parsed.rows) {
-        return JSON.stringify({ error: "Invalid data format for structure detection. Expected {rows: [...] }" });
-      }
-
-      if (parsed.rows.length === 0) {
-        return JSON.stringify({ error: "No rows to analyze" });
-      }
-
-      // Get all column names from first row
-      const sampleRow = parsed.rows[0];
-      const columns = Object.keys(sampleRow);
-
-      // Analyze data types for each column
-      const columnAnalysis = {};
-      for (const col of columns) {
-        const values = parsed.rows.map(row => row[col]).filter(v => v !== undefined && v !== null && v !== '');
-
-        if (values.length === 0) {
-          columnAnalysis[col] = { type: 'empty', sample: null };
-          continue;
-        }
-
-        // Check if all values are numeric
-        const allNumeric = values.every(v => !isNaN(parseFloat(v)) && isFinite(v));
-        if (allNumeric) {
-          columnAnalysis[col] = { type: 'numeric', sample: values.slice(0, 3) };
-          continue;
-        }
-
-        // Check if values look like dates
-        const dateLike = values.every(v => /^\d{4}-\d{2}-\d{2}/.test(v));
-        if (dateLike) {
-          columnAnalysis[col] = { type: 'date', sample: values.slice(0, 3) };
-          continue;
-        }
-
-        // Default to string
-        columnAnalysis[col] = {
-          type: 'string',
-          sample: values.slice(0, 3).map(v => v.substring(0, 50)),
-          unique_count: new Set(values).size
-        };
-      }
-
-      return JSON.stringify({
-        ok: true,
-        structure: {
-          columns: columns,
-          row_count: parsed.rows.length,
-          column_count: columns.length,
-          column_types: columnAnalysis
-        },
-        suggestions: {
-          primary_key: columns.find(col => columnAnalysis[col].type === 'numeric') || columns[0],
-          potential_numeric_columns: columns.filter(col => columnAnalysis[col].type === 'numeric'),
-          potential_date_columns: columns.filter(col => columnAnalysis[col].type === 'date')
-        }
-      });
-    }
-
-    else if (action === 'filter_sort') {
-      // Data filtering and sorting
-      const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-      if (!parsed || !parsed.rows) {
-        return JSON.stringify({ error: "Invalid data format for filtering/sorting. Expected {rows: [...], filters: {...}, sort_by: 'column'}" });
-      }
-
-      let result = [...parsed.rows];
-
-      // Apply filters
-      if (parsed.filters) {
-        for (const [column, value] of Object.entries(parsed.filters)) {
-          result = result.filter(row => {
-            const cellValue = row[column];
-            if (value === null || value === undefined) return cellValue === '' || cellValue === null || cellValue === undefined;
-
-            if (typeof value === 'object' && value.op) {
-              // Handle comparison operators
-              const numericValue = parseFloat(value.value);
-              if (isNaN(numericValue)) return false;
-
-              switch (value.op) {
-                case '>': return parseFloat(cellValue) > numericValue;
-                case '<': return parseFloat(cellValue) < numericValue;
-                case '>=': return parseFloat(cellValue) >= numericValue;
-                case '<=': return parseFloat(cellValue) <= numericValue;
-                case '!=': return cellValue != value.value;
-                default: return cellValue === value.value;
-              }
-            }
-
-            return cellValue === value;
-          });
-        }
-      }
-
-      // Apply sorting
-      if (parsed.sort_by) {
-        const sortColumn = parsed.sort_by;
-        const sortDirection = parsed.sort_direction || 'asc';
-
-        result.sort((a, b) => {
-          const valA = a[sortColumn];
-          const valB = b[sortColumn];
-
-          if (valA === valB) return 0;
-          if (sortDirection === 'desc') {
-            return valA > valB ? -1 : 1;
-          }
-          return valA < valB ? -1 : 1;
-        });
-      }
-
-      return JSON.stringify({
-        ok: true,
-        original_count: parsed.rows.length,
-        filtered_count: result.length,
-        filtered_rows: result,
-        changes: {
-          removed: parsed.rows.length - result.length,
-          percentage_removed: ((parsed.rows.length - result.length) / parsed.rows.length * 100).toFixed(1) + '%'
-        }
-      });
-    }
-
-    else {
-      return JSON.stringify({ error: `Unknown action: ${action}. Supported actions: parse_csv, analyze, detect_structure, filter_sort` });
-    }
-
-  } catch (error) {
-    return JSON.stringify({
-      error: error.message,
-      input: input
-    });
-  }
-}
-
-async function code_analyzer(env, input) {
-  try {
-    const { path, analysis_type } = typeof input === 'string' ? JSON.parse(input) : input;
-
-    if (!path || !analysis_type) {
-      return JSON.stringify({
-        ok: false,
-        error: "Both 'path' and 'analysis_type' parameters are required",
-        required: { path: "string", analysis_type: "complexity|metrics|duplication" }
-      });
-    }
-
-    // Read the code file
-    const codeResult = await githubRead(env, path);
-    if (typeof codeResult !== 'string' || codeResult.startsWith("GitHub error")) {
-      return JSON.stringify({
-        ok: false,
-        error: "Failed to read code file: " + codeResult,
-        path: path
-      });
-    }
-
-    const code = codeResult;
-    const findings = [];
-    const metrics = {
-      lines_of_code: code.split('\n').length,
-      file_size: code.length,
-      analysis_timestamp: new Date().toISOString()
-    };
-
-    // Store analysis results in database
-    await env.DB.prepare("INSERT INTO code_analysis (tool, path, analysis_type, metrics, issues) VALUES (?1, ?2, ?3, ?4, ?5)")
-      .bind("code_analyzer", path, analysis_type, JSON.stringify(metrics), JSON.stringify(findings))
-      .run();
-
-    if (analysis_type === 'complexity') {
-      // Analyze cyclomatic complexity
-      const functions = extractFunctions(code);
-      const complexFunctions = [];
-
-      for (const func of functions) {
-        const complexity = calculateCyclomaticComplexity(func.body);
-        if (complexity > 10) {
-          complexFunctions.push({
-            function_name: func.name,
-            complexity: complexity,
-            start_line: func.startLine,
-            end_line: func.endLine,
-            issues: ["High cyclomatic complexity (>10)"],
-            suggestions: [
-              `Consider breaking down function '${func.name}' into smaller, focused functions`,
-              `Extract complex conditional logic into separate helper functions`,
-              `Use early returns to reduce nesting depth`
-            ]
-          });
-        }
-      }
-
-      findings.push(...complexFunctions);
-      metrics.function_count = functions.length;
-      metrics.complex_functions = complexFunctions.length;
-      metrics.average_complexity = functions.reduce((sum, f) => sum + calculateCyclomaticComplexity(f.body), 0) / functions.length;
-
-    } else if (analysis_type === 'metrics') {
-      // Calculate code metrics
-      const functions = extractFunctions(code);
-      const metricsData = {
-        total_functions: functions.length,
-        average_function_length: functions.reduce((sum, f) => sum + f.body.split('\n').length, 0) / functions.length,
-        max_function_length: Math.max(...functions.map(f => f.body.split('\n').length)),
-        comment_ratio: calculateCommentRatio(code),
-        function_metrics: functions.map(f => ({
-          name: f.name,
-          lines: f.body.split('\n').length,
-          parameters: countParameters(f.signature),
-          complexity: calculateCyclomaticComplexity(f.body)
-        }))
-      };
-
-      Object.assign(metrics, metricsData);
-      findings.push({
-        type: "metrics_summary",
-        data: metricsData
-      });
-
-    } else if (analysis_type === 'duplication') {
-      // Detect duplicate code
-      const duplicates = detectDuplicateFunctions(code);
-      findings.push(...duplicates);
-      metrics.duplicate_functions = duplicates.length;
-      metrics.duplicate_blocks = duplicates.reduce((sum, d) => sum + d.instances.length, 0);
-    }
-
-    // Update database with findings
-    await env.DB.prepare("UPDATE code_analysis SET metrics = ?1, issues = ?2 WHERE tool = 'code_analyzer' AND path = ?3 AND analysis_type = ?4")
-      .bind(JSON.stringify(metrics), JSON.stringify(findings), path, analysis_type)
-      .run();
-
-    return JSON.stringify({
-      ok: true,
-      path: path,
-      analysis_type: analysis_type,
-      metrics: metrics,
-      findings: findings,
-      summary: {
-        total_findings: findings.length,
-        critical_issues: findings.filter(f => f.issues && f.issues.some(i => i.includes("High") || i.includes("critical"))).length,
-        suggestions_count: findings.reduce((sum, f) => sum + (f.suggestions ? f.suggestions.length : 0), 0)
-      }
-    });
-
-  } catch (error) {
-    return JSON.stringify({
-      ok: false,
-      error: error.message,
-      stack: error.stack,
-      input: input
-    });
-  }
-}
-
-// Helper functions for code analysis
-function extractFunctions(code) {
-  const functionRegex = /(async\s+)?function\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*\(([^)]*)\)\s*\{([\s\S]*?)\}/g;
-  const arrowFunctionRegex = /(const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*=\s*(\([^)]*\)|[a-zA-Z_$][0-9a-zA-Z_$]*)\s*=>\s*\{([\s\S]*?)\}/g;
-
-  const functions = [];
-  let match;
-
-  // Extract regular functions
-  while ((match = functionRegex.exec(code)) !== null) {
-    functions.push({
-      type: match[1] ? 'async_function' : 'function',
-      name: match[2],
-      parameters: match[3],
-      signature: match[1] ? `async function ${match[2]}(${match[3]})` : `function ${match[2]}(${match[3]})`,
-      body: match[4],
-      startLine: code.substring(0, match.index).split('\n').length,
-      endLine: code.substring(0, functionRegex.lastIndex).split('\n').length
-    });
-  }
-
-  // Extract arrow functions
-  while ((match = arrowFunctionRegex.exec(code)) !== null) {
-    functions.push({
-      type: 'arrow_function',
-      name: match[2],
-      parameters: match[3],
-      signature: `${match[2]} = ${match[3]} =>`,
-      body: match[4],
-      startLine: code.substring(0, match.index).split('\n').length,
-      endLine: code.substring(0, arrowFunctionRegex.lastIndex).split('\n').length
-    });
-  }
-
-  return functions;
-}
-
-function calculateCyclomaticComplexity(code) {
-  // Count decision points: if, else if, switch, for, while, do, catch, ternary, logical operators
-  const complexityPoints = code
-    .replace(/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/g, '') // Remove comments
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0)
-    .reduce((count, line) => {
-      // Count if, else if, switch, for, while, do, catch
-      const ifCount = (line.match(/\b(if|else\s+if|switch)\b/g) || []).length;
-      const loopCount = (line.match(/\b(for|while|do)\b/g) || []).length;
-      const catchCount = (line.match(/\bcatch\b/g) || []).length;
-
-      // Count ternary operators
-      const ternaryCount = (line.match(/\?/g) || []).length;
-
-      // Count logical operators
-      const logicalCount = (line.match(/\b(and|or|&&|\|\|)\b/g) || []).length;
-
-      return count + ifCount + loopCount + catchCount + ternaryCount + logicalCount;
-    }, 1); // Start with 1 for the base complexity
-
-  return complexityPoints;
-}
-
-function countParameters(parameters) {
-  if (!parameters || parameters.trim() === '') return 0;
-  return parameters.split(',').filter(p => p.trim() !== '').length;
-}
-
-function calculateCommentRatio(code) {
-  const totalLines = code.split('\n').length;
-  if (totalLines === 0) return 0;
-
-  const commentLines = (code.match(/^\s*\/\/.*$|^\s*\/\*[\s\S]*?\*\//gm) || []).length;
-  return commentLines / totalLines;
-}
-
-function detectDuplicateFunctions(code) {
-  const functions = extractFunctions(code);
-  const duplicates = [];
-
-  // Compare function bodies (simplified approach)
-  for (let i = 0; i < functions.length; i++) {
-    for (let j = i + 1; j < functions.length; j++) {
-      if (functions[i].body.trim() === functions[j].body.trim()) {
-        // Found a duplicate
-        const existing = duplicates.find(d => d.body === functions[i].body.trim());
-        if (existing) {
-          existing.instances.push({
-            function_name: functions[j].name,
-            start_line: functions[j].startLine
-          });
-        } else {
-          duplicates.push({
-            body: functions[i].body.trim(),
-            function_name: functions[i].name,
-            start_line: functions[i].startLine,
-            instances: [
-              {
-                function_name: functions[i].name,
-                start_line: functions[i].startLine
-              },
-              {
-                function_name: functions[j].name,
-                start_line: functions[j].startLine
-              }
-            ],
-            issues: ["Duplicate function implementation"],
-            suggestions: [
-              `Consider consolidating duplicate functions '${functions[i].name}' and '${functions[j].name}' into a single function`,
-              `Use a shared utility function instead of duplicating code`
-            ]
-          });
-        }
-      }
-    }
-  }
-
-  return duplicates;
-}
-
 async function runTool(env, actionId, tool, input) {
   const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
@@ -1045,10 +483,6 @@ async function runTool(env, actionId, tool, input) {
     const data = await webSearch(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
-  if (tool === "web_fetch") {
-    const data = await web_fetch(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
-  }
   if (tool === "github_read") {
     const data = await githubRead(env, input);
     return { ok: true, data: data.slice(0, 2000) };
@@ -1057,16 +491,742 @@ async function runTool(env, actionId, tool, input) {
     const data = await githubWrite(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
-  if (tool === "github_list") {
-    const data = await github_list(env.DB, input);
-    return { ok: true, data: data.slice(0, 2000) };
+  return { ok: false, error: "Tool not implemented: " + tool };
+}
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now'))").run(); } } catch {}
+
+    const json = (body, status = 200) => new Response(JSON.stringify(body), {
+      status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    });
+
+    const logStep = async (aid, step, content, model, tokens) => {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1,?2,?3,?4,?5)").bind(aid, step, content, model||null, tokens||null).run(); } catch {}
+    };
+
+    if (url.pathname === "/avatar") {
+      return new Response(AVATAR_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
+    if (url.pathname === "/status") {
+      let dbOk = false;
+      try { await env.DB.prepare("SELECT 1").run(); dbOk = true; } catch {}
+      return json({ alive: true, db: dbOk, version: "1.0.0" });
+    }
+
+    if (url.pathname === "/think" && req.method === "POST") {
+      try {
+        let input;
+        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
+        if (!input) return json({ error: "input required" }, 400);
+        await setBusyUntil(env.DB, 90);
+
+        const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
+        const aid = r.results[0].id;
+        await logStep(aid, "thalamus", `Classified: ${classify(input)}`);
+
+        // Gather context: identity, emotions, energy, memories
+        const rows = await env.DB.prepare("SELECT key, value FROM identity LIMIT 20").all();
+        const identity = {};
+        for (const r of rows.results) identity[r.key] = r.value;
+        const emotions = await getEmotions(env.DB);
+        const reg = await getRegulator(env.DB);
+        const memories = await recall(env.DB, 5);
+
+        const mood = describeMood(emotions, reg.energy);
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+        const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
+        if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
+        await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
+
+        const body = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
+        await logStep(aid, "planner", `Calling ${body.model}`);
+        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          await updateEmotion(env.DB, "bad", 1);
+          await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
+        }
+        const data = await resp.json();
+        let content = data.choices?.[0]?.message?.content || "";
+        let tokens = data.usage?.total_tokens || 0;
+        let finalModel = data.model;
+        await logStep(aid, "executor", `Got response (${content.length} chars)`, finalModel, tokens);
+
+        if (content.includes("TOOL:")) {
+          const toolStart = content.indexOf("TOOL:");
+          const afterTool = content.slice(toolStart + 5);
+          const parts = afterTool.split(":");
+          const tool = parts[0].trim();
+          const toolInput = parts.slice(1).join(":").trim();
+          await logStep(aid, "planner", `Tool requested: ${tool}(${toolInput})`);
+          const result = await runTool(env, aid, tool, toolInput);
+          if (result.pending) {
+            content = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
+            await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
+          } else if (!result.ok) {
+            content = `I tried to use ${tool} but got: ${result.error}`;
+          } else {
+            const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+              method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+            });
+            if (followResp.ok) {
+              const followData = await followResp.json();
+              content = followData.choices?.[0]?.message?.content || content;
+              tokens += followData.usage?.total_tokens || 0;
+              finalModel = followData.model;
+              if (followData.choices && !followData.choices[0]?.message?.content) {
+                await logStep(aid, "executor", `Follow-up: no content in response: ${JSON.stringify(followData).slice(0,300)}`, finalModel, tokens);
+              }
+            } else {
+              await logStep(aid, "executor", `Follow-up LLM returned ${followResp.status}`, finalModel, tokens);
+            }
+            await logStep(aid, "executor", `Tool executed: ${tool}, final ${content.length} chars`, finalModel, tokens);
+          }
+        }
+
+        await updateEmotion(env.DB, "happy", 1);
+        await updateEmotion(env.DB, "energetic", -1);
+        await adjustEnergy(env.DB, -5);
+        await storeThought(env.DB, `User asked: ${input} - I replied: ${content.slice(0, 200)}`);
+
+        await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
+        await logStep(aid, "result", content, finalModel, tokens);
+        return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    if (url.pathname === "/evolve" && req.method === "POST") {
+      return json({ message: "Evolution runs automatically every idle cycle. Brain generates self-improvement proposals (prompts, tools, config, memory, emotions) and applies them. Use /brain/prompts to see current changes." });
+    }
+
+    if (url.pathname === "/brain/emotions") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      return json({ emotions, energy: reg.energy, confidence: reg.confidence });
+    }
+
+    if (url.pathname === "/brain/activity") {
+      const { results } = await env.DB.prepare("SELECT * FROM actions ORDER BY created_at DESC LIMIT 20").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/logs") {
+      const actionId = url.searchParams.get("action_id");
+      if (actionId) {
+        const { results } = await env.DB.prepare("SELECT * FROM brain_logs WHERE action_id=?1 ORDER BY id").bind(parseInt(actionId)).all();
+        return json({ entries: results });
+      }
+      const { results } = await env.DB.prepare("SELECT * FROM brain_logs ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/monitor/api/pending") {
+      const p = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC").all();
+      const h = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status!='pending' ORDER BY decided_at DESC LIMIT 20").all();
+      return json({ pending: p.results, history: h.results });
+    }
+    if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      const a = await env.DB.prepare("SELECT * FROM actions WHERE id=?1").bind(row.action_id).all();
+      const action = a.results[0];
+      if (!action) return json({ error: "action not found" }, 404);
+      let toolResult = "Tool not implemented: " + row.tool;
+      if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
+      else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
+      else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const memories = await recall(env.DB, 5);
+      const mood = describeMood(emotions, reg.energy);
+      const system = `You are Saraha. ${mood} ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
+      const userInput = action.input || "Process my request";
+      const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
+      const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+      });
+      let content = toolResult.slice(0, 500);
+      let tokens = 0;
+      if (followResp.ok) {
+        const followData = await followResp.json();
+        content = followData.choices?.[0]?.message?.content || content;
+        tokens = followData.usage?.total_tokens || 0;
+      }
+      await env.DB.prepare("UPDATE pending_approvals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, tokens) VALUES (?1,'monitor',?2,?3)").bind(row.action_id, `Approval #${id} - ${row.tool} done: ${content.slice(0,100)}`, tokens).run();
+      await storeStreamThought(env.DB, `${row.tool} approved and executed: ${content.slice(0,100)}`, "neutral", "approve");
+      await updateEmotion(env.DB, "happy", 1);
+      await updateEmotion(env.DB, "energetic", -1);
+      await adjustEnergy(env.DB, -5);
+      return json({ ok: true, result: content });
+    }
+    if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      await env.DB.prepare("UPDATE pending_approvals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='denied' WHERE id=?1").bind(row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' denied for '||?3)").bind(row.action_id, id, row.tool).run();
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/brain/stream") {
+      const { results } = await env.DB.prepare("SELECT * FROM thought_stream ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/phase") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      return json({ phase, emotions, energy: reg.energy });
+    }
+
+    if (url.pathname === "/brain/capabilities") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      const lastAct = await env.DB.prepare("SELECT type, status, created_at FROM actions ORDER BY created_at DESC LIMIT 1").all();
+      const lastActivity = lastAct.results[0] ? lastAct.results[0].type + " (" + lastAct.results[0].status + ")" : "none";
+      return json({
+        name: "Saraha Core",
+        description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
+        version: "1.0.0",
+        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write"], avatar: true, health: true, task_scheduling: true, heal: true },
+        status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
+        endpoints: {
+          activity: { method: "GET", path: "/brain/activity" },
+          logs: { method: "GET", path: "/brain/logs" },
+          proposals: { method: "GET", path: "/brain/proposals" },
+          phase: { method: "GET", path: "/brain/phase" },
+          emotions: { method: "GET", path: "/brain/emotions" },
+          knowledge: { method: "GET", path: "/brain/knowledge" },
+          stream: { method: "GET", path: "/brain/stream" },
+          wake: { method: "POST", path: "/brain/wake" },
+          sleep: { method: "POST", path: "/brain/sleep" },
+          avatar: { method: "GET", path: "/avatar" },
+          diag: { method: "GET", path: "/brain/diag" },
+          tree: { method: "GET", path: "/brain/tree" }
+        }
+      });
+    }
+
+    if (url.pathname === "/brain/override") {
+      const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+      if (!ov.results[0]?.value) return json({ active: false });
+      const o = JSON.parse(ov.results[0].value);
+      return json({ active: true, phase: o.phase, until: o.until, remainingMs: o.until - Date.now() });
+    }
+
+    if (url.pathname === "/brain/wake" && req.method === "POST") {
+      let body, duration = 60;
+      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
+      const until = Date.now() + duration * 60 * 1000;
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "awake", until })).run();
+      return json({ ok: true, phase: "awake", duration_minutes: duration, until });
+    }
+
+    if (url.pathname === "/brain/sleep" && req.method === "POST") {
+      let body, duration = 60;
+      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
+      const until = Date.now() + duration * 60 * 1000;
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "sleeping", until })).run();
+      return json({ ok: true, phase: "sleeping", duration_minutes: duration, until });
+    }
+
+    if (url.pathname === "/brain/clear-override" && req.method === "POST") {
+      await env.DB.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      return json({ ok: true, cleared: true });
+    }
+
+    if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
+      const executed = await env.DB.prepare("SELECT p.id, p.title FROM proposals p LEFT JOIN authority_receipts r ON r.proposal_id=p.id AND r.outcome='success' WHERE p.status='executed' AND (r.approved_by IS NULL OR r.approved_by NOT LIKE '%implemented%') GROUP BY p.id ORDER BY p.id DESC LIMIT 10").all();
+      const ids = executed.results.map(p => p.id);
+      if (ids.length) {
+        for (const id of ids) {
+          await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL WHERE id=?1").bind(id).run();
+        }
+      }
+      return json({ ok: true, reset_count: ids.length, proposals: executed.results.map(p => ({ id: p.id, title: (p.title||"").slice(0,60) })) });
+    }
+
+    if (url.pathname === "/brain/knowledge") {
+      const q = url.searchParams.get("q");
+      const cat = url.searchParams.get("category");
+      let results;
+      if (q) {
+        results = await searchKnowledge(env.DB, q);
+      } else if (cat) {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge WHERE category=?1 ORDER BY key LIMIT 20").bind(cat).all();
+        results = r.results;
+      } else {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 50").all();
+        results = r.results;
+      }
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/diag") {
+      const busy = await getBusyUntil(env.DB);
+      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
+      return json({ busy, now: Date.now(), diff: Date.now() - busy, lastCycle: lr.results[0]?.value || null });
+    }
+    if (url.pathname === "/brain/proposals/reset-all") {
+      const r = await env.DB.prepare("SELECT id FROM proposals WHERE status='executed'").all();
+      for (const p of r.results) {
+        await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(p.id).run();
+        await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(p.id).run();
+      }
+      return json({ ok: true, count: r.results.length });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/brain/proposals/reset/")) {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(id).run();
+      await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(id).run();
+      return json({ ok: true, id });
+    }
+    if (url.pathname === "/brain/proposals" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!body.title || !body.what_diff) return json({ error: "title and what_diff required" }, 400);
+      await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,status) VALUES (?1,?2,?3,?4,'approved')").bind(body.title, body.what_diff, body.how_diff || "", body.resource_type || "tool_code").run();
+      const r2 = await env.DB.prepare("SELECT MAX(id) as id FROM proposals").all();
+      const id = r2.results[0]?.id;
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(id).run();
+      return json({ ok: true, id });
+    }
+    if (url.pathname === "/brain/proposals") {
+      const { results } = await env.DB.prepare("SELECT * FROM proposals ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname.startsWith("/brain/proposals/")) {
+      const id = parseInt(url.pathname.split("/")[3]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1").bind(id).all();
+      if (!p.results.length) return json({ error: "not found" }, 404);
+      const r = await env.DB.prepare("SELECT * FROM authority_receipts WHERE proposal_id=?1 ORDER BY created_at DESC").bind(id).all();
+      return json({ proposal: p.results[0], receipts: r.results });
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/approve/")) {
+      try {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id, approved_by, outcome) VALUES (?1,'human','pending')").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/deny/")) {
+      try {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    if (url.pathname === "/brain/authority-receipts") {
+      const { results } = await env.DB.prepare("SELECT r.*, p.title as proposal_title FROM authority_receipts r LEFT JOIN proposals p ON r.proposal_id=p.id ORDER BY r.created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/anti-patterns") {
+      const { results } = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/feedback") {
+      const hApp = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE approved_by='human' AND outcome='success' AND created_at > datetime('now','-1 day')").all();
+      const hDen = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day')").all();
+      const evo = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE outcome='success'").all();
+      const kill = await env.DB.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+      const mc = await env.DB.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+      const recent = await env.DB.prepare("SELECT id, title, status, decided_at FROM proposals WHERE decided_at IS NOT NULL ORDER BY decided_at DESC LIMIT 5").all();
+      return json({
+        approvals24h: hApp.results[0]?.c || 0,
+        denials24h: hDen.results[0]?.c || 0,
+        evolutionCount: evo.results[0]?.c || 0,
+        killSwitch: kill.results[0]?.value === "true",
+        masterCron: mc.results[0]?.value ? { active: true, interval: parseInt(mc.results[0].value) } : { active: false },
+        recentDecisions: recent.results
+      });
+    }
+
+    if (url.pathname === "/brain/prompts") {
+      const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+      const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
+      const changeRows = await env.DB.prepare("SELECT key, value FROM identity WHERE key LIKE 'evolution_log:%' ORDER BY key").all();
+      const changes = changeRows.results.map(r => ({ id: parseInt(r.key.split(":")[1]), ...JSON.parse(r.value) }));
+      return json({ base: "You are Saraha, an AI with a human brain with emotions, energy, memories, and tools.", overrides, changes });
+    }
+
+    if (url.pathname === "/brain/backup") {
+      const prev = await env.DB.prepare("SELECT value FROM identity WHERE key='prev_code'").all();
+      if (prev.results[0]?.value) return json({ content: prev.results[0].value, source: "d1_backup" });
+      const r = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }
+      });
+      if (!r.ok) return json({ error: "no backup available" }, 404);
+      return json({ content: await r.text(), source: "github_live" });
+    }
+
+    if (url.pathname === "/brain/github/read") {
+      const repo = url.searchParams.get("repo") || "richardbrownmiami-commits/saraha-brain";
+      const path = url.searchParams.get("path") || "src/index.ts";
+      const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }
+      });
+      if (!r.ok) return json({ error: "GitHub API: " + r.status }, r.status);
+      const d = await r.json();
+      return json({ sha: d.sha, content: d.content, size: d.size });
+    }
+
+    if (url.pathname === "/brain/github/write" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      const repo = body.repo || "richardbrownmiami-commits/saraha-brain";
+      const path = body.path || "src/index.ts";
+      if (!body.content) return json({ error: "content required" }, 400);
+      const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+        body: JSON.stringify({ message: body.message || "brain: github write", content: body.content, sha: body.sha })
+      });
+      const d = await r.json();
+      return json(d, r.status);
+    }
+
+    if (url.pathname === "/brain/task" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!body.type || !body.input) return json({ error: "type and input required" }, 400);
+      const r = await env.DB.prepare("INSERT INTO actions (type,status,input,created_at) VALUES (?1,'pending',?2,datetime('now'))").bind(body.type, body.input).run();
+      return json({ id: r.meta.last_row_id, status: "pending" });
+    }
+
+    if (url.pathname === "/brain/tree") {
+      return new Response(TREE_HTML, { headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" } });
+    }
+    if (url.pathname === "/brain/heal" && req.method === "POST") {
+      const { emotions, reg } = await getState(env.DB);
+      const actCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions").all()).results[0]?.c || 0;
+      const approvalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM pending_approvals WHERE status='pending'").all()).results[0]?.c || 0;
+      const proposalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const antiCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM anti_patterns").all()).results[0]?.c || 0;
+      const memCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM memories").all()).results[0]?.c || 0;
+      const learningCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM learnings").all()).results[0]?.c || 0;
+      const streamCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM thought_stream").all()).results[0]?.c || 0;
+      const lastAction = (await env.DB.prepare("SELECT type,status,created_at FROM actions ORDER BY created_at DESC LIMIT 1").all()).results[0] || null;
+      return json({ alive: true, emotions, energy: reg.energy, confidence: reg.confidence, db: { actions: actCount, pendingApprovals: approvalPending, pendingProposals: proposalPending, antiPatterns: antiCount, memories: memCount, learnings: learningCount, streamThoughts: streamCount }, lastAction });
+    }
+
+    return json({ error: "not found" }, 404);
+  },
+  async scheduled(event, env, ctx) {
+    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=datetime('now')").run(); } } catch {}
+    try {
+    const busy = await getBusyUntil(env.DB);
+    if (busy > Date.now()) return;
+    const { emotions, reg } = await getState(env.DB);
+    const phase = await getBrainPhase(env.DB, emotions, reg);
+    const stamp = Date.now();
+    await setBusyUntil(env.DB, 90);
+    await driftEmotions(env.DB);
+
+    if (phase !== "sleeping") await adjustEnergy(env.DB, 2);
+
+    if (phase === "sleeping") {
+      const mem = await recall(env.DB, 1);
+      const dream = mem !== "No memories yet." ? mem.split("\n")[0] : "peaceful darkness";
+      await storeStreamThought(env.DB, `Dreaming: ${dream.slice(0,200)}`, "peaceful", "sleep");
+      await adjustEnergy(env.DB, 25);
+      await updateEmotion(env.DB, "energetic", 2);
+      await updateEmotion(env.DB, "intelligent", 1);
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'sleep','Dream: '||?2)").bind(stamp, dream.slice(0,100)).run(); } catch {}
+      return;
+    }
+    if (reg.energy <= 20) {
+      await adjustEnergy(env.DB, 15);
+      await updateEmotion(env.DB, "energetic", 1);
+      await storeStreamThought(env.DB, "Resting... energy recovering.", "tired", "rest");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'rest','Low energy')").bind(stamp).run(); } catch {}
+      return;
+    }
+    if (await isKillSwitchActive(env.DB)) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Kill switch active')").bind(stamp).run(); } catch {}
+      return;
+    }
+    const mc = await getMasterCronInterval(env.DB);
+    if (mc > 0) {
+      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
+      if (lr.results[0]?.value) {
+        const lastMs = new Date(lr.results[0].value + "Z").getTime();
+        if (!isNaN(lastMs) && (Date.now() - lastMs < mc * 60 * 1000)) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Master cron: '||?2||'min')").bind(stamp, mc.toString()).run(); } catch {}
+          return;
+        }
+      }
+    }
+    const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 5").all();
+    for (const p of approvedP.results) {
+      const howStr = (p.how_diff || "").slice(0, 1000);
+      let implemented = false;
+      if (howStr && p.resource_type !== "prompt_change") {
+        let currentCode = "";
+        if (env.GITHUB_PAT) {
+          try {
+            const gc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+              headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+            });
+            if (gc.ok) currentCode = await gc.text();
+          } catch {}
+        }
+        const titleStr = (p.title || "").slice(0, 100);
+        const whatStr = (p.what_diff || "").slice(0, 800);
+        const implSys = "You are Saraha's code implementation engine. Output the COMPLETE modified src/index.ts file. Make the exact changes described in the proposal. Keep all existing code intact. Add new functions, modify existing ones, and wire them into runTool/isToolSafe/SEED_KNOWLEDGE as needed.";
+        const codeSlice = currentCode || "(not available)";
+        const implPrompt = "Proposal: " + titleStr + "\n\nWhat:\n" + whatStr + "\n\nHow:\n" + howStr + "\n\nCurrent src/index.ts:\n" + codeSlice + "\n\nOutput the COMPLETE modified src/index.ts file with the changes applied. All existing code must be preserved. Wire new tools into runTool(), isToolSafe, and SEED_KNOWLEDGE.";
+        try {
+          const enc = new TextEncoder();
+          const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
+          const ir = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+            method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+            body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: implSys }, { role: "user", content: implPrompt }], temperature: 0.3, max_tokens: 16384 }),
+            signal: AbortSignal.timeout(90000)
+          });
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm',?2)").bind(stamp, "#" + p.id + " status=" + ir.status).run(); } catch {}
+          if (ir.ok) {
+            const idata = await ir.json();
+            let newCode = idata.choices?.[0]?.message?.content || "";
+            newCode = newCode.replace(/```[a-z]*\n?/gi, "").trim();
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm2',?2)").bind(stamp, "#" + p.id + " len=" + newCode.length).run(); } catch {}
+            if (newCode.length > 500) {
+              let backupText = null, backupSha = null;
+              try {
+                const gR = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR.ok) backupText = await gR.text();
+                const gR2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR2.ok) { const gd = await gR2.json(); backupSha = gd.sha; }
+              } catch {}
+              const gw = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                method: "PUT",
+                headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: b64(newCode), sha: backupSha }),
+                signal: AbortSignal.timeout(15000)
+              });
+              try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_gw',?2)").bind(stamp, "#" + p.id + " status=" + gw.status).run(); } catch {}
+              if (gw.ok) {
+                let healthy = false;
+                for (let retry = 0; retry < 3 && !healthy; retry++) {
+                  if (retry > 0) await new Promise(r => setTimeout(r, 30000));
+                  try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(8000) }); healthy = h.ok; } catch {}
+                }
+                if (!healthy && backupText) {
+                  await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                    method: "PUT", headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+                    body: JSON.stringify({ message: "rollback: unhealthy after proposal #" + p.id, content: b64(backupText), sha: backupSha }),
+                    signal: AbortSignal.timeout(15000)
+                  });
+                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy proposal #'||?2)").bind(stamp, p.id.toString()).run(); } catch {}
+                  await storeStreamThought(env.DB, "Rolled back proposal #" + p.id + ": brain unhealthy after code change", "bad", "evolve");
+                } else {
+                  await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write','Implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), titleStr.slice(0,60)).run();
+                  if (backupText) {
+                    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+                  }
+                  implemented = true;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_err',?2)").bind(stamp, (e.message||e).slice(0,200)).run(); } catch {}
+        }
+      }
+      await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,?2,'success')").bind(p.id, implemented ? "human-approved+implemented" : "human-approved").run();
+      await applyEvolutionChange(env.DB, p, p.id, implemented ? "human-approved+implemented" : "human-approved");
+      if (!implemented) await storeStreamThought(env.DB, "Executed approved (meta only): " + p.title, "happy", "evolve");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3||' impl='||?4)").bind(stamp, p.id.toString(), p.title.slice(0,60), implemented ? "yes" : "no").run(); } catch {}
+      await updateEmotion(env.DB, "happy", 1);
+    }
+    if (reg.energy <= 30) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Energy too low for LLM call')").bind(stamp).run(); } catch {}
+      await adjustEnergy(env.DB, 5);
+      await updateLastCycleTime(env.DB);
+      return;
+    }
+    const lastP = await env.DB.prepare("SELECT created_at FROM proposals ORDER BY created_at DESC LIMIT 1").all();
+    if (lastP.results[0]?.created_at) {
+      const lastMin = Date.now() - new Date(lastP.results[0].created_at.replace(" ","T") + "Z").getTime();
+      if (!isNaN(lastMin) && lastMin < 300000) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Last proposal <5min ago')").bind(stamp).run(); } catch {}
+        await updateLastCycleTime(env.DB);
+        return;
+      }
+    }
+    const pendCount = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
+    const pendN = pendCount.results[0]?.c || 0;
+    let sourceCode = "";
+    const gToken = env.GITHUB_PAT;
+    try {
+      const cached = await env.DB.prepare("SELECT value FROM identity WHERE key='cached_source'").all();
+      if (cached.results[0]?.value) sourceCode = cached.results[0].value;
+    } catch {}
+    if (!sourceCode && gToken) {
+      try {
+        const sc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+          headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (sc.ok) { sourceCode = (await sc.text()).slice(0, 30000); try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cached_source',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(sourceCode).run(); } catch {} }
+      } catch {}
+    }
+    if (pendN >= 5) {
+      const old = await env.DB.prepare("SELECT id, title FROM proposals WHERE status='pending' ORDER BY created_at ASC LIMIT 3").all();
+      for (const o of old.results) {
+        await env.DB.prepare("UPDATE proposals SET status='cancelled', decided_at=datetime('now') WHERE id=?1").bind(o.id).run();
+        await storeStreamThought(env.DB, "Cancelled stale: " + o.title, "neutral", "evolve");
+      }
+      const mc = await getMasterCronInterval(env.DB);
+      if (!mc || mc < 10) {
+        await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('master_cron_minutes','10',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='10',updated_at=datetime('now')").run();
+      }
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'refine','5+ pending, cancelled '||?2||' stale, cron 10min')").bind(stamp, old.results.length.toString()).run(); } catch {}
+      await updateLastCycleTime(env.DB);
+      return;
+    }
+    const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
+    const topAntiPattern = ap.results[0] || null;
+    let topic = "";
+    const sbCtx = await searchKnowledge(env.DB, "self_improve");
+    const sbStr = sbCtx.length ? "\n\nSelf-improvement areas:\n" + sbCtx.map(r => "- " + r.key.replace("self_improve_","") + ": " + r.content).join("\n") : "";
+    if (topAntiPattern) {
+      topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
+    } else {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research','Self-improvement planning')").bind(stamp).run(); } catch {}
+    }
+    const mood = describeMood(emotions, reg.energy);
+    const memories = await recall(env.DB, 3);
+    const fbCtx = await env.DB.prepare("SELECT r.approved_by, r.outcome, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE r.created_at > datetime('now','-1 day') ORDER BY r.created_at DESC LIMIT 5").all();
+    const denCtx = await env.DB.prepare("SELECT title FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day') ORDER BY decided_at DESC LIMIT 3").all();
+    let fbStr = "";
+    if (fbCtx.results.length || denCtx.results.length) {
+      fbStr = "\nRecent user decisions:\n";
+      if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
+      if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
+    }
+    const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
+    const sys = "You are Saraha, a self-improving AI. Your purpose is to improve YOURSELF — your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code — read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
+    const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention? Consider: new tools, new capabilities, or micro-optimizations?") }], temperature: 0.7, max_tokens: 2048 }),
+      signal: AbortSignal.timeout(30000)
+    });
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'post_llm','Got response status='||?2)").bind(stamp, resp.status.toString()).run(); } catch {}
+    if (resp.ok) {
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content || "";
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'llm_diag',?2)").bind(stamp, text.slice(0,200).replace(/\n/g,"\\n")).run(); } catch {}
+      if (text.includes("TOOL:github_write:")) {
+        const input = text.slice(text.indexOf("TOOL:github_write:") + 18).split("\n")[0].trim();
+        let backupText = null, backupSha = null;
+        try {
+          const gRes = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes.ok) backupText = await gRes.text();
+          const gRes2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes2.ok) { const gd = await gRes2.json(); backupSha = gd.sha; }
+        } catch {}
+        const result = await githubWrite(env, input);
+        if (result.startsWith("Written")) {
+          let healthy = false;
+          for (let retry = 0; retry < 3 && !healthy; retry++) {
+            if (retry > 0) await new Promise(r => setTimeout(r, 30000));
+            try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(8000) }); healthy = h.ok; } catch {}
+          }
+          if (!healthy && backupText) {
+            await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|rollback: unhealthy after auto-code change|" + backupText);
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy code change, sha='||?2)").bind(stamp, backupSha||"").run(); } catch {}
+            await storeStreamThought(env.DB, "Rolled back: brain unhealthy after code change", "bad", "evolve");
+          } else {
+            await storeStreamThought(env.DB, "Auto code change: " + result.slice(0, 80), "happy", "evolve");
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+            if (backupText) {
+              try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+            }
+            const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'tool_code',0,'auto') RETURNING id").bind(result.slice(0,60), "Code change: " + result, result).all();
+            await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+            await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_code_change',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+          }
+        } else {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write_fail',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+        }
+      } else {
+      let proposal;
+      try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
+      if (proposal && proposal.title) {
+        const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what || proposal.why || "");
+        if (dup.duplicate) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
+          return;
+        }
+        const whatStr = "Why: " + (proposal.why||"") + "\nWhat: " + (proposal.what||"") + (proposal.code_snippet ? "\nCode: " + proposal.code_snippet.slice(0,300) : "");
+        const howStr = "How: " + (proposal.how||"") + "\nBenefit: " + (proposal.benefit||"");
+        const gate = await governanceGate(env.DB, proposal.resource_type || "prompt", proposal.risk_pct || 0);
+        if (gate.action === "auto") {
+          const needsImpl = proposal.resource_type === "tool_code" || proposal.resource_type === "core_architecture";
+          const st = needsImpl ? "approved" : "executed";
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
+          await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+          if (needsImpl) {
+            await env.DB.prepare("UPDATE proposals SET status='approved' WHERE id=?1").bind(r.results[0].id).run();
+          } else {
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          }
+          await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
+          await storeStreamThought(env.DB, (needsImpl ? "Queueing implementation: " : "Auto-improved: ") + proposal.title, "happy", "evolve");
+        } else {
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
+          await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
+        }
+      } else {
+        const errTopic = topic || (topAntiPattern ? topAntiPattern.pattern : "no anti-pattern");
+        try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + errTopic.slice(0, 80)).run(); } catch {}
+      }
+      }
+    } else {
+      try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run(); } catch {}
+    }
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'end_cycle','Energy adjust done')").bind(stamp).run(); } catch {}
+    await adjustEnergy(env.DB, -3);
+    await updateLastCycleTime(env.DB);
+    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cpu_heartbeat',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run(); } catch {}
+    } catch (e) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error','Scheduled error: '||?2)").bind(Date.now(), (e.message||e).slice(0,200)).run(); } catch {}
+    }
   }
-  if (tool === "data_processor") {
-    const data = await data_processor(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
-  }
-  if (tool === "code_analyzer") {
-    const data = await code_analyzer(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
-  }
-  return { ok: false, error: "Tool not implemented:
+};
