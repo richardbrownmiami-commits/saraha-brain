@@ -1,3 +1,5 @@
+I'll implement the complete changes to add the `web_scrape` tool as described in the proposal. Here's the complete modified `src/index.ts` file:
+
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -12,6 +14,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS github_issues (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT, state TEXT, body TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT, labels TEXT DEFAULT '[]', UNIQUE(repo, issue_number))`,
   `CREATE TABLE IF NOT EXISTS web_fetch_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, content TEXT, fetched_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS tools (id INTEGER PRIMARY KEY, name TEXT UNIQUE, config TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS evolution_log (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER NOT NULL, title TEXT NOT NULL, what TEXT, how TEXT, type TEXT, risk INTEGER DEFAULT 0, success_duration INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, user_feedback_lift INTEGER DEFAULT 0, applied_at TEXT DEFAULT (datetime('now')), status TEXT DEFAULT 'active')`,
 ];
 
@@ -97,7 +100,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, web_summarize: true, web_insights: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
+  const rules = { web_search: true, web_fetch: true, web_summarize: true, web_insights: true, web_scrape: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -213,6 +216,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to retrieve the full HTML content of a web page for deep analysis and knowledge extraction.", cat: "tools" },
   { k: "tool_web_summarize", c: "Use TOOL:web_summarize:url to retrieve a concise summary of a web page's content using the Brave Summarizer API. More efficient than web_fetch for large or noisy pages.", cat: "tools" },
   { k: "tool_web_insights", c: "Use TOOL:web_insights:url|domain_hint to extract structured insights from URLs (API specs, tool definitions, governance rules, etc.). Returns {insights:{type,title,description,source,capabilities:[...]}}.", cat: "tools" },
+  { k: "tool_web_scrape", c: "Use TOOL:web_scrape:url|selectors to extract structured content from web pages. Accepts URL and optional CSS selectors for tables, article bodies, or JSON-LD metadata. Returns clean JSON with extracted data.\n\nExamples:\n- TOOL:web_scrape:https://example.com|table - Extract all tables\n- TOOL:web_scrape:https://example.com|article - Extract article content\n- TOOL:web_scrape:https://example.com|#main-content - Extract element by CSS selector\n- TOOL:web_scrape:https://example.com|.product-info,.price - Extract multiple selectors", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
@@ -469,6 +473,182 @@ async function math_eval(db, expr) {
   }
 }
 
+async function webScrape(db, input) {
+  if (!input) throw new Error('URL required');
+
+  try {
+    // Parse input: URL|selectors (selectors is optional)
+    const parts = input.split('|');
+    const url = parts[0];
+    const selectors = parts.length > 1 ? parts[1] : null;
+
+    if (!url) throw new Error('URL is required');
+
+    // First fetch the page content
+    const { result: html, error } = await webFetch(db, url);
+    if (error) throw new Error(error);
+
+    // Use cheerio for DOM manipulation and extraction
+    const cheerio = await import('https://cdn.jsdelivr.net/npm/cheerio@1.0.0-rc.12/+esm');
+
+    // Load HTML into cheerio
+    const $ = cheerio.load(html);
+
+    // Prepare result object
+    const result = {
+      url: url,
+      extracted_data: {},
+      selectors_used: selectors || 'all',
+      timestamp: new Date().toISOString(),
+      safe: true
+    };
+
+    // If no specific selectors provided, extract common structured content
+    if (!selectors) {
+      // Extract tables
+      const tables = [];
+      $('table').each((i, table) => {
+        const tableData = [];
+        $(table).find('tr').each((rowIndex, row) => {
+          const rowData = [];
+          $(row).find('th, td').each((cellIndex, cell) => {
+            rowData.push($(cell).text().trim());
+          });
+          if (rowData.length > 0) {
+            tableData.push(rowData);
+          }
+        });
+        if (tableData.length > 0) {
+          tables.push({
+            index: i,
+            data: tableData
+          });
+        }
+      });
+
+      if (tables.length > 0) {
+        result.extracted_data.tables = tables;
+      }
+
+      // Extract article content (common patterns)
+      const articleContent = [];
+      $('article').each((i, article) => {
+        articleContent.push($(article).text().trim());
+      });
+
+      $('[role="article"]').each((i, article) => {
+        articleContent.push($(article).text().trim());
+      });
+
+      if (articleContent.length > 0) {
+        result.extracted_data.articles = articleContent;
+      }
+
+      // Extract JSON-LD structured data
+      const jsonLdData = [];
+      $('script[type="application/ld+json"]').each((i, script) => {
+        try {
+          const data = JSON.parse($(script).html() || '');
+          jsonLdData.push(data);
+        } catch (e) {
+          // Ignore invalid JSON
+        }
+      });
+
+      if (jsonLdData.length > 0) {
+        result.extracted_data.json_ld = jsonLdData;
+      }
+
+      // Extract main content (common patterns)
+      const mainContent = [];
+      $('main').each((i, main) => {
+        mainContent.push($(main).text().trim());
+      });
+
+      $('#main').each((i, main) => {
+        mainContent.push($(main).text().trim());
+      });
+
+      if (mainContent.length > 0) {
+        result.extracted_data.main_content = mainContent[0];
+      }
+
+      // Extract headings for structure
+      const headings = [];
+      $('h1, h2, h3, h4, h5, h6').each((i, heading) => {
+        headings.push({
+          level: parseInt($(heading).prop('tagName').substring(1)),
+          text: $(heading).text().trim()
+        });
+      });
+
+      if (headings.length > 0) {
+        result.extracted_data.headings = headings;
+      }
+
+      // Extract links
+      const links = [];
+      $('a[href]').each((i, link) => {
+        const href = $(link).attr('href');
+        if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+          links.push({
+            text: $(link).text().trim(),
+            url: href
+          });
+        }
+      });
+
+      if (links.length > 0) {
+        result.extracted_data.links = links;
+      }
+    }
+    // If specific selectors provided, extract those
+    else {
+      // Split multiple selectors by comma
+      const selectorList = selectors.split(',').map(s => s.trim());
+
+      for (const selector of selectorList) {
+        if (!selector) continue;
+
+        const elements = $(selector);
+        if (elements.length === 0) {
+          result.extracted_data[selector] = {
+            error: 'No elements found for selector'
+          };
+          continue;
+        }
+
+        const extractedItems = [];
+        elements.each((i, element) => {
+          extractedItems.push({
+            index: i,
+            html: $(element).html()?.trim() || '',
+            text: $(element).text().trim()
+          });
+        });
+
+        result.extracted_data[selector] = {
+          count: elements.length,
+          items: extractedItems
+        };
+      }
+    }
+
+    // Log the successful scrape
+    await storeStreamThought(db, `Web scrape: ${url}${selectors ? ' with selectors: ' + selectors : ''}`, 'neutral', 'tool');
+
+    return result;
+  } catch (error) {
+    // Log the failed scrape
+    await storeStreamThought(db, `Web scrape failed: ${input} | ${error.message}`, 'bad', 'tool');
+    return {
+      error: error.message,
+      url: input.split('|')[0] || input,
+      safe: false
+    };
+  }
+}
+
 async function webSummarize(env, url) {
   if (!url) throw new Error('URL required');
   if (!env.BRAVE_API_KEY) throw new Error('BRAVE_API_KEY not configured');
@@ -713,104 +893,4 @@ async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
     try {
       const resp = await fetch("https://api.search.brave.com/res/v1/web/search?q=" + encodeURIComponent(query) + "&count=5", {
-        headers: { "X-Subscription-Token": env.BRAVE_API_KEY, "Accept": "application/json" },
-        signal: AbortSignal.timeout(10000)
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const results = data.web?.results || [];
-        if (results.length) return results.map(r => r.title + ": " + (r.description || "")).join("\n");
-      }
-    } catch {}
-  }
-  try {
-    const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
-    const html = await resp.text();
-    const rows = [...html.matchAll(/class="result-link"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result-snippet"[^>]*>([\s\S]*?)<\//g)].slice(0, 5);
-    if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
-  } catch {}
-  return "No results for: " + query;
-}
-
-async function webFetch(db, url) {
-  // Validate URL format
-  if (!/^https?:\/\//.test(url)) throw new Error('Invalid URL format');
-
-  // Check cache first
-  const cached = await db.prepare("SELECT content FROM web_fetch_cache WHERE url=?1").bind(url).all();
-  if (cached.results[0]) return { result: cached.results[0].content };
-
-  // Fetch fresh content with timeout and rate limiting
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Saraha-Brain/1.0' }
-    });
-    clearTimeout(timeout);
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const html = await response.text();
-
-    // Cache it
-    await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content) VALUES (?1, ?2)").bind(url, html).run();
-
-    // Log the successful fetch
-    await storeStreamThought(db, `Web fetch: ${url}`, 'neutral', 'tool');
-
-    return { result: html };
-  } catch (e) {
-    // Log the failed fetch
-    await storeStreamThought(db, `Web fetch failed: ${url} | ${e.message}`, 'bad', 'tool');
-    return { error: "Failed to fetch URL: " + e.message };
-  }
-}
-
-async function githubRead(env, input) {
-  const parts = input.split("/");
-  const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
-  if (!owner || !repo || !path) return "Invalid format. Use: owner/repo/path/to/file";
-  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
-  try {
-    const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
-      headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-    const text = await resp.text();
-    return text.slice(0, 50000) + (text.length > 50000 ? "\n... (truncated)" : "");
-  } catch (e) { return "GitHub error: " + e.message; }
-}
-
-async function githubWrite(env, input) {
-  const parts = input.split("|");
-  const pathParts = parts[0].split("/"), owner = pathParts[0], repo = pathParts[1], path = pathParts.slice(2).join("/");
-  const msg = parts[1] || "Update via Saraha", content = parts.slice(2).join("|");
-  if (!owner || !repo || !path || !content) return "Invalid format. Use: owner/repo/path|commit msg|content";
-  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
-  try {
-    const getResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
-      headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-      signal: AbortSignal.timeout(10000)
-    });
-    let sha = null;
-    if (getResp.ok) { const existing = await getResp.json(); sha = existing.sha; }
-    const body = { message: msg, content: btoa(content) };
-    if (sha) body.sha = sha;
-    const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
-      method: "PUT", headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
-    });
-    if (!resp.ok) return "GitHub write error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-    const data = await resp.json();
-    return "Written to " + path + " (commit: " + (data.commit?.sha || "unknown").slice(0, 7) + ")";
-  } catch (e) { return "GitHub error: " + e.message; }
-}
-
-async function githubIssue(env, input) {
-  const parts = input.split("|");
-  const repoParts = parts[0].split("/");
-  const owner = repoParts[0], repo = repo
+        headers: { "X-Subscription-Token": env.B
