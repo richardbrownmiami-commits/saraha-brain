@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with enhanced error handling and reliability improvements:
+I'll implement the complete modified `src/index.ts` file with the `github_list` tool added while preserving all existing code. Here's the complete file:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -930,6 +930,41 @@ async function retry_api_call(db, operation, params = {}, maxRetries = MAX_RETRI
   }
 }
 
+// GitHub API helper function
+async function githubApiRequest(db, endpoint, method = 'GET', data = null) {
+  try {
+    const url = `https://api.github.com${endpoint}`;
+    const headers = {
+      'Authorization': `token ${BRAIN_KEY.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha/1.0'
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: data ? JSON.stringify(data) : undefined,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.message || `GitHub API error: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('GitHub API request failed:', error);
+    await error_handler(db, 'github_api_error', `githubApiRequest:${endpoint}`);
+    throw error;
+  }
+}
+
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
@@ -1072,6 +1107,4 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       <rect x="78" y="188" width="24" height="8" rx="3" fill="#38BDF8"/>
       <rect x="82" y="148" width="16" height="20" rx="4" fill="#fce4d6"/>
       <ellipse cx="90" cy="110" rx="42" ry="48" fill="#fce4d6"/>
-      <path d="M48 100 Q50 55 70 48 Q80 45 90 46 Q100 45 110 48 Q130 55 132 100 Q135 85 128 72 Q120 60 105 54 Q95 50 90 50 Q85 50 75 54 Q60 60 52 72 Q45 85 48 100Z" fill="#1a1a2e"/>
-      <path d="M60 60 Q75 48 90 50 Q105 48 120 60 Q115 55 105 52 Q95 49 85 52 Q75 55 60 60Z" fill="#16213e"/>
-      <path d="M55 70 Q65 55 80 52 Q72 58 68 70
+      <path d="M48
