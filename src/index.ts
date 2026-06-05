@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `data_processor` tool added:
+Here's the complete modified `src/index.ts` file with the `data_processor` tool added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -964,4 +964,3 @@ export default {
       return json({ pending: p.results, history: h.results });
     }
     if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
-      let id; try {
