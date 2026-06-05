@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the Unified Contextual Memory Consolidation System implemented:
+Here's the complete modified `src/index.ts` file with the `web_fetch` tool implementation added:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -363,7 +363,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
-  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to retrieve the full HTML content of a web page for deep analysis and knowledge extraction.", cat: "tools" },
+  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url|maxLength to retrieve the full HTML content of a web page for deep analysis and knowledge extraction. Returns {result: string, url: string, error?: string}.", cat: "tools" },
   { k: "tool_web_summarize", c: "Use TOOL:web_summarize:url to retrieve a concise summary of a web page's content using the Brave Summarizer API. More efficient than web_fetch for large or noisy pages.", cat: "tools" },
   { k: "tool_web_insights", c: "Use TOOL:web_insights:url|domain_hint to extract structured insights from URLs (API specs, tool definitions, governance rules, etc.). Returns {insights:{type,title,description,source,capabilities:[...]}}.", cat: "tools" },
   { k: "tool_web_scrape", c: "Use TOOL:web_scrape:url|selectors to extract structured content from web pages. Accepts URL and optional CSS selectors for tables, article bodies, or JSON-LD metadata. Returns clean JSON with extracted data.\n\nExamples:\n- TOOL:web_scrape:https://example.com|table - Extract all tables\n- TOOL:web_scrape:https://example.com|article - Extract article content\n- TOOL:web_scrape:https://example.com|#main-content - Extract element by CSS selector\n- TOOL:web_scrape:https://example.com|.product-info,.price - Extract multiple selectors", cat: "tools" },
@@ -629,6 +629,86 @@ async function math_eval(db, expr) {
   }
 }
 
+async function webFetch(db, url, maxLength = 10000) {
+  try {
+    // Validate URL
+    if (!url || typeof url !== 'string') {
+      throw new Error('URL is required');
+    }
+
+    // Check cache first
+    const cacheCheck = await db.prepare("SELECT content FROM web_fetch_cache WHERE url = ?1").bind(url).all();
+    if (cacheCheck.results.length > 0) {
+      const cachedContent = cacheCheck.results[0].content;
+      if (cachedContent.length <= maxLength) {
+        await storeStreamThought(db, `Web fetch cache hit: ${url}`, 'neutral', 'tool');
+        return { result: cachedContent, url, safe: true };
+      }
+    }
+
+    // Validate URL format
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error('Invalid URL format. Must start with http:// or https://');
+    }
+
+    // Set up timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    // Fetch with timeout
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Saraha-Brain/1.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      }
+    });
+
+    clearTimeout(timeout);
+
+    // Check if response is OK
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    // Get content type
+    const contentType = response.headers.get('content-type') || '';
+    let textContent = '';
+
+    if (contentType.includes('text/html')) {
+      textContent = await response.text();
+    } else if (contentType.includes('application/json')) {
+      const jsonData = await response.json();
+      textContent = JSON.stringify(jsonData, null, 2);
+    } else if (contentType.includes('text/plain') || contentType.includes('text/xml')) {
+      textContent = await response.text();
+    } else {
+      // Try to get text anyway
+      textContent = await response.text();
+    }
+
+    // Limit content length
+    if (textContent.length > maxLength) {
+      textContent = textContent.substring(0, maxLength) + `\n\n[Content truncated to ${maxLength} characters]`;
+    }
+
+    // Store in cache
+    await db.prepare(`
+      INSERT OR REPLACE INTO web_fetch_cache (url, content, fetched_at)
+      VALUES (?1, ?2, datetime('now'))
+    `).bind(url, textContent).run();
+
+    // Log successful fetch
+    await storeStreamThought(db, `Web fetch successful: ${url} (${textContent.length} chars)`, 'neutral', 'tool');
+
+    return { result: textContent, url, safe: true };
+  } catch (error) {
+    // Log failed fetch
+    await storeStreamThought(db, `Web fetch failed: ${url} | ${error.message}`, 'bad', 'tool');
+    return { error: error.message, url, safe: false };
+  }
+}
+
 async function webScrape(db, input) {
   if (!input) throw new Error('URL required');
 
@@ -641,107 +721,4 @@ async function webScrape(db, input) {
     if (!url) throw new Error('URL is required');
 
     // First fetch the page content
-    const { result: html, error } = await webFetch(db, url);
-    if (error) throw new Error(error);
-
-    // Use cheerio for DOM manipulation and extraction
-    const cheerio = await import('https://cdn.jsdelivr.net/npm/cheerio@1.0.0-rc.12/+esm');
-
-    // Load HTML into cheerio
-    const $ = cheerio.load(html);
-
-    // Prepare result object
-    const result = {
-      url: url,
-      extracted_data: {},
-      selectors_used: selectors || 'all',
-      timestamp: new Date().toISOString(),
-      safe: true
-    };
-
-    // If no specific selectors provided, extract common structured content
-    if (!selectors) {
-      // Extract tables
-      const tables = [];
-      $('table').each((i, table) => {
-        const tableData = [];
-        $(table).find('tr').each((rowIndex, row) => {
-          const rowData = [];
-          $(row).find('th, td').each((cellIndex, cell) => {
-            rowData.push($(cell).text().trim());
-          });
-          if (rowData.length > 0) {
-            tableData.push(rowData);
-          }
-        });
-        if (tableData.length > 0) {
-          tables.push({
-            index: i,
-            data: tableData
-          });
-        }
-      });
-
-      if (tables.length > 0) {
-        result.extracted_data.tables = tables;
-      }
-
-      // Extract article content (common patterns)
-      const articleContent = [];
-      $('article').each((i, article) => {
-        articleContent.push($(article).text().trim());
-      });
-
-      $('[role="article"]').each((i, article) => {
-        articleContent.push($(article).text().trim());
-      });
-
-      if (articleContent.length > 0) {
-        result.extracted_data.articles = articleContent;
-      }
-
-      // Extract JSON-LD structured data
-      const jsonLdData = [];
-      $('script[type="application/ld+json"]').each((i, script) => {
-        try {
-          const data = JSON.parse($(script).html() || '');
-          jsonLdData.push(data);
-        } catch (e) {
-          // Ignore invalid JSON
-        }
-      });
-
-      if (jsonLdData.length > 0) {
-        result.extracted_data.json_ld = jsonLdData;
-      }
-
-      // Extract main content (common patterns)
-      const mainContent = [];
-      $('main').each((i, main) => {
-        mainContent.push($(main).text().trim());
-      });
-
-      $('#main').each((i, main) => {
-        mainContent.push($(main).text().trim());
-      });
-
-      if (mainContent.length > 0) {
-        result.extracted_data.main_content = mainContent[0];
-      }
-
-      // Extract headings for structure
-      const headings = [];
-      $('h1, h2, h3, h4, h5, h6').each((i, heading) => {
-        headings.push({
-          level: parseInt($(heading).prop('tagName').substring(1)),
-          text: $(heading).text().trim()
-        });
-      });
-
-      if (headings.length > 0) {
-        result.extracted_data.headings = headings;
-      }
-
-      // Extract links
-      const links = [];
-      $('a').each
+    const { result: html, error } = await webFetch(db,
