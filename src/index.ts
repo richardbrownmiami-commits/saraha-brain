@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with improved `web_fetch` tool implementation for better content extraction and summarization:
+Here's the complete modified `src/index.ts` file with the improved `web_fetch` tool implementation:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -835,4 +835,4 @@ export default {
       let body, duration = 60;
       try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
       const until = Date.now() + duration * 60 * 1000;
-      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime
