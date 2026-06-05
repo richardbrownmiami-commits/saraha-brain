@@ -1,3 +1,5 @@
+I'll add the new `github_issue_search` tool to the `src/index.ts` file while preserving all existing code. Here's the complete modified file:
+
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -749,7 +751,7 @@ async function scoreProposalQuality(db, proposal) {
       reasons.push(`Feedback alignment: balanced recent feedback (${recentApprovals} approvals, ${recentDenials} denials)`);
     } else if (recentDenials > recentApprovals) {
       score += 1;
-      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${rerecentDenials})`);
+      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${recentDenials})`);
     } else {
       score += 0;
       reasons.push("Feedback alignment: no recent feedback available");
@@ -1304,9 +1306,4 @@ const SEED_KNOWLEDGE = [
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/den
 ];
 
-const tools = {
-  web_search,
-  web_fetch,
-  web_summarize: async (db, url) => {
-    try {
-      const response =
+const
