@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `web_summarize` tool fully integrated:
+Here's the complete modified `src/index.ts` file with the `web_insights` tool fully integrated:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -99,7 +99,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, web_summarize: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
+  const rules = { web_search: true, web_fetch: true, web_summarize: true, web_insights: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -214,6 +214,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to retrieve the full HTML content of a web page for deep analysis and knowledge extraction.", cat: "tools" },
   { k: "tool_web_summarize", c: "Use TOOL:web_summarize:url to retrieve a concise summary of a web page's content using the Brave Summarizer API. More efficient than web_fetch for large or noisy pages.", cat: "tools" },
+  { k: "tool_web_insights", c: "Use TOOL:web_insights:url|domain_hint to extract structured insights from URLs (API specs, tool definitions, governance rules, etc.). Returns {insights:{type,title,description,source,capabilities:[...]}}.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
@@ -513,6 +514,203 @@ async function webSummarize(env, url) {
   }
 }
 
+async function webInsights(db, input) {
+  if (!input.url) throw new Error('URL required');
+
+  try {
+    // First try to fetch the URL content
+    const { result: html } = await webFetch(db, input.url);
+
+    if (!html) {
+      throw new Error('Failed to fetch URL content');
+    }
+
+    // Extract domain from URL
+    const domain = new URL(input.url).hostname;
+    const domainParts = domain.split('.');
+    const mainDomain = domainParts.length > 2 ? domainParts[domainParts.length - 2] : domainParts[0];
+
+    // Domain-specific extraction patterns
+    let insights = {
+      type: 'generic',
+      title: 'Generic Web Content',
+      description: 'Extracted insights from web content',
+      source: input.url,
+      capabilities: []
+    };
+
+    // GitHub repository insights
+    if (mainDomain === 'github' && input.url.includes('/blob/')) {
+      insights.type = 'github_repository';
+      insights.title = 'GitHub Repository Content';
+
+      // Extract repository path
+      const repoPathMatch = input.url.match(/github\.com\/([^\/]+\/[^\/]+)\/blob\/(.+)/);
+      if (repoPathMatch) {
+        insights.capabilities.push({
+          type: 'repository',
+          repository: repoPathMatch[1],
+          path: repoPathMatch[2]
+        });
+      }
+
+      // Check for README
+      if (html.includes('README.md') || html.includes('readme')) {
+        insights.capabilities.push({
+          type: 'documentation',
+          title: 'README',
+          description: 'Repository documentation'
+        });
+      }
+
+      // Check for API documentation patterns
+      if (html.includes('api') || html.includes('swagger') || html.includes('openapi')) {
+        insights.capabilities.push({
+          type: 'api_documentation',
+          title: 'API Documentation',
+          description: 'API specification found'
+        });
+      }
+
+      // Check for configuration files
+      if (html.includes('package.json') || html.includes('requirements.txt') ||
+          html.includes('go.mod') || html.includes('pom.xml')) {
+        insights.capabilities.push({
+          type: 'configuration',
+          title: 'Configuration Files',
+          description: 'Project configuration found'
+        });
+      }
+    }
+    // API documentation sites
+    else if (mainDomain === 'swagger' || mainDomain === 'api' ||
+             mainDomain === 'openapi' || html.includes('swagger-ui') ||
+             html.includes('openapi')) {
+      insights.type = 'api_documentation';
+      insights.title = 'API Documentation';
+
+      // Extract API title
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch) {
+        insights.title = titleMatch[1].trim();
+      }
+
+      // Extract endpoints
+      const endpointMatches = html.matchAll(/(GET|POST|PUT|DELETE)\s+([^\s]+)/g);
+      const endpoints = [];
+      for (const match of endpointMatches) {
+        if (match[2] && !match[2].includes('{') && !match[2].includes('}')) {
+          endpoints.push({
+            method: match[1],
+            path: match[2]
+          });
+        }
+      }
+
+      if (endpoints.length > 0) {
+        insights.capabilities.push({
+          type: 'endpoints',
+          endpoints: endpoints,
+          count: endpoints.length
+        });
+      }
+
+      // Extract description
+      const descriptionMatch = html.match(/<meta name="description"[^>]+content="([^"]+)"/i) ||
+                               html.match(/<meta property="og:description"[^>]+content="([^"]+)"/i);
+      if (descriptionMatch) {
+        insights.description = descriptionMatch[1];
+      }
+    }
+    // Governance/legal pages
+    else if (mainDomain === 'github' && (input.url.includes('/issues') ||
+             input.url.includes('/pull') || input.url.includes('/LICENSE'))) {
+      insights.type = 'governance';
+      insights.title = 'Governance Document';
+
+      if (input.url.includes('/LICENSE')) {
+        insights.capabilities.push({
+          type: 'license',
+          title: 'Software License',
+          description: 'License agreement for the repository'
+        });
+      } else if (input.url.includes('/issues')) {
+        insights.capabilities.push({
+          type: 'issue_tracking',
+          title: 'Issue Tracking',
+          description: 'Repository issue management system'
+        });
+      } else if (input.url.includes('/pull')) {
+        insights.capabilities.push({
+          type: 'code_reviews',
+          title: 'Pull Requests',
+          description: 'Code review and collaboration system'
+        });
+      }
+    }
+    // General web content with structured data
+    else {
+      // Try to extract structured data patterns
+      const jsonMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
+      if (jsonMatch) {
+        try {
+          const jsonData = JSON.parse(jsonMatch[1]);
+          if (jsonData['@type'] === 'SoftwareSourceCode') {
+            insights.type = 'software_project';
+            insights.title = jsonData.name || 'Software Project';
+            insights.description = jsonData.description || '';
+
+            if (jsonData.codeRepository) {
+              insights.capabilities.push({
+                type: 'repository',
+                url: jsonData.codeRepository
+              });
+            }
+          }
+        } catch (e) {
+          // Ignore JSON parsing errors
+        }
+      }
+
+      // Extract common patterns
+      if (html.includes('function ') || html.includes('class ') ||
+          html.includes('const ') || html.includes('let ')) {
+        insights.capabilities.push({
+          type: 'code',
+          title: 'JavaScript Code',
+          description: 'Contains JavaScript code'
+        });
+      }
+
+      if (html.includes('import ') || html.includes('from ') ||
+          html.includes('require(')) {
+        insights.capabilities.push({
+          type: 'dependencies',
+          title: 'Dependencies',
+          description: 'Contains dependency declarations'
+        });
+      }
+    }
+
+    // Log the successful insight extraction
+    await storeStreamThought(db, `Web insights extracted from: ${input.url}`, 'neutral', 'tool');
+
+    return {
+      insights: insights,
+      url: input.url,
+      domain: mainDomain,
+      safe: true
+    };
+  } catch (error) {
+    await storeStreamThought(db, `Web insights failed: ${input.url} | ${error.message}`, 'bad', 'tool');
+    return {
+      error: error.message,
+      url: input.url,
+      safe: false
+    };
+  }
+}
+
 async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
     try {
@@ -610,158 +808,4 @@ async function githubIssue(env, input) {
     if (action === "list_issues") {
       const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
         headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-      const issues = await resp.json();
-      return issues.slice(0, 20).map(issue => {
-        return `Issue #${issue.number}: ${issue.title} (${issue.state}) - ${issue.body?.slice(0, 100) || 'No description'}`;
-      }).join("\n\n");
-    }
-
-    if (action === "get_issue") {
-      const issueNumber = parseInt(parts[2]);
-      if (isNaN(issueNumber)) return "Invalid issue number";
-      const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
-        headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-      const issue = await resp.json();
-      return JSON.stringify({
-        number: issue.number,
-        title: issue.title,
-        state: issue.state,
-        body: issue.body,
-        created_at: issue.created_at,
-        updated_at: issue.updated_at,
-        closed_at: issue.closed_at,
-        labels: issue.labels?.map(l => l.name) || [],
-        assignees: issue.assignees?.map(a => a.login) || []
-      }, null, 2);
-    }
-
-    if (action === "create_issue") {
-      let issueData;
-      try {
-        issueData = JSON.parse(parts[2] || "{}");
-      } catch {
-        return "Invalid JSON format for issue data";
-      }
-      if (!issueData.title) return "Issue title is required";
-
-      const body = {
-        title: issueData.title,
-        body: issueData.body || "",
-        labels: issueData.labels || [],
-        assignees: issueData.assignees || []
-      };
-
-      const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000)
-      });
-
-      if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-
-      const issue = await resp.json();
-      await db.prepare("INSERT INTO github_issues (repo, issue_number, title, state, body, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)").bind(
-        `${owner}/${repo}`,
-        issue.number,
-        issue.title,
-        issue.state,
-        issue.body || "",
-        issue.created_at,
-        issue.updated_at
-      ).run();
-
-      return JSON.stringify({
-        message: "Issue created successfully",
-        issue_number: issue.number,
-        html_url: issue.html_url
-      }, null, 2);
-    }
-
-    if (action === "update_issue") {
-      const issueNumber = parseInt(parts[2]);
-      if (isNaN(issueNumber)) return "Invalid issue number";
-      let issueData;
-      try {
-        issueData = JSON.parse(parts[3] || "{}");
-      } catch {
-        return "Invalid JSON format for issue data";
-      }
-
-      const body = {
-        title: issueData.title,
-        body: issueData.body,
-        state: issueData.state,
-        labels: issueData.labels || [],
-        assignees: issueData.assignees || []
-      };
-
-      const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
-        method: "PATCH",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000)
-      });
-
-      if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-
-      const issue = await resp.json();
-      await db.prepare("UPDATE github_issues SET title = ?1, state = ?2, body = ?3, updated_at = ?4 WHERE repo = ?5 AND issue_number = ?6").bind(
-        issue.title,
-        issue.state,
-        issue.body || "",
-        issue.updated_at,
-        `${owner}/${repo}`,
-        issue.number
-      ).run();
-
-      return JSON.stringify({
-        message: "Issue updated successfully",
-        issue_number: issue.number
-      }, null, 2);
-    }
-
-    if (action === "close_issue") {
-      const issueNumber = parseInt(parts[2]);
-      if (isNaN(issueNumber)) return "Invalid issue number";
-
-      const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`, {
-        method: "PATCH",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-        body: JSON.stringify({ state: "closed" }),
-        signal: AbortSignal.timeout(15000)
-      });
-
-      if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
-
-      const issue = await resp.json();
-      await db.prepare("UPDATE github_issues SET state = 'closed', updated_at = ?1 WHERE repo = ?2 AND issue_number = ?3").bind(
-        issue.updated_at,
-        `${owner}/${repo}`,
-        issue.number
-      ).run();
-
-      return JSON.stringify({
-        message: "Issue closed successfully",
-        issue_number: issue.number
-      }, null, 2);
-    }
-
-    return "Unknown action: " + action + ". Available actions: list_issues, create_issue, get_issue, update_issue, close_issue";
-  } catch (e) {
-    return "GitHub issue error: " + e.message;
-  }
-}
-
-async function githubList(env, input) {
-  const parts = input.split("?");
-  const repoParts = parts[0].split("/");
-  const owner = repoParts[0], repo = repoParts[1];
-
-  const params
+        signal
