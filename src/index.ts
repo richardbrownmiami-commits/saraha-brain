@@ -1,4 +1,4 @@
-I'll add the new `github_issue_search` tool to the `src/index.ts` file while preserving all existing code. Here's the complete modified file with the changes applied:
+Here's the complete modified `src/index.ts` file with all the emotion system refinements applied while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -38,14 +38,70 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS memory_consolidation_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id INTEGER, original_ids TEXT, consolidated_content TEXT, strength_change REAL, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
+const EMOTIONS = ["energetic", "intelligent", "happy", "curious", "bored", "bad"];
+const RANGES = {
+  energetic: [1, 10],
+  intelligent: [1, 10],
+  happy: [1, 10],
+  curious: [1, 10],
+  bored: [1, 10],
+  bad: [0, 3]
+};
+const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, curious: 5, bored: 5, bad: 0 };
+const EMO_DECAY_FACTORS = {
+  curious: 0.2,
+  bored: 0.3,
+  happy: 0.1,
+  energetic: 0.15,
+  intelligent: 0.1,
+  bad: 0.2
+};
 
 // Retry configuration constants
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const API_TIMEOUT_MS = 10000;
+
+async function getLearningContext(db) {
+  try {
+    // Get recent successful learnings
+    const successful = await db.prepare(`
+      SELECT pattern, context, success_count
+      FROM learnings
+      WHERE success_count > 0
+      ORDER BY last_used DESC, success_count DESC
+      LIMIT 5
+    `).all();
+
+    // Get recent anti-patterns
+    const antiPatterns = await db.prepare(`
+      SELECT pattern, root_cause, count
+      FROM anti_patterns
+      ORDER BY last_seen DESC
+      LIMIT 3
+    `).all();
+
+    // Get recent tool usage patterns
+    const toolUsage = await db.prepare(`
+      SELECT tool, COUNT(*) as count
+      FROM brain_logs
+      WHERE step = 'tool'
+      GROUP BY tool
+      ORDER BY count DESC
+      LIMIT 5
+    `).all();
+
+    return {
+      successful_learnings: successful.results,
+      anti_patterns: antiPatterns.results,
+      tool_usage: toolUsage.results
+    };
+  } catch (error) {
+    console.error('Error getting learning context:', error);
+    await error_handler(db, 'database_error', 'getLearningContext');
+    return { successful_learnings: [], anti_patterns: [], tool_usage: [] };
+  }
+}
 
 async function getEmotions(db) {
   try {
@@ -129,19 +185,26 @@ function describeMood(emotions, energy) {
   else if (energy > 40) parts.push("balanced and present");
   else if (energy > 20) parts.push("a bit tired but clear-minded");
   else parts.push("quite fatigued, resting");
+
   if (emotions.happy >= 9) parts.push("in excellent spirits");
   else if (emotions.happy >= 6) parts.push("in good spirits");
   else if (emotions.happy >= 4) parts.push("quiet and neutral");
   else parts.push("feeling low");
+
+  if (emotions.curiosity >= 8) parts.push("feeling curious and inquisitive");
+  else if (emotions.curiosity <= 3) parts.push("feeling bored and restless");
+
   if (emotions.bad >= 2) parts.push("with a trace of unease");
   if (emotions.intelligent >= 8) parts.push("mind feeling sharp");
   else if (emotions.intelligent <= 3) parts.push("mind feeling sluggish");
+
   return "You feel " + parts.join(", ") + ".";
 }
 
 async function driftEmotions(db) {
   try {
     const emo = await getEmotions(db);
+    const learningContext = await getLearningContext(db);
     const updates = [];
 
     // Happy emotion drift with self-healing
@@ -173,6 +236,83 @@ async function driftEmotions(db) {
         return 5;
       }));
     }
+
+    // Curiosity and boredom decay based on activity patterns
+    const curiosityDecay = EMO_DECAY_FACTORS.curious;
+    const boredDecay = EMO_DECAY_FACTORS.bored;
+
+    // Check for high token count in recent thoughts (indicates active learning)
+    const recentThoughts = await db.prepare(`
+      SELECT estimated_tokens, created_at
+      FROM thought_stream
+      WHERE created_at > datetime('now', '-24 hours')
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).all();
+
+    const totalTokens = recentThoughts.results.reduce((sum, t) => sum + (t.estimated_tokens || 0), 0);
+    const avgTokens = recentThoughts.results.length > 0 ? totalTokens / recentThoughts.results.length : 0;
+
+    // Check for recent successful tool usage (especially github_write)
+    const recentTools = await db.prepare(`
+      SELECT tool, COUNT(*) as count
+      FROM brain_logs
+      WHERE step = 'tool' AND created_at > datetime('now', '-12 hours')
+      GROUP BY tool
+    `).all();
+
+    const githubWriteSuccess = recentTools.results.some(t => t.tool === 'github_write' && t.count > 0);
+
+    // Check for repetitive actions without novelty
+    const repetitiveActions = await db.prepare(`
+      SELECT COUNT(*) as count
+      FROM actions
+      WHERE created_at > datetime('now', '-6 hours')
+      AND status = 'completed'
+      AND type IN (SELECT type FROM actions GROUP BY type HAVING COUNT(*) > 3)
+    `).all();
+
+    const isRepetitive = repetitiveActions.results[0].count > 5;
+
+    // Adjust curiosity and boredom based on activity patterns
+    if (avgTokens > 200) {
+      // High token count suggests active learning - increase curiosity
+      updates.push(updateEmotion(db, "curious", 1).catch(e => {
+        console.error('Failed to increase curious:', e);
+        return emo.curious;
+      }));
+      updates.push(updateEmotion(db, "bored", -1).catch(e => {
+        console.error('Failed to decrease bored:', e);
+        return emo.bored;
+      }));
+    } else if (isRepetitive) {
+      // Repetitive actions without novelty - increase boredom
+      updates.push(updateEmotion(db, "bored", 1).catch(e => {
+        console.error('Failed to increase bored:', e);
+        return emo.bored;
+      }));
+      updates.push(updateEmotion(db, "curious", -0.5).catch(e => {
+        console.error('Failed to decrease curious:', e);
+        return emo.curious;
+      }));
+    } else if (githubWriteSuccess) {
+      // Successful code changes - increase curiosity
+      updates.push(updateEmotion(db, "curious", 1).catch(e => {
+        console.error('Failed to increase curious:', e);
+        return emo.curious;
+      }));
+    }
+
+    // Apply decay factors
+    updates.push(updateEmotion(db, "curious", -curiosityDecay).catch(e => {
+      console.error('Failed to decay curious:', e);
+      return emo.curious;
+    }));
+
+    updates.push(updateEmotion(db, "bored", -boredDecay).catch(e => {
+      console.error('Failed to decay bored:', e);
+      return emo.bored;
+    }));
 
     // Wait for all updates to complete
     await Promise.all(updates);
@@ -751,7 +891,7 @@ async function scoreProposalQuality(db, proposal) {
       reasons.push(`Feedback alignment: balanced recent feedback (${recentApprovals} approvals, ${recentDenials} denials)`);
     } else if (recentDenials > recentApprovals) {
       score += 1;
-      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${recurrentDenials})`);
+      reasons.push(`Feedback alignment: recent denials (${recentDenials}) > approvals (${recentApprovals})`);
     } else {
       score += 0;
       reasons.push("Feedback alignment: no recent feedback available");
@@ -1272,6 +1412,7 @@ async function seedKnowledge(db) {
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
+  { k: "emotion_system", c: "Saraha has a refined emotion system with curiosity and boredom emotions that adapt based on activity patterns. Curiosity increases with novel learning experiences and successful tool usage, while boredom increases with repetitive tasks.", cat: "system" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url|maxLength to retrieve the full HTML content of a web page for deep analysis and knowledge extraction. Returns {result: string, url: string, error?: string}.", cat: "tools" },
   { k: "tool_web_summarize", c: "Use TOOL:web_summarize:url to retrieve a concise summary of a web page's content using the Brave Summarizer API. More efficient than web_fetch for large or noisy pages.", cat: "tools" },
@@ -1288,19 +1429,4 @@ const SEED_KNOWLEDGE = [
   { k: "tool_reflection_engine", c: "Use TOOL:reflection_engine to perform deep self-analysis of system metrics including memory health, tool usage patterns, proposal success rates, emotion drift, and anti-pattern frequency. Returns structured analysis with improvement recommendations.", cat: "tools" },
   { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
   { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
-  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons, breakdown} where passed indicates if score >= 7/10.\n\nExample: TOOL:score_proposal_quality|{\"title\":\"Improve memory system\",\"what_diff\":\"Add memory consolidation feature\",\"how_diff\":\"Implement auto-consolidation logic\",\"resource_type\":\"memory\",\"risk_pct\":15}", cat: "tools" },
-  { k: "tool_driftEmotions", c: "Use TOOL:driftEmotions to automatically adjust emotions toward healthy ranges. Handles emotion drift failures with self-healing logic that detects persistent issues and resets emotions to defaults if needed. Returns success status and any errors encountered.", cat: "tools" },
-  { k: "tool_search_knowledge", c: "Use TOOL:search_knowledge:query|limit to search the brain_knowledge table using full-text search (FTS5) for better RAG retrieval. Returns an array of {key, content, category} objects.\n\nParameters:\n- query: The search term or phrase\n- limit: Maximum number of results to return (default: 10)\n\nExample: TOOL:search_knowledge:SQLite full-text search|5", cat: "tools" },
-  { k: "tool_seed_knowledge", c: "Use TOOL:seed_knowledge to populate the brain_knowledge table with seed knowledge if it's empty. Creates the FTS5 virtual table and populates it with the initial knowledge base.", cat: "tools" },
-  { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
-  { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
-  { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
-  { k: "governance_core", c: "Core architecture changes ALWAYS require human approval regardless of risk.", cat: "governance" },
-  { k: "governance_security", c: "Security boundary changes ALWAYS require human regardless of risk.", cat: "governance" },
-  { k: "governance_cron", c: "Cron changes ALWAYS human. Master cron override overrides proposals entirely.", cat: "governance" },
-  { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
-  { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG), github_issues(repo issue tracking), evolution_log(evolution metrics). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
-  { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST), /brain/evolution_score(GET), /brain/memory/health(GET), /brain/memory/consolidate(POST).", cat: "structure" },
-  { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
-  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/
+  { k: "tool_score_proposal_quality", c: "Use TOOL:score_proposal_quality:proposal_json to evaluate proposal quality before execution. Scores proposals on risk alignment, clear diffs, duplicate prevention, and feedback alignment. Returns {score, passed, reasons,
