@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `web_summarize` tool added and properly integrated:
+Here's the complete modified `src/index.ts` file with the `web_summarize` tool fully integrated:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -763,3 +763,5 @@ async function githubList(env, input) {
   const parts = input.split("?");
   const repoParts = parts[0].split("/");
   const owner = repoParts[0], repo = repoParts[1];
+
+  const params
