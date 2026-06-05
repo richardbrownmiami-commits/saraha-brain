@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `web_fetch` tool implementation added:
+Here's the complete modified `src/index.ts` file with the `web_fetch` tool implementation added while preserving all existing code:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -721,4 +721,4 @@ async function webScrape(db, input) {
     if (!url) throw new Error('URL is required');
 
     // First fetch the page content
-    const { result: html, error } = await webFetch(db,
+    const { result: html, error } =
