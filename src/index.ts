@@ -1,11 +1,11 @@
-Here's the complete modified `src/index.ts` file with the self-healing `driftEmotions()` function added and wired into the system:
+Here's the complete modified `src/index.ts` file with structured logging for tool execution failures added:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, tool_error TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS pending_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, tool TEXT NOT NULL, input TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')), decided_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS thought_stream (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1199,4 +1199,5 @@ const SEED_KNOWLEDGE = [
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
   { k: "evolution_scoring", c: "Evolution scoring tracks effectiveness of self-improvement proposals using metrics: success_duration (time without errors), error_count (failures), and user_feedback_lift (positive user feedback). The /brain/evolution_score endpoint returns weighted scores where lower scores indicate higher priority for evolution focus.", cat: "governance" },
   { k: "governance_web_summarize", c: "URL summarization changes <=30% risk auto-approved. >30% needs human approval.", cat: "governance" },
-  { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events,
+  { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events",
+  cat: "structure"
