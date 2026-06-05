@@ -1,4 +1,4 @@
-I'll implement the complete modified `src/index.ts` file with the proposal quality scoring system added. Here's the complete file with all changes:
+Here's the complete modified `src/index.ts` file with the self-healing `driftEmotions()` function added:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -105,7 +105,7 @@ async function adjustEnergy(db, delta) {
   try {
     const { energy } = await getRegulator(db);
     const newVal = Math.max(0, Math.min(100, energy + delta));
-    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(newVal.toString()).run();
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(newVal.toString()).run();
   } catch (error) {
     console.error('Error adjusting energy:', error);
     await error_handler(db, 'database_error', 'adjustEnergy');
@@ -132,10 +132,96 @@ function describeMood(emotions, energy) {
 async function driftEmotions(db) {
   try {
     const emo = await getEmotions(db);
-    if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-    if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+    const updates = [];
+
+    // Happy emotion drift with self-healing
+    if (emo.happy > 7) {
+      updates.push(updateEmotion(db, "happy", -1).catch(e => {
+        console.error('Failed to decrease happy:', e);
+        return 7;
+      }));
+    }
+    if (emo.happy < 5 && emo.happy > 1) {
+      updates.push(updateEmotion(db, "happy", 1).catch(e => {
+        console.error('Failed to increase happy:', e);
+        return 5;
+      }));
+    }
+
+    // Bad emotion drift with self-healing
+    if (emo.bad > 0) {
+      updates.push(updateEmotion(db, "bad", -1).catch(e => {
+        console.error('Failed to decrease bad:', e);
+        return 0;
+      }));
+    }
+
+    // Energetic emotion drift with self-healing
+    if (emo.energetic < 5 && emo.energetic >= 1) {
+      updates.push(updateEmotion(db, "energetic", 1).catch(e => {
+        console.error('Failed to increase energetic:', e);
+        return 5;
+      }));
+    }
+
+    // Wait for all updates to complete
+    await Promise.all(updates);
+
+    // Verify the updates were successful by checking current emotions
+    const finalEmo = await getEmotions(db);
+    const errors = [];
+
+    // Check if happy emotion is still out of bounds
+    if (finalEmo.happy > 7) {
+      errors.push(`Happy emotion still too high (${finalEmo.happy}), attempting reset`);
+      await updateEmotion(db, "happy", -1).catch(e => {
+        console.error('Failed to reset happy emotion:', e);
+        errors.push(`Failed to reset happy: ${e.message}`);
+      });
+    }
+    if (finalEmo.happy < 5 && finalEmo.happy > 1) {
+      errors.push(`Happy emotion still too low (${finalEmo.happy}), attempting reset`);
+      await updateEmotion(db, "happy", 1).catch(e => {
+        console.error('Failed to reset happy emotion:', e);
+        errors.push(`Failed to reset happy: ${e.message}`);
+      });
+    }
+
+    // Check if bad emotion is still positive
+    if (finalEmo.bad > 0) {
+      errors.push(`Bad emotion still positive (${finalEmo.bad}), attempting reset`);
+      await updateEmotion(db, "bad", -1).catch(e => {
+        console.error('Failed to reset bad emotion:', e);
+        errors.push(`Failed to reset bad: ${e.message}`);
+      });
+    }
+
+    // Check if energetic emotion is still too low
+    if (finalEmo.energetic < 5 && finalEmo.energetic >= 1) {
+      errors.push(`Energetic emotion still too low (${finalEmo.energetic}), attempting reset`);
+      await updateEmotion(db, "energetic", 1).catch(e => {
+        console.error('Failed to reset energetic emotion:', e);
+        errors.push(`Failed to reset energetic: ${e.message}`);
+      });
+    }
+
+    // If we have persistent errors, log them and attempt a full reset
+    if (errors.length > 0) {
+      console.error('Emotion drift self-healing detected persistent issues:', errors.join('; '));
+      await error_handler(db, 'emotion_drift_failure', `driftEmotions:self_heal:${errors.join('; ')}`);
+
+      // Final fallback: reset all emotions to defaults
+      await Promise.all(
+        Object.keys(EMO_DEFAULTS).map(emotion =>
+          db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')")
+            .bind(`emotion_${emotion}`, EMO_DEFAULTS[emotion].toString())
+            .run()
+        )
+      );
+
+      await storeStreamThought(db, `Emotion drift system self-healed: reset all emotions to defaults due to persistent drift failures`, 'bad', 'system');
+    }
+
   } catch (error) {
     console.error('Error drifting emotions:', error);
     await error_handler(db, 'emotion_error', 'driftEmotions');
@@ -1112,59 +1198,4 @@ const SEED_KNOWLEDGE = [
   { k: "evolution_scoring", c: "Evolution scoring tracks effectiveness of self-improvement proposals using metrics: success_duration (time without errors), error_count (failures), and user_feedback_lift (positive user feedback). The /brain/evolution_score endpoint returns weighted scores where lower scores indicate higher priority for evolution focus.", cat: "governance" },
   { k: "governance_web_summarize", c: "URL summarization changes <=30% risk auto-approved. >30% needs human approval.", cat: "governance" },
   { k: "memory_consolidation_system", c: "Saraha uses a unified memory consolidation system that automatically identifies and merges similar memories, tracks consolidation events, and maintains memory health scores. Memories are marked with consolidation_status (candidate/consolidated/archived) and original_count tracks how many memories were merged.", cat: "memory" },
-  { k: "memory_consolidation_benefits", c: "Memory consolidation improves recall quality by reducing redundancy, prevents memory duplication, maintains important information through strength scoring, and enables automatic consolidation triggers based on memory age and duplication patterns.", cat: "memory" },
-  { k: "memory_health_monitoring", c: "Memory health is monitored through getMemoryHealth() which tracks total memories, consolidation ratio, strength distribution, and calculates a health score (0-100). Low health scores trigger auto-consolidation processes.", cat: "memory" },
-  { k: "memory_auto_consolidation", c: "Auto-consolidation is triggered when memory health score drops below 50 and there are more than 5 candidate memories. It groups similar memories (content matching) with count >= 3, creates consolidated versions, archives originals, and logs the process.", cat: "memory" },
-  { k: "thought_stream_metadata", c: "The thought_stream table now includes structured metadata columns: mood_trend (TEXT), source_category (TEXT), and estimated_tokens (INTEGER). These enable better self-analysis during idle cycles by tracking emotional patterns, categorizing thought sources, and estimating cognitive load.", cat: "structure" },
-  { k: "proposal_quality_scoring", c: "Proposals are scored on 4 criteria: 1) Risk alignment (0-3 points), 2) Clear diffs (0-2 points), 3) Duplicate prevention (0-2 points), 4) Feedback alignment (0-3 points). Only proposals scoring >=7/10 are auto-executed. Rejected proposals are logged with reasons.", cat: "governance" },
-];
-
-async function seedKnowledge(db) {
-  try {
-    for (const item of SEED_KNOWLEDGE) {
-      try {
-        await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run();
-      } catch (error) {
-        console.error(`Error seeding knowledge for key ${item.k}:`, error);
-        await error_handler(db, 'database_error', `seedKnowledge:${item.k}`);
-      }
-    }
-  } catch (error) {
-    console.error('Error in seedKnowledge:', error);
-    await error_handler(db, 'database_error', 'seedKnowledge');
-  }
-}
-
-async function searchKnowledge(db, query, limit = 5) {
-  try {
-    const safe = (query || "").replace(/%/g, "\\%").replace(/_/g, "\\_");
-    const r = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
-    return r.results;
-  } catch (error) {
-    console.error('Error searching knowledge:', error);
-    await error_handler(db, 'database_error', 'searchKnowledge');
-    return [];
-  }
-}
-
-function classify(input) {
-  const l = input.toLowerCase();
-  if (l.includes("evolve")||l.includes("improve")||l.includes("grow")) return "evolve";
-  if (l.includes("status")||l.includes("health")||l.includes("alive")) return "status";
-  return "think";
-}
-
-async function runTool(db, tool, input) {
-  try {
-    const safe = isToolSafe(tool);
-    if (!safe.safe) {
-      return { error: `Tool ${tool} is not safe: ${safe.reason}` };
-    }
-
-    let result;
-    switch (tool) {
-      case 'web_search':
-        result = await web_search(db, input);
-        break;
-      case 'web_fetch':
-        result = await web_fetch(db, input);
+  { k: "memory_consolidation_benefits", c: "Memory consolidation improves recall quality by reducing redundancy, prevents memory duplication, maintains important information through strength scoring, and enables
