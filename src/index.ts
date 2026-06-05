@@ -948,22 +948,42 @@ export default {
             newCode = newCode.replace(/```[a-z]*\n?/gi, "").trim();
             try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm2',?2)").bind(stamp, "#" + p.id + " len=" + newCode.length).run(); } catch {}
             if (newCode.length > 500) {
-              try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pat_test',?2)").bind(stamp, "len=" + (env.GITHUB_PAT ? env.GITHUB_PAT.length : 0)).run(); } catch {}
-              const shaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
-              });
-              let sha = null;
-              if (shaResp.ok) { const sd = await shaResp.json(); sha = sd.sha; }
+              let backupText = null, backupSha = null;
+              try {
+                const gR = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR.ok) backupText = await gR.text();
+                const gR2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR2.ok) { const gd = await gR2.json(); backupSha = gd.sha; }
+              } catch {}
               const gw = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
                 method: "PUT",
                 headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
-                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: b64(newCode), sha }),
+                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: b64(newCode), sha: backupSha }),
                 signal: AbortSignal.timeout(15000)
               });
               try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_gw',?2)").bind(stamp, "#" + p.id + " status=" + gw.status).run(); } catch {}
               if (gw.ok) {
-                await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write','Implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), titleStr.slice(0,60)).run();
-                implemented = true;
+                let healthy = false;
+                try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(5000) }); healthy = h.ok; } catch {}
+                if (!healthy && backupText) {
+                  await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                    method: "PUT", headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+                    body: JSON.stringify({ message: "rollback: unhealthy after proposal #" + p.id, content: b64(backupText), sha: null }),
+                    signal: AbortSignal.timeout(15000)
+                  });
+                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy proposal #'||?2)").bind(stamp, p.id.toString()).run(); } catch {}
+                  await storeStreamThought(env.DB, "Rolled back proposal #" + p.id + ": brain unhealthy after code change", "bad", "evolve");
+                } else {
+                  await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write','Implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), titleStr.slice(0,60)).run();
+                  if (backupText) {
+                    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+                  }
+                  implemented = true;
+                }
               }
             }
           }
