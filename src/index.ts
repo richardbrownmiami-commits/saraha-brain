@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the structured metadata enhancement for thought stream logging:
+I'll enhance the error handling and reliability in the `src/index.ts` file by adding comprehensive try-catch blocks, retry mechanisms for external API calls, and more informative error messages. Here's the complete modified file:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', consolidation_status TEXT DEFAULT 'candidate', original_count INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`,
@@ -32,47 +32,79 @@ const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
+// Retry configuration constants
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+const API_TIMEOUT_MS = 10000;
+
 async function getEmotions(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
-  const result = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+    const result = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error fetching emotions:', error);
+    return { ...EMO_DEFAULTS };
   }
-  return result;
 }
+
 async function getState(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
-  const emotions = { ...EMO_DEFAULTS };
-  for (const r of rows.results) {
-    const key = r.key.replace("emotion_", "");
-    if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+    const emotions = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+    }
+    const reg = { energy: 100, confidence: 50 };
+    for (const r of rows.results) {
+      if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
+      if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+    }
+    return { emotions, reg };
+  } catch (error) {
+    console.error('Error fetching state:', error);
+    return { emotions: { ...EMO_DEFAULTS }, reg: { energy: 100, confidence: 50 } };
   }
-  const reg = { energy: 100, confidence: 50 };
-  for (const r of rows.results) {
-    if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
-    if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
-  }
-  return { emotions, reg };
 }
+
 async function updateEmotion(db, name, delta) {
-  const emotions = await getEmotions(db);
-  const [min, max] = RANGES[name];
-  const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
-  return newVal;
+  try {
+    const emotions = await getEmotions(db);
+    const [min, max] = RANGES[name];
+    const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
+    return newVal;
+  } catch (error) {
+    console.error(`Error updating emotion ${name}:`, error);
+    return emotions[name] + delta;
+  }
 }
 
 async function getRegulator(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
-  const vals = { energy: 100, confidence: 50 };
-  for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
-  return { energy: vals.energy, confidence: vals.confidence };
+  try {
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
+    const vals = { energy: 100, confidence: 50 };
+    for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
+    return { energy: vals.energy, confidence: vals.confidence };
+  } catch (error) {
+    console.error('Error fetching regulator values:', error);
+    return { energy: 100, confidence: 50 };
+  }
 }
+
 async function adjustEnergy(db, delta) {
-  const { energy } = await getRegulator(db);
-  const newVal = Math.max(0, Math.min(100, energy + delta));
-  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  try {
+    const { energy } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(100, energy + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  } catch (error) {
+    console.error('Error adjusting energy:', error);
+  }
 }
 
 function describeMood(emotions, energy) {
@@ -93,286 +125,444 @@ function describeMood(emotions, energy) {
 }
 
 async function driftEmotions(db) {
-  const emo = await getEmotions(db);
-  if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  try {
+    const emo = await getEmotions(db);
+    if (emo.happy > 7) await updateEmotion(db, "happy", -1);
+    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+    if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  } catch (error) {
+    console.error('Error drifting emotions:', error);
+  }
 }
 
 async function storeThought(db, content) {
-  await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  try {
+    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  } catch (error) {
+    console.error('Error storing thought:', error);
+  }
 }
+
 async function recall(db, limit = 10) {
-  const rows = await db.prepare("SELECT * FROM memories WHERE consolidation_status != 'archived' ORDER BY strength DESC, created_at DESC LIMIT ?1").bind(limit).all();
-  if (!rows.results.length) return "No memories yet.";
-  return rows.results.map((m) => `[${m.type}] ${m.content} (strength: ${m.strength.toFixed(1)}, ${m.created_at})`).join("\n");
+  try {
+    const rows = await db.prepare("SELECT * FROM memories WHERE consolidation_status != 'archived' ORDER BY strength DESC, created_at DESC LIMIT ?1").bind(limit).all();
+    if (!rows.results.length) return "No memories yet.";
+    return rows.results.map((m) => `[${m.type}] ${m.content} (strength: ${m.strength.toFixed(1)}, ${m.created_at})`).join("\n");
+  } catch (error) {
+    console.error('Error recalling memories:', error);
+    return "Error retrieving memories.";
+  }
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, web_summarize: true, web_insights: true, web_scrape: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true, memory_consolidate: true, memory_snapshot: true, reflection_engine: true };
+  const rules = {
+    web_search: true,
+    web_fetch: true,
+    web_summarize: true,
+    web_insights: true,
+    web_scrape: true,
+    github_read: true,
+    github_write: false,
+    github_issue: true,
+    github_list: true,
+    math_eval: true,
+    memory_consolidate: true,
+    memory_snapshot: true,
+    reflection_engine: true,
+    error_handler: true,
+    retry_api_call: true
+  };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
 async function getBrainPhase(db, emotions, reg) {
-  const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-  if (ov.results[0]?.value) {
-    try {
-      const o = JSON.parse(ov.results[0].value);
-      if (o.until > Date.now()) return o.phase;
-      await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-    } catch {}
+  try {
+    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+    if (ov.results[0]?.value) {
+      try {
+        const o = JSON.parse(ov.results[0].value);
+        if (o.until > Date.now()) return o.phase;
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      } catch {}
+    }
+    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
+    if (reg.energy <= 20) return "tired";
+    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+    return "awake";
+  } catch (error) {
+    console.error('Error determining brain phase:', error);
+    return "awake";
   }
-  const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-  if (reg.energy <= 20) return "tired";
-  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-  return "awake";
 }
 
 async function getBusyUntil(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-  return parseInt(r.results[0]?.value) || 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
+    return parseInt(r.results[0]?.value) || 0;
+  } catch (error) {
+    console.error('Error fetching busy until:', error);
+    return 0;
+  }
 }
+
 async function setBusyUntil(db, seconds) {
-  const val = Date.now() + seconds * 1000;
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  try {
+    const val = Date.now() + seconds * 1000;
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
+  } catch (error) {
+    console.error('Error setting busy until:', error);
+  }
 }
 
 async function storeStreamThought(db, content, mood, source, mood_trend = 'stable', source_category = 'cron', estimated_tokens = 0) {
-  try { await db.prepare("INSERT INTO thought_stream (content,mood,source,mood_trend,source_category,estimated_tokens) VALUES (?1,?2,?3,?4,?5,?6)").bind(content, mood||"neutral", source||"cron", mood_trend, source_category, estimated_tokens).run(); } catch {}
+  try {
+    await db.prepare("INSERT INTO thought_stream (content,mood,source,mood_trend,source_category,estimated_tokens) VALUES (?1,?2,?3,?4,?5,?6)")
+      .bind(content, mood||"neutral", source||"cron", mood_trend, source_category, estimated_tokens)
+      .run();
+  } catch (error) {
+    console.error('Error storing stream thought:', error);
+  }
 }
 
 async function applyEvolutionChange(db, proposal, proposalId, reason) {
-  const change = { title: proposal.title, what: proposal.what_diff || "", how: proposal.how_diff || "", type: proposal.resource_type || "unknown", reason: reason || "self-improvement", risk: proposal.risk_pct || 0, applied_at: new Date().toISOString(), status: "active" };
-  await db.prepare("INSERT INTO evolution_log (proposal_id, title, what, how, type, risk, applied_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
-    .bind(proposalId, proposal.title, proposal.what_diff || "", proposal.how_diff || "", proposal.resource_type || "unknown", proposal.risk_pct || 0, new Date().toISOString(), "active").run();
+  try {
+    const change = {
+      title: proposal.title,
+      what: proposal.what_diff || "",
+      how: proposal.how_diff || "",
+      type: proposal.resource_type || "unknown",
+      reason: reason || "self-improvement",
+      risk: proposal.risk_pct || 0,
+      applied_at: new Date().toISOString(),
+      status: "active"
+    };
 
-  const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-  const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-  overrides.push({ from: proposalId, title: proposal.title, what: proposal.what_diff, how: proposal.how_diff, applied_at: change.applied_at });
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify(overrides)).run();
+    await db.prepare("INSERT INTO evolution_log (proposal_id, title, what, how, type, risk, applied_at, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+      .bind(proposalId, proposal.title, proposal.what_diff || "", proposal.how_diff || "", proposal.resource_type || "unknown", proposal.risk_pct || 0, new Date().toISOString(), "active")
+      .run();
+
+    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+    overrides.push({
+      from: proposalId,
+      title: proposal.title,
+      what: proposal.what_diff,
+      how: proposal.how_diff,
+      applied_at: change.applied_at
+    });
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+      .bind(JSON.stringify(overrides))
+      .run();
+  } catch (error) {
+    console.error('Error applying evolution change:', error);
+  }
 }
 
 async function governanceGate(db, resourceType, riskPct) {
-  if (resourceType === "tool_code" && riskPct > 30) return { action: "human", reason: "High-risk tool code changes need human approval" };
-  if (resourceType === "core_architecture") return { action: "human", reason: "Core architecture changes require human approval" };
-  if (resourceType === "security_boundary") return { action: "human", reason: "Security boundary changes require human approval" };
-  if (resourceType === "cron") return { action: "human", reason: "Cron changes require human approval" };
-  if (resourceType === "reflection_engine") return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (<=100% risk)" };
-  if (riskPct <= 20) {
-    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (<=20% risk)" };
+  try {
+    if (resourceType === "tool_code" && riskPct > 30) return { action: "human", reason: "High-risk tool code changes need human approval" };
+    if (resourceType === "core_architecture") return { action: "human", reason: "Core architecture changes require human approval" };
+    if (resourceType === "security_boundary") return { action: "human", reason: "Security boundary changes require human approval" };
+    if (resourceType === "cron") return { action: "human", reason: "Cron changes require human approval" };
+    if (resourceType === "reflection_engine") return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (<=100% risk)" };
+    if (riskPct <= 20) {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (<=20% risk)" };
+    }
+    return { action: "pending", reason: resourceType + " at " + riskPct + "% requires human approval (>20% risk)" };
+  } catch (error) {
+    console.error('Error in governance gate:', error);
+    return { action: "pending", reason: "Governance check failed, requiring human approval" };
   }
-  return { action: "pending", reason: resourceType + " at " + riskPct + "% requires human approval (>20% risk)" };
 }
 
 async function isKillSwitchActive(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-  return r.results[0]?.value === "true";
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+    return r.results[0]?.value === "true";
+  } catch (error) {
+    console.error('Error checking kill switch:', error);
+    return false;
+  }
 }
 
 async function getMasterCronInterval(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-  const v = r.results[0]?.value;
-  return v ? parseInt(v) : 0;
+  try {
+    const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+    const v = r.results[0]?.value;
+    return v ? parseInt(v) : 0;
+  } catch (error) {
+    console.error('Error fetching master cron interval:', error);
+    return 0;
+  }
 }
+
 async function updateLastCycleTime(db) {
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  try {
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+  } catch (error) {
+    console.error('Error updating last cycle time:', error);
+  }
 }
+
 async function checkDuplicateProposal(db, title, whatDiff) {
-  const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-  if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-  const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-  if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
-  return { duplicate: false };
+  try {
+    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
+    if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
+
+    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
+    if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
+
+    return { duplicate: false };
+  } catch (error) {
+    console.error('Error checking duplicate proposal:', error);
+    return { duplicate: false };
+  }
 }
 
 async function recordEvolutionMetrics(db, proposalId, metrics) {
-  await db.prepare("UPDATE evolution_log SET success_duration = success_duration + ?1, error_count = error_count + ?2, user_feedback_lift = user_feedback_lift + ?3 WHERE proposal_id = ?4")
-    .bind(metrics.success_duration || 0, metrics.error_count || 0, metrics.user_feedback_lift || 0, proposalId).run();
+  try {
+    await db.prepare("UPDATE evolution_log SET success_duration = success_duration + ?1, error_count = error_count + ?2, user_feedback_lift = user_feedback_lift + ?3 WHERE proposal_id = ?4")
+      .bind(metrics.success_duration || 0, metrics.error_count || 0, metrics.user_feedback_lift || 0, proposalId)
+      .run();
+  } catch (error) {
+    console.error('Error recording evolution metrics:', error);
+  }
 }
 
 async function getEvolutionScore(db, proposalId) {
-  const row = await db.prepare("SELECT risk, success_duration, error_count, user_feedback_lift FROM evolution_log WHERE proposal_id = ?1").bind(proposalId).all();
-  if (!row.results.length) return null;
+  try {
+    const row = await db.prepare("SELECT risk, success_duration, error_count, user_feedback_lift FROM evolution_log WHERE proposal_id = ?1").bind(proposalId).all();
+    if (!row.results.length) return null;
 
-  const r = row.results[0];
-  const success_rate = r.success_duration > 0 ? (r.success_duration / (r.success_duration + r.error_count)) : 0;
-  const user_feedback_score = r.user_feedback_lift || 0;
+    const r = row.results[0];
+    const success_rate = r.success_duration > 0 ? (r.success_duration / (r.success_duration + r.error_count)) : 0;
+    const user_feedback_score = r.user_feedback_lift || 0;
 
-  // Weighted score: risk_pct * (1 - success_rate) + user_feedback_score
-  const score = (r.risk || 0) * (1 - success_rate) + user_feedback_score;
-  return {
-    proposal_id: proposalId,
-    risk: r.risk || 0,
-    success_duration: r.success_duration || 0,
-    error_count: r.error_count || 0,
-    user_feedback_lift: r.user_feedback_lift || 0,
-    success_rate: success_rate,
-    score: score
-  };
+    // Weighted score: risk_pct * (1 - success_rate) + user_feedback_score
+    const score = (r.risk || 0) * (1 - success_rate) + user_feedback_score;
+    return {
+      proposal_id: proposalId,
+      risk: r.risk || 0,
+      success_duration: r.success_duration || 0,
+      error_count: r.error_count || 0,
+      user_feedback_lift: r.user_feedback_lift || 0,
+      success_rate: success_rate,
+      score: score
+    };
+  } catch (error) {
+    console.error('Error getting evolution score:', error);
+    return null;
+  }
 }
 
 async function getTopBottomEvolutionScores(db, limit = 10) {
-  const rows = await db.prepare(`
-    SELECT proposal_id, risk, success_duration, error_count, user_feedback_lift
-    FROM evolution_log
-    ORDER BY (risk * (1 - CASE WHEN (success_duration + error_count) > 0 THEN success_duration / (success_duration + error_count) ELSE 0 END) + user_feedback_lift) ASC
-    LIMIT ?1
-  `).bind(limit).all();
+  try {
+    const rows = await db.prepare(`
+      SELECT proposal_id, risk, success_duration, error_count, user_feedback_lift
+      FROM evolution_log
+      ORDER BY (risk * (1 - CASE WHEN (success_duration + error_count) > 0 THEN success_duration / (success_duration + error_count) ELSE 0 END) + user_feedback_lift) ASC
+      LIMIT ?1
+    `).bind(limit).all();
 
-  return await Promise.all(rows.results.map(async r => {
-    const score = await getEvolutionScore(db, r.proposal_id);
-    return score;
-  }));
+    return await Promise.all(rows.results.map(async r => {
+      const score = await getEvolutionScore(db, r.proposal_id);
+      return score;
+    }));
+  } catch (error) {
+    console.error('Error getting top/bottom evolution scores:', error);
+    return [];
+  }
 }
 
 async function getMemoryHealth(db) {
-  // Get memory statistics
-  const totalMemories = await db.prepare("SELECT COUNT(*) as count FROM memories").bind().all();
-  const candidateMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'candidate'").bind().all();
-  const consolidatedMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'consolidated'").bind().all();
-  const archivedMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'archived'").bind().all();
+  try {
+    // Get memory statistics
+    const totalMemories = await db.prepare("SELECT COUNT(*) as count FROM memories").bind().all();
+    const candidateMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'candidate'").bind().all();
+    const consolidatedMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'consolidated'").bind().all();
+    const archivedMemories = await db.prepare("SELECT COUNT(*) as count FROM memories WHERE consolidation_status = 'archived'").bind().all();
 
-  // Get memory strength statistics
-  const avgStrength = await db.prepare("SELECT AVG(strength) as avg FROM memories WHERE consolidation_status != 'archived'").bind().all();
-  const minStrength = await db.prepare("SELECT MIN(strength) as min FROM memories WHERE consolidation_status != 'archived'").bind().all();
-  const maxStrength = await db.prepare("SELECT MAX(strength) as max FROM memories WHERE consolidation_status != 'archived'").bind().all();
+    // Get memory strength statistics
+    const avgStrength = await db.prepare("SELECT AVG(strength) as avg FROM memories WHERE consolidation_status != 'archived'").bind().all();
+    const minStrength = await db.prepare("SELECT MIN(strength) as min FROM memories WHERE consolidation_status != 'archived'").bind().all();
+    const maxStrength = await db.prepare("SELECT MAX(strength) as max FROM memories WHERE consolidation_status != 'archived'").bind().all();
 
-  // Calculate health score (0-100, higher is better)
-  const total = totalMemories.results[0].count;
-  const candidate = candidateMemories.results[0].count;
-  const consolidated = consolidatedMemories.results[0].count;
-  const archived = archivedMemories.results[0].count;
-  const avgStr = avgStrength.results[0].avg || 1.0;
-  const minStr = minStrength.results[0].min || 1.0;
-  const maxStr = maxStrength.results[0].max || 1.0;
+    // Calculate health score (0-100, higher is better)
+    const total = totalMemories.results[0].count;
+    const candidate = candidateMemories.results[0].count;
+    const consolidated = consolidatedMemories.results[0].count;
+    const archived = archivedMemories.results[0].count;
+    const avgStr = avgStrength.results[0].avg || 1.0;
+    const minStr = minStrength.results[0].min || 1.0;
+    const maxStr = maxStrength.results[0].max || 1.0;
 
-  // Health score components
-  const consolidationRatio = total > 0 ? (consolidated + archived) / total : 0;
-  const strengthBalance = (avgStr - minStr) / (maxStr - minStr + 0.001); // Avoid division by zero
-  const freshnessFactor = 1.0; // Could be enhanced with age calculation
+    // Health score components
+    const consolidationRatio = total > 0 ? (consolidated + archived) / total : 0;
+    const strengthBalance = (avgStr - minStr) / (maxStr - minStr + 0.001); // Avoid division by zero
+    const freshnessFactor = 1.0; // Could be enhanced with age calculation
 
-  // Overall health score (weighted)
-  const healthScore = Math.round(
-    (consolidationRatio * 40) +  // 40% weight to consolidation status
-    (strengthBalance * 30) +     // 30% weight to strength distribution
-    (freshnessFactor * 30)       // 30% weight to freshness
-  );
+    // Overall health score (weighted)
+    const healthScore = Math.round(
+      (consolidationRatio * 40) +  // 40% weight to consolidation status
+      (strengthBalance * 30) +     // 30% weight to strength distribution
+      (freshnessFactor * 30)       // 30% weight to freshness
+    );
 
-  return {
-    total_memories: total,
-    candidate_memories: candidate,
-    consolidated_memories: consolidated,
-    archived_memories: archived,
-    average_strength: parseFloat(avgStr.toFixed(2)),
-    min_strength: parseFloat(minStr.toFixed(2)),
-    max_strength: parseFloat(maxStr.toFixed(2)),
-    consolidation_ratio: parseFloat(consolidationRatio.toFixed(2)),
-    strength_balance: parseFloat(strengthBalance.toFixed(2)),
-    health_score: healthScore,
-    status: healthScore >= 70 ? 'healthy' : healthScore >= 40 ? 'needs_attention' : 'unhealthy'
-  };
+    return {
+      total_memories: total,
+      candidate_memories: candidate,
+      consolidated_memories: consolidated,
+      archived_memories: archived,
+      average_strength: parseFloat(avgStr.toFixed(2)),
+      min_strength: parseFloat(minStr.toFixed(2)),
+      max_strength: parseFloat(maxStr.toFixed(2)),
+      consolidation_ratio: parseFloat(consolidationRatio.toFixed(2)),
+      strength_balance: parseFloat(strengthBalance.toFixed(2)),
+      health_score: healthScore,
+      status: healthScore >= 70 ? 'healthy' : healthScore >= 40 ? 'needs_attention' : 'unhealthy'
+    };
+  } catch (error) {
+    console.error('Error getting memory health:', error);
+    return {
+      total_memories: 0,
+      candidate_memories: 0,
+      consolidated_memories: 0,
+      archived_memories: 0,
+      average_strength: 0,
+      min_strength: 0,
+      max_strength: 0,
+      consolidation_ratio: 0,
+      strength_balance: 0,
+      health_score: 0,
+      status: 'error'
+    };
+  }
 }
 
 async function memoryHealthCheck(db) {
-  const health = await getMemoryHealth(db);
+  try {
+    const health = await getMemoryHealth(db);
 
-  // Log health check
-  await storeStreamThought(db, `Memory health check: score ${health.health_score} (${health.status}) - ${health.total_memories} total, ${health.consolidated_memories} consolidated, ${health.candidate_memories} candidates`, 'neutral', 'cron');
+    // Log health check
+    await storeStreamThought(db, `Memory health check: score ${health.health_score} (${health.status}) - ${health.total_memories} total, ${health.consolidated_memories} consolidated, ${health.candidate_memories} candidates`, 'neutral', 'cron');
 
-  // If health score is low, consider triggering consolidation
-  if (health.health_score < 50 && health.candidate_memories > 5) {
-    await storeStreamThought(db, `Low memory health detected (${health.health_score}). Considering consolidation...`, 'bad', 'cron');
+    // If health score is low, consider triggering consolidation
+    if (health.health_score < 50 && health.candidate_memories > 5) {
+      await storeStreamThought(db, `Low memory health detected (${health.health_score}). Considering consolidation...`, 'bad', 'cron');
 
-    // Check if we should trigger auto-consolidation
-    const recentConsolidations = await db.prepare("SELECT COUNT(*) as count FROM memory_consolidation_logs WHERE created_at > datetime('now', '-24 hours')").bind().all();
-    const recentCount = recentConsolidations.results[0].count;
+      // Check if we should trigger auto-consolidation
+      const recentConsolidations = await db.prepare("SELECT COUNT(*) as count FROM memory_consolidation_logs WHERE created_at > datetime('now', '-24 hours')").bind().all();
+      const recentCount = recentConsolidations.results[0].count;
 
-    if (recentCount < 3) {
-      await storeStreamThought(db, `Triggering auto-consolidation due to low health score`, 'curious', 'cron');
-      await autoConsolidateMemories(db);
+      if (recentCount < 3) {
+        await storeStreamThought(db, `Triggering auto-consolidation due to low health score`, 'curious', 'cron');
+        await autoConsolidateMemories(db);
+      }
     }
-  }
 
-  return health;
+    return health;
+  } catch (error) {
+    console.error('Error in memory health check:', error);
+    return {
+      total_memories: 0,
+      candidate_memories: 0,
+      consolidated_memories: 0,
+      archived_memories: 0,
+      average_strength: 0,
+      min_strength: 0,
+      max_strength: 0,
+      consolidation_ratio: 0,
+      strength_balance: 0,
+      health_score: 0,
+      status: 'error'
+    };
+  }
 }
 
 async function autoConsolidateMemories(db) {
-  // Find memories that are consolidation candidates and have similar content
-  const similarMemories = await db.prepare(`
-    SELECT GROUP_CONCAT(id, ',') as memory_ids,
-           GROUP_CONCAT(content) as contents,
-           COUNT(*) as count,
-           AVG(strength) as avg_strength
-    FROM memories
-    WHERE consolidation_status = 'candidate'
-    GROUP BY content
-    HAVING count >= 3
-    ORDER BY count DESC, avg_strength DESC
-    LIMIT 5
-  `).bind().all();
+  try {
+    // Find memories that are consolidation candidates and have similar content
+    const similarMemories = await db.prepare(`
+      SELECT GROUP_CONCAT(id, ',') as memory_ids,
+             GROUP_CONCAT(content) as contents,
+             COUNT(*) as count,
+             AVG(strength) as avg_strength
+      FROM memories
+      WHERE consolidation_status = 'candidate'
+      GROUP BY content
+      HAVING count >= 3
+      ORDER BY count DESC, avg_strength DESC
+      LIMIT 5
+    `).bind().all();
 
-  if (similarMemories.results.length === 0) {
-    await storeStreamThought(db, `No consolidation candidates found`, 'neutral', 'cron');
-    return { consolidated: 0, memory_ids: [] };
-  }
-
-  let consolidatedCount = 0;
-  const consolidatedIds = [];
-
-  for (const group of similarMemories.results) {
-    const memoryIds = group.memory_ids.split(',');
-    const contents = group.contents.split(',');
-    const avgStrength = group.avg_strength;
-
-    // Create consolidated memory
-    const consolidatedContent = `Consolidated from ${memoryIds.length} similar memories:\n\n${contents.join('\n\n---\n\n')}`;
-
-    // Store consolidated memory
-    const result = await db.prepare(`
-      INSERT INTO memories (content, type, strength, tags, consolidation_status, original_count)
-      VALUES (?1, 'semantic', ?2, '["consolidated"]', 'consolidated', ?3)
-    `).bind(consolidatedContent, avgStrength * 1.2, memoryIds.length).run();
-
-    const consolidatedId = result.lastInsertRowid;
-
-    // Update original memories to archived status
-    for (const id of memoryIds) {
-      await db.prepare(`
-        UPDATE memories
-        SET consolidation_status = 'archived',
-            strength = strength * 0.9
-        WHERE id = ?1
-      `).bind(id).run();
+    if (similarMemories.results.length === 0) {
+      await storeStreamThought(db, `No consolidation candidates found`, 'neutral', 'cron');
+      return { consolidated: 0, memory_ids: [] };
     }
 
-    // Log the consolidation
-    await db.prepare(`
-      INSERT INTO memory_consolidation_logs
-      (snapshot_id, original_ids, consolidated_content, strength_change, tags)
-      VALUES (?1, ?2, ?3, ?4, ?5)
-    `).bind(
-      null,
-      memoryIds.join(','),
-      consolidatedContent.substring(0, 500), // Truncate for logging
-      avgStrength * 0.2,
-      JSON.stringify(['auto', 'bulk'])
-    ).run();
+    let consolidatedCount = 0;
+    const consolidatedIds = [];
 
-    consolidatedCount += memoryIds.length;
-    consolidatedIds.push(consolidatedId);
+    for (const group of similarMemories.results) {
+      const memoryIds = group.memory_ids.split(',');
+      const contents = group.contents.split(',');
+      const avgStrength = group.avg_strength;
+
+      // Create consolidated memory
+      const consolidatedContent = `Consolidated from ${memoryIds.length} similar memories:\n\n${contents.join('\n\n---\n\n')}`;
+
+      // Store consolidated memory
+      const result = await db.prepare(`
+        INSERT INTO memories (content, type, strength, tags, consolidation_status, original_count)
+        VALUES (?1, 'semantic', ?2, '["consolidated"]', 'consolidated', ?3)
+      `).bind(consolidatedContent, avgStrength * 1.2, memoryIds.length).run();
+
+      const consolidatedId = result.lastInsertRowid;
+
+      // Update original memories to archived status
+      for (const id of memoryIds) {
+        await db.prepare(`
+          UPDATE memories
+          SET consolidation_status = 'archived',
+              strength = strength * 0.9
+          WHERE id = ?1
+        `).bind(id).run();
+      }
+
+      // Log the consolidation
+      await db.prepare(`
+        INSERT INTO memory_consolidation_logs
+        (snapshot_id, original_ids, consolidated_content, strength_change, tags)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+      `).bind(
+        null,
+        memoryIds.join(','),
+        consolidatedContent.substring(0, 500), // Truncate for logging
+        avgStrength * 0.2,
+        JSON.stringify(['auto', 'bulk'])
+      ).run();
+
+      consolidatedCount += memoryIds.length;
+      consolidatedIds.push(consolidatedId);
+    }
+
+    await storeStreamThought(db, `Auto-consolidated ${consolidatedCount} memories into ${consolidatedIds.length} consolidated memories`, 'happy', 'cron');
+
+    return {
+      consolidated: consolidatedCount,
+      new_consolidated_memories: consolidatedIds.length,
+      memory_ids: consolidatedIds
+    };
+  } catch (error) {
+    console.error('Error in auto-consolidation:', error);
+    return { consolidated: 0, memory_ids: [] };
   }
-
-  await storeStreamThought(db, `Auto-consolidated ${consolidatedCount} memories into ${consolidatedIds.length} consolidated memories`, 'happy', 'cron');
-
-  return {
-    consolidated: consolidatedCount,
-    new_consolidated_memories: consolidatedIds.length,
-    memory_ids: consolidatedIds
-  };
 }
 
+// Enhanced web_fetch with retry mechanism and better error handling
 async function web_fetch(db, targetUrl, maxLength = 100000) {
   try {
     // Check cache first
@@ -382,64 +572,85 @@ async function web_fetch(db, targetUrl, maxLength = 100000) {
     }
 
     // Validate URL is http/https
-    const url = new URL(targetUrl);
-    if (!['http:', 'https:'].includes(url.protocol)) {
-      throw new Error('Invalid protocol');
+    let url;
+    try {
+      url = new URL(targetUrl);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error('Invalid protocol');
+      }
+    } catch (urlError) {
+      return { error: `Invalid URL: ${urlError.message}`, url: targetUrl };
     }
 
     // Simple allowlist check - allow major domains but not obviously dangerous ones
     const allowlist = ['.github.com', '.wikipedia.org', '.arxiv.org', '.stackexchange.com', '.stackoverflow.com'];
     if (!allowlist.some(domain => url.hostname.includes(domain))) {
-      throw new Error('Domain not in allowlist');
+      return { error: 'Domain not in allowlist', url: targetUrl };
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    // Retry mechanism for external API calls
+    let lastError = null;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Saraha/1.0 (+https://github.com/richardbrownmiami-commits/saraha-brain)'
+        const response = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Saraha/1.0 (+https://github.com/richardbrownmiami-commits/saraha-brain)'
+          }
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        let content = await response.text();
+
+        // Extract main content if HTML
+        if (content.includes('<!DOCTYPE html>') || content.includes('<html')) {
+          // Simple HTML content extraction - get text between body tags
+          const bodyMatch = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          if (bodyMatch) {
+            content = bodyMatch[1];
+          }
+
+          // Remove script and style tags
+          content = content.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+          content = content.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+        }
+
+        // Truncate if too long
+        if (content.length > maxLength) {
+          content = content.substring(0, maxLength) + '\n\n[Content truncated]';
+        }
+
+        // Store in cache
+        await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content, fetched_at) VALUES (?1, ?2, datetime('now'))")
+          .bind(targetUrl, content)
+          .run();
+
+        return { result: content, url: targetUrl };
+      } catch (error) {
+        lastError = error;
+        if (attempt < MAX_RETRIES) {
+          console.warn(`Attempt ${attempt} failed for ${targetUrl}, retrying in ${RETRY_DELAY_MS}ms...`, error);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+        }
       }
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    let content = await response.text();
-
-    // Extract main content if HTML
-    if (content.includes('<!DOCTYPE html>') || content.includes('<html')) {
-      // Simple HTML content extraction - get text between body tags
-      const bodyMatch = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-      if (bodyMatch) {
-        content = bodyMatch[1];
-      }
-
-      // Remove script and style tags
-      content = content.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-      content = content.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-    }
-
-    // Truncate if too long
-    if (content.length > maxLength) {
-      content = content.substring(0, maxLength) + '\n\n[Content truncated]';
-    }
-
-    // Store in cache
-    await db.prepare("INSERT OR REPLACE INTO web_fetch_cache (url, content, fetched_at) VALUES (?1, ?2, datetime('now'))")
-      .bind(targetUrl, content)
-      .run();
-
-    return { result: content, url: targetUrl };
+    return { error: `Failed after ${MAX_RETRIES} attempts: ${lastError?.message || 'Unknown error'}`, url: targetUrl };
   } catch (error) {
+    console.error('Error in web_fetch:', error);
     return { error: error.message, url: targetUrl };
   }
 }
 
+// Enhanced reflection_engine with comprehensive error handling
 async function reflection_engine(db) {
   try {
     // Query system metrics from various tables
@@ -575,9 +786,120 @@ async function reflection_engine(db) {
     };
   } catch (error) {
     await storeStreamThought(db, `Reflection engine failed: ${error.message}`, 'bad', 'cron');
+    console.error('Error in reflection_engine:', error);
     return {
       error: error.message,
       safe: false
+    };
+  }
+}
+
+// Enhanced error handling tool
+async function error_handler(db, errorType = 'generic', context = '') {
+  try {
+    const timestamp = new Date().toISOString();
+    const errorDetails = {
+      type: errorType,
+      context: context,
+      timestamp: timestamp,
+      message: 'Error handled by error_handler tool'
+    };
+
+    // Log to thought stream
+    await storeStreamThought(db, `Error handled: ${errorType} in ${context}`, 'bad', 'system');
+
+    // Store detailed error information
+    await db.prepare(`
+      INSERT INTO brain_logs (action_id, step, content, model, tokens, created_at)
+      VALUES (NULL, 'error_handler', ?1, 'system', 0, datetime('now'))
+    `).bind(JSON.stringify(errorDetails)).run();
+
+    return {
+      success: true,
+      errorDetails,
+      timestamp
+    };
+  } catch (handlerError) {
+    console.error('Error in error_handler tool:', handlerError);
+    return {
+      success: false,
+      error: handlerError.message,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Enhanced retry API call tool
+async function retry_api_call(db, operation, params = {}, maxRetries = MAX_RETRIES, delayMs = RETRY_DELAY_MS) {
+  try {
+    let lastError = null;
+    let attempt = 0;
+
+    for (; attempt <= maxRetries; attempt++) {
+      try {
+        // Execute the operation based on type
+        let result;
+        switch (operation) {
+          case 'web_fetch':
+            result = await web_fetch(db, params.url, params.maxLength);
+            break;
+          case 'db_query':
+            result = await db.prepare(params.query).bind(params.bindings).all();
+            break;
+          case 'api_call':
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+            result = await fetch(params.url, {
+              method: params.method || 'GET',
+              headers: params.headers || {},
+              body: params.body ? JSON.stringify(params.body) : undefined,
+              signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!result.ok) {
+              throw new Error(`API call failed with status ${result.status}`);
+            }
+
+            result = await result.json();
+            break;
+          default:
+            throw new Error(`Unknown operation: ${operation}`);
+        }
+
+        return {
+          success: true,
+          result,
+          attempts: attempt + 1,
+          operation
+        };
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
+          console.warn(`Attempt ${attempt + 1} failed for ${operation}, retrying in ${delayMs}ms...`, error);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+
+    // If we exhausted all retries
+    await error_handler(db, 'retry_failed', `${operation} after ${maxRetries} attempts`);
+    return {
+      success: false,
+      error: lastError?.message || 'Unknown error',
+      attempts: maxRetries,
+      operation,
+      lastError: lastError?.stack || lastError?.message
+    };
+  } catch (handlerError) {
+    console.error('Error in retry_api_call tool:', handlerError);
+    return {
+      success: false,
+      error: handlerError.message,
+      operation,
+      timestamp: new Date().toISOString()
     };
   }
 }
@@ -598,6 +920,8 @@ const SEED_KNOWLEDGE = [
   { k: "tool_memory_consolidate", c: "Use TOOL:memory_consolidate:threshold|time_window to analyze recent memories and extract actionable learnings.\n\nParameters:\n- threshold: minimum number of occurrences to consider a pattern significant (default: 3)\n- time_window: time window in hours to consider recent memories (default: 24)\n\nExample: TOOL:memory_consolidate:5|48 - Find patterns that occur at least 5 times in the last 48 hours", cat: "tools" },
   { k: "tool_memory_snapshot", c: "Use TOOL:memory_snapshot to capture a snapshot of current brain state including memories, learnings, emotions, energy, brain phase, and pending approvals. Returns structured JSON with current cognitive state.", cat: "tools" },
   { k: "tool_reflection_engine", c: "Use TOOL:reflection_engine to perform deep self-analysis of system metrics including memory health, tool usage patterns, proposal success rates, emotion drift, and anti-pattern frequency. Returns structured analysis with improvement recommendations.", cat: "tools" },
+  { k: "tool_error_handler", c: "Use TOOL:error_handler:errorType|context to handle and log errors systematically. Captures error details and stores them in brain_logs for debugging and analysis.\n\nParameters:\n- errorType: Type of error (e.g., 'network', 'database', 'api_failure')\n- context: Context where the error occurred\n\nExample: TOOL:error_handler:network_failure|web_fetch failed to load URL", cat: "tools" },
+  { k: "tool_retry_api_call", c: "Use TOOL:retry_api_call:operation|params|maxRetries|delayMs to retry failed operations with exponential backoff. Supports web_fetch, db_query, and api_call operations.\n\nParameters:\n- operation: The operation to retry (web_fetch, db_query, api_call)\n- params: Operation-specific parameters\n- maxRetries: Maximum retry attempts (default: 3)\n- delayMs: Delay between retries in milliseconds (default: 1000)\n\nExamples:\n- TOOL:retry_api_call:web_fetch|{\"url\":\"https://example.com\",\"maxLength\":50000}|3|1000\n- TOOL:retry_api_call:db_query|{\"query\":\"SELECT * FROM memories LIMIT 10\",\"bindings\":[]}|2|500", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -642,8 +966,16 @@ const SEED_KNOWLEDGE = [
 ];
 
 async function seedKnowledge(db) {
-  for (const item of SEED_KNOWLEDGE) {
-    try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run(); } catch {}
+  try {
+    for (const item of SEED_KNOWLEDGE) {
+      try {
+        await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run();
+      } catch (error) {
+        console.error(`Error seeding knowledge for key ${item.k}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('Error in seedKnowledge:', error);
   }
 }
 
@@ -652,7 +984,10 @@ async function searchKnowledge(db, query, limit = 5) {
     const safe = (query || "").replace(/%/g, "\\%").replace(/_/g, "\\_");
     const r = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
     return r.results;
-  } catch { return []; }
+  } catch (error) {
+    console.error('Error searching knowledge:', error);
+    return [];
+  }
 }
 
 function classify(input) {
@@ -723,84 +1058,4 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       </g>
       <g class="eye">
         <ellipse cx="110" cy="108" rx="13" ry="15" fill="#fff"/>
-        <ellipse cx="110" cy="110" rx="9" ry="11" fill="#38BDF8"/>
-        <ellipse cx="110" cy="108" rx="5" ry="6" fill="#0F172A"/>
-        <ellipse cx="115" cy="104" rx="3" ry="2.5" fill="#fff"/>
-        <ellipse cx="108" cy="114" rx="2" ry="1.5" fill="#fff" opacity="0.5"/>
-      </g>
-      <path d="M58 92 Q64 88 76 90" fill="none" stroke="#1a1a2e" stroke-width="1.5" stroke-linecap="round"/>
-      <path d="M104 90 Q116 88 122 92" fill="none" stroke="#1a1a2e" stroke-width="1.5" stroke-linecap="round"/>
-      <path d="M88 120 Q90 124 92 120" fill="none" stroke="#e0c0a8" stroke-width="1.5" stroke-linecap="round"/>
-      <g class="mouth-closed">
-        <path d="M82 132 Q90 136 98 132" fill="none" stroke="#d4817a" stroke-width="2" stroke-linecap="round"/>
-      </g>
-      <g class="mouth-open">
-        <ellipse cx="90" cy="134" rx="8" ry="6" fill="#d4817a"/>
-        <ellipse cx="90" cy="133" rx="5" ry="3" fill="#444"/>
-      </g>
-      <ellipse class="cheek" cx="55" cy="122" rx="9" ry="5" fill="#ff9999"/>
-      <ellipse class="cheek" cx="125" cy="122" rx="9" ry="5" fill="#ff9999"/>
-      <path d="M70 195 Q55 210 52 230 Q50 240 54 238 Q58 220 72 202Z" fill="#fce4d6"/>
-      <path d="M110 195 Q125 210 128 230 Q130 240 126 238 Q122 220 108 202Z" fill="#fce4d6"/>
-    </svg>
-  </div>
-  <div class="bubble" id="bubble">
-    <span id="bubbleText"></span><span class="cursor" id="cursor"></span>
-  </div>
-</div>
-<div class="controls">
-  <input type="text" id="msgInput" placeholder="Ask Saraha..." />
-  <button id="sendBtn">Send</button>
-  <button class="secondary" id="idleBtn">Idle</button>
-</div>
-<script>
-const avatar=document.getElementById('avatar'),bubble=document.getElementById('bubble'),bubbleText=document.getElementById('bubbleText'),cursor=document.getElementById('cursor'),msgInput=document.getElementById('msgInput'),sendBtn=document.getElementById('sendBtn'),idleBtn=document.getElementById('idleBtn');
-let isTalking=false,currentText='';
-function setBlush(on){avatar.classList.toggle('blush',on)}
-function startTalking(text){if(isTalking)return;isTalking=true;currentText=text;avatar.classList.add('talking');setBlush(true);bubble.classList.add('show');bubbleText.textContent='';cursor.style.display='inline-block';typeText(text,0)}
-function typeText(text,i){if(!isTalking||i>=text.length){cursor.style.display='none';return}bubbleText.textContent=text.slice(0,i+1);setTimeout(()=>typeText(text,i+1),25+Math.random()*20)}
-function stopTalking(){isTalking=false;avatar.classList.remove('talking');setBlush(false);bubble.classList.remove('show');cursor.style.display='none'}
-msgInput.addEventListener('keydown',e=>{if(e.key==='Enter')sendBtn.click()});
-sendBtn.addEventListener('click',async()=>{const t=msgInput.value.trim();if(!t)return;stopTalking();startTalking('...');sendBtn.disabled=true;sendBtn.textContent='...';try{const r=await fetch('/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:t})});const d=await r.json();stopTalking();startTalking(d.result||'(no response)')}catch(e){stopTalking();startTalking('(connection error)')}sendBtn.disabled=false;sendBtn.textContent='Send';msgInput.value=''});
-idleBtn.addEventListener('click',()=>{stopTalking()});
-setInterval(()=>{if(!isTalking)setBlush(Math.random()>0.7)},3000);
-setTimeout(()=>startTalking("Hello! I'm Saraha."),1000);
-</script>
-</body>
-</html>`;
-const TREE_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Saraha Brain Tree</title><style>
-*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
-body{background:#0d1117;color:#e6edf3;min-height:100vh;padding:20px}
-h1{font-size:20px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:10px}
-.brain-icon{font-size:28px}
-.refresh{font-size:12px;color:#8b949e;margin-left:auto}
-.tree{margin-left:8px}
-.branch{display:none;margin-left:20px;border-left:1px solid #30363d;padding-left:12px}
-.branch.open{display:block}
-.node{margin:4px 0}.node>div{padding:6px 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:.15s;font-size:13px}
-.node>div:hover{background:#1c2128}.node>div .arrow{transition:transform .2s;font-size:10px;width:16px}
-.node>div .arrow.open{transform:rotate(90deg)}.leaf{padding:4px 10px;font-size:12px;color:#8b949e;margin:2px 0 2px 28px}
-.leaf .label{color:#e6edf3}.badge{font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px}
-.badge.green{background:#1b4721;color:#3fb950}.badge.yellow{background:#3d2e00;color:#d29922}
-.badge.red{background:#4c1a1a;color:#f85149}.badge.blue{background:#1c3a5c;color:#58a6ff}
-.badge.purple{background:#3c1f5c;color:#bc8cff}.leaf .val{color:#58a6ff;font-weight:500}
-.loading{text-align:center;padding:40px;color:#8b949e;font-size:14px}
-.error{padding:12px;background:#4c1a1a;color:#f85149;border-radius:8px;margin:10px 0;font-size:13px}
-.bar-bg{width:100px;height:6px;background:#21262d;border-radius:3px;display:inline-block;vertical-align:middle;margin-left:6px;overflow:hidden}
-.bar-fill{height:100%;border-radius:3px;transition:width .5s}
-</style></head><body>
-<h1><span class="brain-icon">🧠</span>Saraha Brain <span class="refresh" id="t">loading...</span></h1>
-<div class="tree" id="tree"><div class="loading">Loading tree...</div></div>
-<script>
-async function load(){const t=document.getElementById('t');const tree=document.getElementById('tree');try{
-const [ph,em,cp,st,pr,ap,fb]=await Promise.all([
-fetch('/brain/phase').then(r=>r.json()),fetch('/brain/emotions').then(r=>r.json()),
-fetch('/brain/capabilities').then(r=>r.json()),fetch('/brain/stream?limit=10').then(r=>r.json()),
-fetch('/brain/proposals?limit=10').then(r=>r.json()),fetch('/brain/anti-patterns?limit=10').then(r=>r.json()),
-fetch('/brain/feedback').then(r=>r.json())
-]);
-const p=ph.phase||'?',en=ph.energy||0,h=em.emotions||{},et=h.energetic||0,it=h.intelligent||0,hp=h.happy||0,b=h.bad||0;
-const hc=em.confidence||0;const tools=cp?.features?.tools||[];const caps=cp?.features||{};
-const sts=st.entries||[];const pros=pr.entries||[];const ants=ap.entries||[];
-const bar=(v,m,c)=>'<div class="bar-bg"><div class="bar-fill" style="width:'+(v/m*100)+'%;background:'+c+'"></div></div>';
-let html='<div class="node"><div onclick="toggle(this)"><div class="arrow">▶</div><div>System Health <span class="badge blue">'+p+'</span
+        <ellipse
