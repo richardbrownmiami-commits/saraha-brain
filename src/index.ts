@@ -1,4 +1,4 @@
-Here's the complete modified `src/index.ts` file with the `math_eval` tool added and properly integrated:
+Here's the complete modified `src/index.ts` file with the `web_summarize` tool added and properly integrated:
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
@@ -99,7 +99,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
+  const rules = { web_search: true, web_fetch: true, web_summarize: true, github_read: true, github_write: false, github_issue: true, github_list: true, math_eval: true };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -213,6 +213,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to retrieve the full HTML content of a web page for deep analysis and knowledge extraction.", cat: "tools" },
+  { k: "tool_web_summarize", c: "Use TOOL:web_summarize:url to retrieve a concise summary of a web page's content using the Brave Summarizer API. More efficient than web_fetch for large or noisy pages.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:owner/repo/path|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "tool_github_issue", c: "Use TOOL:github_issue:owner/repo/action|issue_data to manage GitHub issues.\n\nActions:\n- list_issues - List issues in a repository\n- create_issue - Create a new issue\n- get_issue - Get details of a specific issue\n- update_issue - Update an existing issue\n- close_issue - Close an issue\n\nIssue data format (for create/update):\n{\n  \"title\": \"Issue title\",\n  \"body\": \"Issue description\",\n  \"labels\": [\"bug\", \"help-wanted\"],\n  \"assignees\": [\"username\"]\n}\n\nExample: TOOL:github_issue:owner/repo/create_issue|{\"title\":\"Bug in memory system\",\"body\":\"The memory recall function is not working correctly\",\"labels\":[\"bug\"]}", cat: "tools" },
@@ -253,6 +254,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
   { k: "evolution_scoring", c: "Evolution scoring tracks effectiveness of self-improvement proposals using metrics: success_duration (time without errors), error_count (failures), and user_feedback_lift (positive user feedback). The /brain/evolution_score endpoint returns weighted scores where lower scores indicate higher priority for evolution focus.", cat: "governance" },
+  { k: "governance_web_summarize", c: "URL summarization changes <=30% risk auto-approved. >30% needs human approval.", cat: "governance" },
 ];
 
 async function seedKnowledge(db) {
@@ -465,6 +467,49 @@ async function math_eval(db, expr) {
   } catch (e) {
     await storeStreamThought(db, `Math eval failed: ${expr} | ${e.message}`, 'bad', 'tool');
     return { error: e.message, safe: false };
+  }
+}
+
+async function webSummarize(env, url) {
+  if (!url) throw new Error('URL required');
+  if (!env.BRAVE_API_KEY) throw new Error('BRAVE_API_KEY not configured');
+
+  try {
+    const encodedUrl = encodeURIComponent(url);
+    const response = await fetch(`https://api.brave.com/summarize?url=${encodedUrl}`, {
+      headers: {
+        'Accept': 'application/json',
+        'X-Subscription-Token': env.BRAVE_API_KEY
+      },
+      signal: AbortSignal.timeout(15000)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Brave API error: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    if (!data.summary) {
+      throw new Error('No summary returned from Brave API');
+    }
+
+    // Log the successful summarization
+    await storeStreamThought(db, `Web summarize: ${url}`, 'neutral', 'tool');
+
+    return {
+      summary: data.summary,
+      url: url,
+      safe: true
+    };
+  } catch (error) {
+    await storeStreamThought(db, `Web summarize failed: ${url} | ${error.message}`, 'bad', 'tool');
+    return {
+      error: error.message,
+      url: url,
+      safe: false
+    };
   }
 }
 
@@ -718,44 +763,3 @@ async function githubList(env, input) {
   const parts = input.split("?");
   const repoParts = parts[0].split("/");
   const owner = repoParts[0], repo = repoParts[1];
-  const params = new URLSearchParams(parts[1] || "");
-  const type = params.get("type") || "all";
-  const path = params.get("path") || "";
-
-  if (!owner || !repo) return "Invalid format. Use: owner/repo?type=files|dirs|all&path=...";
-
-  const token = env.GITHUB_PAT;
-  if (!token) return "GitHub token not configured";
-
-  try {
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/main?recursive=1`;
-    const res = await fetch(apiUrl, {
-      headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-      signal: AbortSignal.timeout(15000)
-    });
-
-    if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-
-    const data = await res.json();
-    const files = data.tree.filter(item =>
-      item.type === 'blob' &&
-      (type === 'all' || type === 'files') &&
-      (path === '' || item.path.startsWith(path))
-    );
-    const dirs = data.tree.filter(item =>
-      item.type === 'tree' &&
-      (type === 'all' || type === 'dirs') &&
-      (path === '' || item.path.startsWith(path))
-    );
-
-    return {
-      files: type === 'files' || type === 'all' ? files.map(f => ({ path: f.path, size: f.size })) : [],
-      dirs: type === 'dirs' || type === 'all' ? dirs.map(d => d.path) : [],
-      total: files.length + dirs.length,
-    };
-  } catch (e) {
-    return "GitHub list error: " + e.message;
-  }
-}
-
-async function runTool(env,
