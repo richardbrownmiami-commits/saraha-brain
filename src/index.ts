@@ -124,15 +124,83 @@ async function getResearchTopic(db, emotions, reg) {
   return { topic: "Explore self-improvement opportunities", sources };
 }
 
+async function githubEdit(db, input) {
+  const parts = input.split("|");
+  if (parts.length < 4) throw new Error("Invalid input format. Use owner/repo/path|commit msg|old content|new content");
+
+  const [ownerRepoPath, commitMsg, oldContent, newContent] = parts;
+  const pathParts = ownerRepoPath.split("/");
+  if (pathParts.length < 3) throw new Error("Invalid repo/path format. Use owner/repo/path");
+  const owner = pathParts[0];
+  const repo = pathParts[1];
+  const path = pathParts.slice(2).join("/");
+
+  const token = env.GITHUB_PAT;
+  if (!token) throw new Error("GITHUB_PAT not configured");
+
+  // Get current file content to verify oldContent matches
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `token ${token}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Saraha-Brain"
+    }
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GitHub fetch failed: ${res.status} ${err}`);
+  }
+
+  const data = await res.json();
+  if (!data.content) throw new Error("File not found or not accessible");
+
+  const currentContent = atob(data.content);
+  if (currentContent !== oldContent) {
+    throw new Error("Current file content does not match oldContent. Aborting to prevent overwrites.");
+  }
+
+  // Create the new file content
+  const newContentB64 = btoa(unescape(encodeURIComponent(newContent)));
+
+  // Get the current file SHA
+  const sha = data.sha;
+
+  // Update the file
+  const updateUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const updateRes = await fetch(updateUrl, {
+    method: "PUT",
+    headers: {
+      "Authorization": `token ${token}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Saraha-Brain",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      message: commitMsg,
+      content: newContentB64,
+      sha: sha
+    })
+  });
+
+  if (!updateRes.ok) {
+    const err = await updateRes.text();
+    throw new Error(`GitHub edit failed: ${updateRes.status} ${err}`);
+  }
+
+  return { success: true, message: "File edited successfully", commit: commitMsg };
+}
+
 const TOOLS = {
   web_search: async (db, input) => ({ result: await webSearch(db, input) }),
   web_fetch: async (db, input) => ({ result: await webFetch(db, input) }),
   github_read: async (db, input) => ({ result: await githubRead(db, input) }),
   github_write: async (db, input) => ({ result: await githubWrite(db, input) }),
+  github_edit: async (db, input) => ({ result: await githubEdit(db, input) }),
   search_github_issues: async (db, input) => ({ result: await search_github_issues(db, input) }),
   fetch_github_issue: async (db, input) => ({ result: await fetch_github_issue(db, input) }),
 };
-
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
@@ -220,6 +288,7 @@ function isToolSafe(tool) {
     web_fetch: true,
     github_read: true,
     github_write: false,
+    github_edit: true,
     github_push: false,
     search_github_issues: true,
     fetch_github_issue: true
@@ -232,6 +301,7 @@ const SEED_KNOWLEDGE = [
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
+  { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit msg|old content|new content to make surgical edits to GitHub files. Uses diff-based updates for safer self-modifications.", cat: "tools" },
   { k: "tool_github_search_issues", c: "Use TOOL:search_github_issues:query|per_page|sort|order to discover GitHub issues/PRs across repositories. Example: 'self-improvement in:title in:body saraha label:enhancement'.", cat: "tools" },
   { k: "tool_github_fetch_issue", c: "Use TOOL:fetch_github_issue:owner/repo/issue_number to get full details of a specific GitHub issue/PR.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
