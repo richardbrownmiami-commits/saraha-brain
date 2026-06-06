@@ -120,7 +120,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -2228,6 +2228,101 @@ async function githubEdit(input) {
   } catch (error) {
     console.error('GitHub edit operation failed:', error.message);
     throw new Error(`Failed to edit file: ${error.message}`);
+  }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'github_edit':
+    result = await githubEdit(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+{ k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range edits in GitHub files. Safer than github_write as it only modifies matching content. Returns diff summary and SHA of updated file.", cat: "tools" },
+
+async function githubEdit(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    // Parse input format: owner/repo/path|commit message|old content|new content
+    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
+    if (!repoPath || !commitMsg || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit message|old content|new content");
+    }
+
+    const [owner, repo, path] = repoPath.split('/');
+    if (!owner || !repo || !path) {
+      throw new Error("Repository path must be in format owner/repo/path");
+    }
+
+    // Get current file content
+    const readInput = `${repoPath}|${path}`;
+    const currentFile = await githubRead(readInput);
+    if (!currentFile || !currentFile.content) {
+      throw new Error("Failed to read current file content");
+    }
+
+    // Verify old content exists
+    if (!currentFile.content.includes(oldContent)) {
+      throw new Error("Old content not found in file - cannot perform edit");
+    }
+
+    // Create new content with replacement
+    const updatedContent = currentFile.content.replace(oldContent, newContent);
+
+    // Prepare commit payload
+    const commitData = {
+      message: commitMsg,
+      content: btoa(unescape(encodeURIComponent(updatedContent))),
+      sha: currentFile.sha
+    };
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const response = await fetch(apiUrl, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(commitData)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const result = await response.json();
+    return {
+      success: true,
+      sha: result.content.sha,
+      commit_url: result.commit.html_url,
+      diff_summary: `Replaced content block in ${path}`
+    };
+  } catch (error) {
+    console.error('GitHub edit operation failed:', error.message);
+    throw new Error(`Failed to edit GitHub file: ${error.message}`);
   }
 }
 
