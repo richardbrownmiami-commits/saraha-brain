@@ -274,6 +274,112 @@ async function githubList(input) {
   return result;
 }
 
+function isToolSafe(tool) {
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false, github_list: true };
+  return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+{ k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
+
+async function governanceGate(db, resourceType, riskPct) {
+  if (resourceType === "github_list") {
+    return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+  }
+  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+}
+
+async function githubList(input) {
+  const [repoPath, recursive, limitStr] = input.split('|');
+  if (!repoPath) throw new Error("Repository path required: owner/repo/path");
+
+  const [owner, repo, path = ''] = repoPath.split('/');
+  const recursiveFlag = recursive === 'true';
+  const limit = parseInt(limitStr) || 100;
+
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+  const headers = {
+    'Authorization': `token ${env.GITHUB_PAT}`,
+    'Accept': 'application/vnd.github.v3+json'
+  };
+
+  const result = { path, is_dir: true, items: [] };
+  const queue = [{ path, url: apiUrl }];
+  const visited = new Set();
+
+  while (queue.length > 0 && result.items.length < limit) {
+    const item = queue.shift();
+    if (visited.has(item.url)) continue;
+    visited.add(item.url);
+
+    try {
+      const response = await fetch(item.url, { headers });
+      if (!response.ok) {
+        if (response.status === 404) continue;
+        throw new Error(`GitHub API error: ${response.status}`);
+      }
+
+      const items = await response.json();
+      if (!Array.isArray(items)) {
+        // Single file case
+        result.items.push({
+          name: item.path.split('/').pop(),
+          path: item.path,
+          type: 'file',
+          size: items.size,
+          sha: items.sha,
+          url: items.download_url
+        });
+        continue;
+      }
+
+      for (const entry of items) {
+        if (result.items.length >= limit) break;
+
+        if (entry.type === 'file') {
+          result.items.push({
+            name: entry.name,
+            path: entry.path,
+            type: 'file',
+            size: entry.size,
+            sha: entry.sha,
+            url: entry.download_url
+          });
+        } else if (entry.type === 'dir' && recursiveFlag) {
+          queue.push({
+            path: entry.path,
+            url: entry.url
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Error processing ${item.url}:`, error);
+      continue;
+    }
+  }
+
+  return result;
+}
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
