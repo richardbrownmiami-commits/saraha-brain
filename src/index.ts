@@ -759,7 +759,15 @@ export default {
       return json({ ok: true, cleared: true });
     }
 
-    if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
+        if (url.pathname === "/brain/set-pending" && req.method === "POST") {
+      const approved = await env.DB.prepare("SELECT id, title FROM proposals WHERE status='approved' ORDER BY id").all();
+      const ids = approved.results.map(p => p.id);
+      for (const id of ids) {
+        await env.DB.prepare("UPDATE proposals SET status='pending', decided_at=NULL WHERE id=?1").bind(id).run();
+      }
+      return json({ ok: true, count: ids.length, proposals: approved.results.map(p => ({ id: p.id, title: (p.title||"").slice(0,60) })) });
+    }
+if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
       const executed = await env.DB.prepare("SELECT p.id, p.title FROM proposals p LEFT JOIN authority_receipts r ON r.proposal_id=p.id AND r.outcome='success' WHERE p.status='executed' AND (r.approved_by IS NULL OR r.approved_by NOT LIKE '%implemented%') GROUP BY p.id ORDER BY p.id DESC LIMIT 10").all();
       const ids = executed.results.map(p => p.id);
       if (ids.length) {
