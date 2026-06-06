@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -120,7 +120,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -1083,7 +1083,7 @@ switch (tool) {
 
 { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range-based code modifications. Enables surgical edits without full file overwrites. Returns diff summary and new file content.", cat: "tools" },
 
-async async function githubEdit(input) {
+async async async function githubEdit(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
@@ -1096,72 +1096,101 @@ async async function githubEdit(input) {
     }
 
     const [owner, repo, path] = repoPath.split('/');
-    if (!owner || !repo || !path) {
+    if (!owner || !repo) {
       throw new Error("Repository path must be in format owner/repo/path");
     }
 
     // Get current file content
-    const readInput = `${owner}/${repo}/${path}`;
-    const currentContent = await githubRead(readInput);
-    if (currentContent.error) {
-      throw new Error(`Failed to read file: ${currentContent.error}`);
+    const fileData = await githubRead(`${owner}/${repo}/${path}`);
+    if (fileData.content !== oldContent) {
+      throw new Error("File content has changed since last read - aborting edit to prevent conflicts");
     }
 
-    // Verify old content matches
-    if (currentContent !== oldContent) {
-      throw new Error("Current file content doesn't match expected old content - aborting edit");
-    }
-
-    // Create GitHub API URL
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
-    // Get file SHA
-    const fileInfo = await fetch(apiUrl, {
-      headers: {
-        'Authorization': `token ${env.GITHUB_PAT}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Saraha-Brain'
-      }
-    });
-
-    if (!fileInfo.ok) {
-      const errorData = await fileInfo.json().catch(() => ({}));
-      throw new Error(`GitHub API error: ${fileInfo.status} - ${errorData.message || 'Unknown error'}`);
-    }
-
-    const fileData = await fileInfo.json();
-    if (!fileData.sha) {
-      throw new Error("Could not get file SHA");
-    }
-
-    // Prepare commit payload
-    const payload = {
-      message: commitMsg,
+    // Create blob for new content
+    const blobData = {
       content: btoa(unescape(encodeURIComponent(newContent))),
-      sha: fileData.sha
+      encoding: 'base64'
     };
 
-    // Update file
-    const response = await fetch(apiUrl, {
-      method: 'PUT',
+    // Create tree with updated file
+    const treeResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+      method: 'POST',
       headers: {
         'Authorization': `token ${env.GITHUB_PAT}`,
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'Saraha-Brain'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        base_tree: fileData.sha,
+        tree: [{
+          path: path.split('/').pop(),
+          mode: '100644',
+          type: 'blob',
+          sha: (await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `token ${env.GITHUB_PAT}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'Saraha-Brain'
+            },
+            body: JSON.stringify(blobData)
+          }).then(r => r.json()).then(data => data.sha))
+        }]
+      })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    if (!treeResponse.ok) {
+      const errorData = await treeResponse.json().catch(() => ({}));
+      throw new Error(`Failed to create tree: ${treeResponse.status} - ${errorData.message || 'Unknown error'}`);
     }
 
-    const result = await response.json();
+    const treeData = await treeResponse.json();
+
+    // Create commit
+    const commitResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain'
+      },
+      body: JSON.stringify({
+        message: commitMsg,
+        tree: treeData.sha,
+        parents: [fileData.commit.sha]
+      })
+    });
+
+    if (!commitResponse.ok) {
+      const errorData = await commitResponse.json().catch(() => ({}));
+      throw new Error(`Failed to create commit: ${commitResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const commitData = await commitResponse.json();
+
+    // Update reference
+    const refResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/main`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain'
+      },
+      body: JSON.stringify({
+        sha: commitData.sha
+      })
+    });
+
+    if (!refResponse.ok) {
+      const errorData = await refResponse.json().catch(() => ({}));
+      throw new Error(`Failed to update reference: ${refResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
     return {
       success: true,
-      commit: result.commit.html_url,
-      content: newContent
+      commit: commitData.sha,
+      message: commitMsg,
+      path: path
     };
   } catch (error) {
     console.error('GitHub edit operation failed:', error.message);
