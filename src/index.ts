@@ -116,7 +116,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -626,7 +626,7 @@ switch (tool) {
     throw new Error(`Unknown tool: ${tool}`);
 }
 
-async function webFetch(input) {
+async async function webFetch(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
@@ -665,34 +665,30 @@ async function webFetch(input) {
 
         if (!response.ok) {
           if (response.status === 429) {
-            const retryAfter = response.headers.get('Retry-After') || Math.pow(2, attempt) * baseDelay;
-            throw new Error(`Rate limited. Retry after ${retryAfter}ms`);
+            const retryAfter = response.headers.get('Retry-After') || Math.pow(2, attempt) * 1000;
+            await new Promise(resolve => setTimeout(resolve, retryAfter));
+            continue;
           }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
         const contentType = response.headers.get('content-type') || '';
-        let result;
-
+        let text;
         if (contentType.includes('application/json')) {
-          result = await response.json();
-        } else if (contentType.includes('text/html')) {
-          result = {
-            url: response.url,
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            content: await response.text()
-          };
+          text = JSON.stringify(await response.json());
+        } else if (contentType.includes('text/')) {
+          text = await response.text();
         } else {
-          result = {
-            url: response.url,
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            content: await response.text()
-          };
+          text = await response.text();
         }
 
-        return result;
+        return {
+          url,
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          content: text,
+          contentType
+        };
       } catch (error) {
         lastError = error;
         console.error(`[web_fetch] Attempt ${attempt + 1} failed:`, error.message);
@@ -704,13 +700,12 @@ async function webFetch(input) {
       }
     }
 
-    throw lastError || new Error("Unknown fetch error");
+    throw new Error(`Failed after ${maxRetries + 1} attempts: ${lastError?.message || 'Unknown error'}`);
   } catch (error) {
     console.error('Web fetch operation failed:', error.message);
     throw new Error(`Failed to fetch URL: ${error.message}`);
   }
 }
-
 function isToolSafe(tool) {
   try {
     if (!tool || typeof tool !== 'string') {
