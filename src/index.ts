@@ -116,7 +116,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -626,7 +626,7 @@ switch (tool) {
     throw new Error(`Unknown tool: ${tool}`);
 }
 
-async async function webFetch(input) {
+async async async function webFetch(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
@@ -665,30 +665,22 @@ async async function webFetch(input) {
 
         if (!response.ok) {
           if (response.status === 429) {
-            const retryAfter = response.headers.get('Retry-After') || Math.pow(2, attempt) * 1000;
+            const retryAfter = response.headers.get('Retry-After') || Math.pow(2, attempt) * baseDelay;
             await new Promise(resolve => setTimeout(resolve, retryAfter));
             continue;
           }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          const errorText = await response.text().catch(() => '');
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
 
         const contentType = response.headers.get('content-type') || '';
-        let text;
         if (contentType.includes('application/json')) {
-          text = JSON.stringify(await response.json());
-        } else if (contentType.includes('text/')) {
-          text = await response.text();
+          return await response.json();
+        } else if (contentType.includes('text/html') || contentType.includes('text/plain')) {
+          return await response.text();
         } else {
-          text = await response.text();
+          return await response.arrayBuffer().then(buf => Array.from(new Uint8Array(buf)));
         }
-
-        return {
-          url,
-          status: response.status,
-          headers: Object.fromEntries(response.headers.entries()),
-          content: text,
-          contentType
-        };
       } catch (error) {
         lastError = error;
         console.error(`[web_fetch] Attempt ${attempt + 1} failed:`, error.message);
