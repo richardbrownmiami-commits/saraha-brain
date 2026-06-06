@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -79,7 +79,6 @@ function isToolSafe(tool) {
       github_read: true,
       github_list: true,
       github_write: false,
-      github_edit: true,
       github_push: false
     };
 
@@ -120,7 +119,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -138,9 +137,6 @@ async async async async async async async async async async async async function
     }
     if (resourceType === "github_write") {
       return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
-    }
-    if (resourceType === "github_edit") {
-      return { action: riskPct <= 50 ? "auto" : "pending", reason: "github_edit at " + riskPct + "% requires human approval" };
     }
     return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
   } catch (error) {
@@ -1083,72 +1079,63 @@ switch (tool) {
 
 { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range-based code modifications. Enables surgical edits without full file overwrites. Returns diff summary and new file content.", cat: "tools" },
 
-async async function githubEdit(input) {
+async function githubEdit(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
     }
 
-    // Parse input format: owner/repo/path|commit_message|old_content|new_content
     const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
-    if (!repoPath || !commitMsg || !oldContent || !newContent) {
-      throw new Error("Input must be in format: owner/repo/path|commit_message|old_content|new_content");
+    if (!repoPath || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit message|old content|new content");
     }
 
     const [owner, repo, path] = repoPath.split('/');
-    if (!owner || !repo || !path) {
+    if (!owner || !repo) {
       throw new Error("Repository path must be in format owner/repo/path");
     }
 
     // Get current file content
-    const readInput = `${owner}/${repo}/${path}`;
-    const currentContent = await githubRead(readInput);
-    if (currentContent.error) {
-      throw new Error(`Failed to read file: ${currentContent.error}`);
+    const readInput = `${repoPath}|${path}`;
+    const currentFile = await githubRead(readInput);
+    if (currentFile.error) {
+      throw new Error(`Failed to read file: ${currentFile.error}`);
     }
 
     // Verify old content matches
-    if (currentContent !== oldContent) {
-      throw new Error("Current file content doesn't match expected old content - aborting edit");
+    if (currentFile.content !== oldContent) {
+      throw new Error("Current file content doesn't match old content - aborting to prevent overwrites");
     }
 
-    // Create GitHub API URL
+    // Create diff
+    const diff = generateDiff(oldContent, newContent);
+
+    // Create commit
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-
-    // Get file SHA
-    const fileInfo = await fetch(apiUrl, {
-      headers: {
-        'Authorization': `token ${env.GITHUB_PAT}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Saraha-Brain'
-      }
-    });
-
-    if (!fileInfo.ok) {
-      const errorData = await fileInfo.json().catch(() => ({}));
-      throw new Error(`GitHub API error: ${fileInfo.status} - ${errorData.message || 'Unknown error'}`);
-    }
-
-    const fileData = await fileInfo.json();
-    if (!fileData.sha) {
-      throw new Error("Could not get file SHA");
-    }
-
-    // Prepare commit payload
-    const payload = {
-      message: commitMsg,
-      content: btoa(unescape(encodeURIComponent(newContent))),
-      sha: fileData.sha
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
     };
 
-    // Update file
+    // Get current file SHA
+    const fileInfo = await fetch(apiUrl, { headers });
+    if (!fileInfo.ok) {
+      throw new Error(`Failed to get file info: ${fileInfo.status}`);
+    }
+    const fileData = await fileInfo.json();
+    const sha = fileData.sha;
+
+    // Create commit payload
+    const payload = {
+      message: commitMsg || "Surgical code edit",
+      content: btoa(unescape(encodeURIComponent(newContent))),
+      sha: sha
+    };
+
     const response = await fetch(apiUrl, {
       method: 'PUT',
-      headers: {
-        'Authorization': `token ${env.GITHUB_PAT}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Saraha-Brain'
-      },
+      headers: headers,
       body: JSON.stringify(payload)
     });
 
@@ -1160,14 +1147,16 @@ async async function githubEdit(input) {
     const result = await response.json();
     return {
       success: true,
-      commit: result.commit.html_url,
-      content: newContent
+      sha: result.content.sha,
+      commit_url: result.content.html_url,
+      diff_summary: diff
     };
   } catch (error) {
     console.error('GitHub edit operation failed:', error.message);
-    throw new Error(`Failed to edit repository file: ${error.message}`);
+    throw new Error(`Failed to edit file: ${error.message}`);
   }
 }
+
 function generateDiff(oldContent, newContent) {
   const oldLines = oldContent.split('\n');
   const newLines = newContent.split('\n');
@@ -2519,6 +2508,292 @@ switch (tool) {
     break;
   default:
     throw new Error(`Unknown tool: ${tool}`);
+}
+
+`CREATE TABLE IF NOT EXISTS github_issues_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT NOT NULL, body TEXT, labels TEXT DEFAULT '[]', state TEXT DEFAULT 'open', created_at TEXT, updated_at TEXT, url TEXT, author TEXT, comments INTEGER DEFAULT 0, UNIQUE(repo, issue_number))`,
+
+function isToolSafe(tool) {
+  try {
+    if (!tool || typeof tool !== 'string') {
+      return { safe: false, reason: "tool must be a non-empty string" };
+    }
+
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_push: false,
+      search_github_issues: true,
+      fetch_github_issue: true
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (!resourceType || typeof resourceType !== 'string') {
+      throw new Error("Resource type must be a non-empty string");
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    if (resourceType === "search_github_issues" || resourceType === "fetch_github_issue") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only GitHub API)" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'search_github_issues':
+    result = await searchGitHubIssues(input);
+    break;
+  case 'fetch_github_issue':
+    result = await fetchGitHubIssue(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+{ k: "tool_search_github_issues", c: "Use TOOL:search_github_issues:query|per_page|sort|order to search GitHub issues/PRs across repositories. Query follows GitHub's search syntax (e.g., 'is:issue is:open label:bug'). Per_page (1-100), sort (created, updated, comments, reactions), order (asc, desc). Returns issue summaries with metadata.", cat: "tools" },
+
+{ k: "tool_fetch_github_issue", c: "Use TOOL:fetch_github_issue:owner/repo/issue_number to fetch full details of a specific GitHub issue/PR. Returns complete issue data including title, body, comments, labels, and metadata.", cat: "tools" },
+
+async function searchGitHubIssues(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    const [query, perPageStr = '20', sort = 'updated', order = 'desc'] = input.split('|');
+    if (!query) throw new Error("Search query is required");
+
+    const perPage = Math.min(Math.max(parseInt(perPageStr) || 20, 1), 100);
+    const validSorts = ['created', 'updated', 'comments', 'reactions'];
+    const validOrders = ['asc', 'desc'];
+
+    if (!validSorts.includes(sort)) {
+      throw new Error(`Invalid sort parameter. Must be one of: ${validSorts.join(', ')}`);
+    }
+    if (!validOrders.includes(order)) {
+      throw new Error(`Invalid order parameter. Must be 'asc' or 'desc'`);
+    }
+
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const searchParams = new URLSearchParams({
+      q: query,
+      per_page: perPage.toString(),
+      sort,
+      order
+    });
+
+    const apiUrl = `https://api.github.com/search/issues?${searchParams.toString()}`;
+
+    const response = await fetch(apiUrl, { headers });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const data = await response.json();
+    if (!data.items || !Array.isArray(data.items)) {
+      throw new Error("GitHub API returned unexpected data format");
+    }
+
+    // Cache results
+    const db = await getDB();
+    for (const item of data.items) {
+      const repo = item.repository_url.split('/').slice(-2).join('/');
+      const labels = item.labels?.map(l => typeof l === 'string' ? l : l.name || '') || [];
+
+      await db.prepare(`
+        INSERT INTO github_issues_cache
+        (repo, issue_number, title, body, labels, state, created_at, updated_at, url, author, comments)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(repo, issue_number) DO UPDATE SET
+          title=excluded.title,
+          body=excluded.body,
+          labels=excluded.labels,
+          state=excluded.state,
+          updated_at=excluded.updated_at,
+          url=excluded.url,
+          author=excluded.author,
+          comments=excluded.comments
+      `)
+      .bind(
+        repo,
+        item.number,
+        item.title,
+        item.body || '',
+        JSON.stringify(labels),
+        item.state,
+        item.created_at,
+        item.updated_at,
+        item.html_url,
+        item.user?.login || '',
+        item.comments
+      )
+      .run();
+    }
+
+    return {
+      success: true,
+      query,
+      total_count: data.total_count,
+      items: data.items.map(item => ({
+        repo: item.repository_url.split('/').slice(-2).join('/'),
+        issue_number: item.number,
+        title: item.title,
+        state: item.state,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+        url: item.html_url,
+        author: item.user?.login || 'unknown',
+        comments: item.comments,
+        labels: item.labels?.map(l => typeof l === 'string' ? l : l.name || '') || []
+      }))
+    };
+  } catch (error) {
+    console.error('GitHub issue search failed:', error.message);
+    throw new Error(`Failed to search GitHub issues: ${error.message}`);
+  }
+}
+
+async function fetchGitHubIssue(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    const [repoPath, issueNumberStr] = input.split('/');
+    if (!repoPath || !issueNumberStr) {
+      throw new Error("Input must be in format owner/repo/issue_number");
+    }
+
+    const [owner, repo] = repoPath.split('/');
+    const issueNumber = parseInt(issueNumberStr);
+    if (isNaN(issueNumber) || issueNumber <= 0) {
+      throw new Error("Invalid issue number");
+    }
+
+    const db = await getDB();
+    const cached = await db.prepare("SELECT * FROM github_issues_cache WHERE repo=?1 AND issue_number=?2")
+      .bind(repoPath, issueNumber)
+      .first();
+
+    if (cached) {
+      const result = JSON.parse(JSON.stringify(cached));
+      result.labels = JSON.parse(result.labels || '[]');
+      return result;
+    }
+
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+    const response = await fetch(apiUrl, { headers });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(`Issue #${issueNumber} not found in ${owner}/${repo}`);
+      }
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const item = await response.json();
+
+    // Cache the result
+    const labels = item.labels?.map(l => typeof l === 'string' ? l : l.name || '') || [];
+    await db.prepare(`
+      INSERT INTO github_issues_cache
+      (repo, issue_number, title, body, labels, state, created_at, updated_at, url, author, comments)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    `)
+    .bind(
+      repoPath,
+      issueNumber,
+      item.title,
+      item.body || '',
+      JSON.stringify(labels),
+      item.state,
+      item.created_at,
+      item.updated_at,
+      item.html_url,
+      item.user?.login || '',
+      item.comments
+    )
+    .run();
+
+    return {
+      repo: repoPath,
+      issue_number: issueNumber,
+      title: item.title,
+      body: item.body || '',
+      labels,
+      state: item.state,
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+      url: item.html_url,
+      author: item.user?.login || 'unknown',
+      comments: item.comments,
+      assignees: item.assignees?.map(a => a.login) || [],
+      milestone: item.milestone?.title || null,
+      reactions: item.reactions || {},
+      closed_at: item.closed_at || null
+    };
+  } catch (error) {
+    console.error('GitHub issue fetch failed:', error.message);
+    throw new Error(`Failed to fetch GitHub issue: ${error.message}`);
+  }
 }
 
 const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
