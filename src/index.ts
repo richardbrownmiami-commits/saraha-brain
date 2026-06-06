@@ -119,7 +119,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -132,7 +132,7 @@ async async async async async async async async async async function governanceG
     if (resourceType === "github_list") {
       return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
     }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "github_edit") {
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
       return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
     }
     if (resourceType === "github_write") {
@@ -2488,6 +2488,26 @@ async function githubList(input) {
     console.error('GitHub list operation failed:', error.message);
     throw new Error(`Failed to list repository contents: ${error.message}`);
   }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
 }
 
 const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
