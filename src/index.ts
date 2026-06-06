@@ -94,79 +94,16 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_edit: true, github_push: false };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
-
-async function getBrainPhase(db, emotions, reg) {
-  const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-  if (ov.results[0]?.value) {
-    try {
-      const o = JSON.parse(ov.results[0].value);
-      if (o.until > Date.now()) return o.phase;
-      await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-    } catch {}
-  }
-  const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-  if (reg.energy <= 20) return "tired";
-  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-  return "awake";
-}
-
-async function getBusyUntil(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
-  return parseInt(r.results[0]?.value) || 0;
-}
-async function setBusyUntil(db, seconds) {
-  const val = Date.now() + seconds * 1000;
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('busy_until',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(val.toString()).run();
-}
-
-async function storeStreamThought(db, content, mood, source) {
-  try { await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run(); } catch {}
-}
-
-async function applyEvolutionChange(db, proposal, proposalId, reason) {
-  const change = { title: proposal.title, what: proposal.what_diff || "", how: proposal.how_diff || "", type: proposal.resource_type || "unknown", reason: reason || "self-improvement", risk: proposal.risk_pct || 0, applied_at: new Date().toISOString(), status: "active" };
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')").bind("evolution_log:" + proposalId, JSON.stringify(change)).run();
-  const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
-  const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
-  overrides.push({ from: proposalId, title: proposal.title, what: proposal.what_diff, how: proposal.how_diff, applied_at: change.applied_at });
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify(overrides)).run();
-}
-
-async function governanceGate(db, resourceType, riskPct) {
-  return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
-}
-
-async function isKillSwitchActive(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
-  return r.results[0]?.value === "true";
-}
-
-async function getMasterCronInterval(db) {
-  const r = await db.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
-  const v = r.results[0]?.value;
-  return v ? parseInt(v) : 0;
-}
-async function updateLastCycleTime(db) {
-  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_cycle_time',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
-}
-async function checkDuplicateProposal(db, title, whatDiff) {
-  const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2").bind(title, whatDiff).all();
-  if (existing.results.length) return { duplicate: true, existing: existing.results[0] };
-  const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'").bind(title).all();
-  if (receipts.results.length) return { duplicate: true, existing: receipts.results[0] };
-  return { duplicate: false };
-}
-
 const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
+  { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit msg|old content|new content to make precise line/range edits in GitHub files. Uses diff-based updates for safer self-modifications.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
@@ -202,21 +139,6 @@ const SEED_KNOWLEDGE = [
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
 ];
-
-async function seedKnowledge(db) {
-  for (const item of SEED_KNOWLEDGE) {
-    try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run(); } catch {}
-  }
-}
-
-async function searchKnowledge(db, query, limit = 5) {
-  try {
-    const safe = (query || "").replace(/%/g, "\\%").replace(/_/g, "\\_");
-    const r = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
-    return r.results;
-  } catch { return []; }
-}
-
 function classify(input) {
   const l = input.toLowerCase();
   if (l.includes("evolve")||l.includes("improve")||l.includes("grow")) return "evolve";
