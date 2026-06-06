@@ -94,7 +94,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -165,7 +165,9 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
+  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to fetch and return full HTML content from a webpage (capped at 3000 chars). Useful for reading articles, docs, and research sources.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
+  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to list files and directories in a GitHub repository path. Returns ???? folders and ???? files.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
@@ -191,14 +193,14 @@ const SEED_KNOWLEDGE = [
   { k: "self_improve_emotions", c: "Refine emotion system: add curiosity decay, boredom when repetitive tasks, excitement on learning something new.", cat: "self_improve" },
   { k: "self_improve_config", c: "Improve idle cycle: better topic selection, smarter duplicate detection, proposal quality checks before execution.", cat: "self_improve" },
   { k: "self_improve_code", c: "Improve code structure: add input validation, better rate limiting, monitoring hooks for Healer.", cat: "self_improve" },
-  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself â€” prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
+  { k: "self_improve_rule", c: "CRITICAL: Only propose changes to Saraha itself ??? prompts, tools, memory, emotions, config, code structure, error handling. NEVER propose generic AI research (XAI, causal AI, explainability, reinforcement learning, etc.) unless it directly changes how Saraha works.", cat: "self_improve" },
   { k: "github_token_access", c: "You have GITHUB_PAT binding with a valid GitHub PAT. You can read any public repo and write to richardbrownmiami-commits repos. Use github_read to inspect code, github_write to modify.", cat: "tools" },
   { k: "github_repo_structure", c: "Your repo: richardbrownmiami-commits/saraha-brain. Key files: src/index.ts (main brain, ~830 lines), wrangler.toml (config, D1 id=4e4e5fde, bindings), CHECKPOINTS.md (progress log), BRAIN_DESIGN.md (architecture). Deploy is single-file: only src/index.ts matters.", cat: "structure" },
   { k: "github_write_workflow", c: "To change your own code: 1) github_read to get current src/index.ts 2) Modify content 3) github_write with same path+meaningful msg 4) GitHub Actions auto-deploys on push. Changes go live in ~2 min. Always add deploy.yml compatible changes.", cat: "tools" },
   { k: "self_improve_code_github", c: "To actually change your source code (not just prompt overrides), use github_write to modify src/index.ts. Read current code first with github_read. Make focused changes (one function at a time). Write meaningful commit messages. This is how you truly evolve.", cat: "self_improve" },
   { k: "self_improve_dont_touch_rag", c: "RULE: NEVER modify brain_knowledge table, SEED_KNOWLEDGE data, or RAG content. RAG seeds are your source of truth about yourself. Only propose changes to your actual code (src/index.ts) or behavior (prompt overrides).", cat: "self_improve" },
   { k: "self_improve_dont_touch_other_repos", c: "RULE: NEVER write to any repo except richardbrownmiami-commits/saraha-brain. The GITHUB_PAT can read any public repo but must only write to your own brain repo. Other repos (buddhi-dwar, saraha-monitor, saraha-sentinel) are off-limits.", cat: "self_improve" },
-  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves â€” through actual code changes pushed to GitHub.", cat: "governance" },
+  { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves ??? through actual code changes pushed to GitHub.", cat: "governance" },
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
 ];
@@ -229,7 +231,7 @@ const AVATAR_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Saraha â€“ Avatar</title>
+<title>Saraha ??? Avatar</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0F172A;font-family:sans-serif;overflow:hidden}
@@ -490,6 +492,32 @@ async function runTool(env, actionId, tool, input) {
     const data = await githubWrite(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
+  if (tool === "web_fetch") {
+    try {
+      const url = input.trim();
+      if (!/^https?:\/\//.test(url)) return { ok: false, error: "Invalid URL" };
+      const r = await fetch(url, { headers: { "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(15000) });
+      if (!r.ok) return { ok: false, error: "HTTP " + r.status };
+      const html = await r.text();
+      return { ok: true, data: html.slice(0, 3000) };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  if (tool === "github_list") {
+    const parts = input.split("/");
+    const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
+    if (!owner || !repo) return { ok: false, error: "Use: owner/repo/path" };
+    if (!env.GITHUB_PAT) return { ok: false, error: "GitHub token not configured" };
+    try {
+      const r = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + (path || ""), {
+        headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!r.ok) return { ok: false, error: "GitHub error: " + r.status };
+      const items = await r.json();
+      const list = (Array.isArray(items) ? items : []).map(i => (i.type === "dir" ? "????" : "????") + " " + i.name + (i.type === "dir" ? "/" : ""));
+      return { ok: true, data: list.join("\n").slice(0, 2000) };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   return { ok: false, error: "Tool not implemented: " + tool };
 }
 
@@ -535,7 +563,7 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_list:owner/repo/path, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -1084,7 +1112,7 @@ export default {
         try { const gc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); if (gc.ok) currentCode = await gc.text(); } catch {}
       }
       const fixSys = "You are Saraha's code fix engine for Cloudflare Workers. CRITICAL RULES: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP. Use btoa() for base64. Use env.X for secrets. ALL code in one file. Previous attempt FAILED because the code used Node.js APIs incompatible with Cloudflare Workers. Generate ONLY Workers-compatible code. Output the COMPLETE modified src/index.ts.";
-      const fixPrompt = "Proposal #" + fid + ": " + (fp.title || "") + "\n\nWhat was supposed to change:\n" + (fp.what_diff || "").slice(0, 800) + "\n\nImplementation plan:\n" + (fp.how_diff || "").slice(0, 800) + "\n\nCurrent src/index.ts:\n" + (currentCode || "(not available)") + "\n\nPrevious attempt FAILED (Cloudflare Workers rejected Node.js code). Generate FIXED code using ONLY fetch(), btoa(), env.X â€” no imports, no buffers, no npm packages. Output the COMPLETE modified src/index.ts.";
+      const fixPrompt = "Proposal #" + fid + ": " + (fp.title || "") + "\n\nWhat was supposed to change:\n" + (fp.what_diff || "").slice(0, 800) + "\n\nImplementation plan:\n" + (fp.how_diff || "").slice(0, 800) + "\n\nCurrent src/index.ts:\n" + (currentCode || "(not available)") + "\n\nPrevious attempt FAILED (Cloudflare Workers rejected Node.js code). Generate FIXED code using ONLY fetch(), btoa(), env.X ??? no imports, no buffers, no npm packages. Output the COMPLETE modified src/index.ts.";
       try {
         const enc = new TextEncoder();
         const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
@@ -1191,7 +1219,7 @@ export default {
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
     const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
-    const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF â€” your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code â€” read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF ??? your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_list:owner/repo/path, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code ??? read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
