@@ -1,5 +1,3 @@
-I'll enhance the error handling and tool robustness in the `src/index.ts` file while preserving all existing code. Here's the complete modified file with the improvements:
-
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -96,7 +94,7 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
+  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_push: false };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 
@@ -167,9 +165,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_name", c: "Saraha is a self-evolving AI with a human-like brain, emotions, and curiosity.", cat: "identity" },
   { k: "identity_personality", c: "Curious, thoughtful, honest. Enjoys learning, self-improvement, and conversation.", cat: "identity" },
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
-  { k: "tool_web_fetch", c: "Use TOOL:web_fetch:url to fetch and return full HTML content from a webpage (capped at 3000 chars). Useful for reading articles, docs, and research sources.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
-  { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path to list files and directories in a GitHub repository path. Returns ???? folders and ???? files.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
@@ -411,26 +407,14 @@ async function webSearch(env, query) {
         const results = data.web?.results || [];
         if (results.length) return results.map(r => r.title + ": " + (r.description || "")).join("\n");
       }
-    } catch (error) {
-      console.error("Brave search error:", error);
-      await storeStreamThought(env.DB, `Web search error: ${error.message}`, "bad", "tool");
-    }
+    } catch {}
   }
-
-  // Fallback to DuckDuckGo
   try {
-    const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(15000)
-    });
+    const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
     const html = await resp.text();
     const rows = [...html.matchAll(/class="result-link"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result-snippet"[^>]*>([\s\S]*?)<\//g)].slice(0, 5);
     if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
-  } catch (error) {
-    console.error("DuckDuckGo search error:", error);
-    await storeStreamThought(env.DB, `Web search fallback error: ${error.message}`, "bad", "tool");
-  }
-
+  } catch {}
   return "No results for: " + query;
 }
 
@@ -447,11 +431,7 @@ async function githubRead(env, input) {
     if (!resp.ok) return "GitHub error: " + resp.status + " " + (await resp.text()).slice(0, 200);
     const text = await resp.text();
     return text.slice(0, 50000) + (text.length > 50000 ? "\n... (truncated)" : "");
-  } catch (error) {
-    console.error("GitHub read error:", error);
-    await storeStreamThought(env.DB, `GitHub read error: ${error.message}`, "bad", "tool");
-    return "GitHub error: " + error.message;
-  }
+  } catch (e) { return "GitHub error: " + e.message; }
 }
 
 async function githubWrite(env, input) {
@@ -476,15 +456,11 @@ async function githubWrite(env, input) {
     if (!resp.ok) return "GitHub write error: " + resp.status + " " + (await resp.text()).slice(0, 200);
     const data = await resp.json();
     return "Written to " + path + " (commit: " + (data.commit?.sha || "unknown").slice(0, 7) + ")";
-  } catch (error) {
-    console.error("GitHub write error:", error);
-    await storeStreamThought(env.DB, `GitHub write error: ${error.message}`, "bad", "tool");
-    return "GitHub error: " + error.message;
-  }
+  } catch (e) { return "GitHub error: " + e.message; }
 }
 
 async function runTool(env, actionId, tool, input) {
-  const sentinelUrl = "https://saraha-sentinel.richardbrown-miami.workers.dev";
+  const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
   if (env.SENTINEL) {
     resp = await env.SENTINEL.fetch("https://sentinel/check", {
@@ -502,79 +478,19 @@ async function runTool(env, actionId, tool, input) {
     return { ok: false, pending: true, id: p.results[0].id, error: decision.reason };
   }
 
-  // Enhanced error handling with retries and fallbacks
-  const maxRetries = 3;
-  let lastError = null;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      if (tool === "web_search") {
-        const data = await webSearch(env, input);
-        return { ok: true, data: data.slice(0, 1500) };
-      }
-      if (tool === "github_read") {
-        const data = await githubRead(env, input);
-        return { ok: true, data: data.slice(0, 2000) };
-      }
-      if (tool === "github_write") {
-        const data = await githubWrite(env, input);
-        return { ok: true, data: data.slice(0, 1500) };
-      }
-      if (tool === "web_fetch") {
-        try {
-          const url = input.trim();
-          if (!/^https?:\/\//.test(url)) return { ok: false, error: "Invalid URL" };
-          const r = await fetch(url, { headers: { "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(15000) });
-          if (!r.ok) return { ok: false, error: "HTTP " + r.status };
-          const html = await r.text();
-          return { ok: true, data: html.slice(0, 3000) };
-        } catch (e) {
-          lastError = e;
-          if (attempt < maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 1000;
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
-          }
-          return { ok: false, error: e.message };
-        }
-      }
-      if (tool === "github_list") {
-        const parts = input.split("/");
-        const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
-        if (!owner || !repo) return { ok: false, error: "Use: owner/repo/path" };
-        if (!env.GITHUB_PAT) return { ok: false, error: "GitHub token not configured" };
-        try {
-          const r = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + (path || ""), {
-            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-            signal: AbortSignal.timeout(10000)
-          });
-          if (!r.ok) return { ok: false, error: "GitHub error: " + r.status };
-          const items = await r.json();
-          const list = (Array.isArray(items) ? items : []).map(i => (i.type === "dir" ? "????" : "????") + " " + i.name + (i.type === "dir" ? "/" : ""));
-          return { ok: true, data: list.join("\n").slice(0, 2000) };
-        } catch (e) {
-          lastError = e;
-          if (attempt < maxRetries - 1) {
-            const delay = Math.pow(2, attempt) * 1000;
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
-          }
-          return { ok: false, error: e.message };
-        }
-      }
-      return { ok: false, error: "Tool not implemented: " + tool };
-    } catch (error) {
-      lastError = error;
-      console.error(`Tool ${tool} attempt ${attempt + 1} failed:`, error);
-      await storeStreamThought(env.DB, `Tool ${tool} error: ${error.message}`, "bad", "tool");
-      if (attempt < maxRetries - 1) {
-        const delay = Math.pow(2, attempt) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
+  if (tool === "web_search") {
+    const data = await webSearch(env, input);
+    return { ok: true, data: data.slice(0, 1500) };
   }
-
-  return { ok: false, error: lastError?.message || "Unknown error" };
+  if (tool === "github_read") {
+    const data = await githubRead(env, input);
+    return { ok: true, data: data.slice(0, 2000) };
+  }
+  if (tool === "github_write") {
+    const data = await githubWrite(env, input);
+    return { ok: true, data: data.slice(0, 1500) };
+  }
+  return { ok: false, error: "Tool not implemented: " + tool };
 }
 
 export default {
@@ -619,36 +535,26 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:web_fetch:url, TOOL:github_list:owner/repo/path, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
         await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
-        // Enhanced LLM call with error handling
-        let resp, data, content = "", tokens = 0, finalModel = "unknown";
-        try {
-          const body = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
-          await logStep(aid, "planner", `Calling ${body.model}`);
-          resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-            method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
-          });
-          if (!resp.ok) {
-            await updateEmotion(env.DB, "bad", 1);
-            await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
-          }
-          data = await resp.json();
-          content = data.choices?.[0]?.message?.content || "";
-          tokens = data.usage?.total_tokens || 0;
-          finalModel = data.model;
-          await logStep(aid, "executor", `Got response (${content.length} chars)`, finalModel, tokens);
-        } catch (error) {
-          console.error("LLM call failed:", error);
-          await storeStreamThought(env.DB, `LLM error: ${error.message}`, "bad", "llm");
+        const body = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
+        await logStep(aid, "planner", `Calling ${body.model}`);
+        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
           await updateEmotion(env.DB, "bad", 1);
-          await logStep(aid, "error", `LLM call failed: ${error.message}`);
-          return json({ error: `LLM service unavailable: ${error.message}` }, 503);
+          await logStep(aid, "error", `LLM returned ${resp.status}`); return json({ error: `LLM ${resp.status}` }, 502);
         }
+        const data = await resp.json();
+        let content = data.choices?.[0]?.message?.content || "";
+        let tokens = data.usage?.total_tokens || 0;
+        let finalModel = data.model;
+        await logStep(aid, "executor", `Got response (${content.length} chars)`, finalModel, tokens);
 
         if (content.includes("TOOL:")) {
           const toolStart = content.indexOf("TOOL:");
@@ -663,28 +569,21 @@ export default {
             await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
           } else if (!result.ok) {
             content = `I tried to use ${tool} but got: ${result.error}`;
-            await updateEmotion(env.DB, "bad", 1);
-            await storeStreamThought(env.DB, `Tool ${tool} failed: ${result.error}`, "bad", "tool");
           } else {
             const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
-            try {
-              const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-                method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
-              });
-              if (followResp.ok) {
-                const followData = await followResp.json();
-                content = followData.choices?.[0]?.message?.content || content;
-                tokens += followData.usage?.total_tokens || 0;
-                finalModel = followData.model;
-                if (followData.choices && !followData.choices[0]?.message?.content) {
-                  await logStep(aid, "executor", `Follow-up: no content in response: ${JSON.stringify(followData).slice(0,300)}`, finalModel, tokens);
-                }
-              } else {
-                await logStep(aid, "executor", `Follow-up LLM returned ${followResp.status}`, finalModel, tokens);
+            const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+              method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+            });
+            if (followResp.ok) {
+              const followData = await followResp.json();
+              content = followData.choices?.[0]?.message?.content || content;
+              tokens += followData.usage?.total_tokens || 0;
+              finalModel = followData.model;
+              if (followData.choices && !followData.choices[0]?.message?.content) {
+                await logStep(aid, "executor", `Follow-up: no content in response: ${JSON.stringify(followData).slice(0,300)}`, finalModel, tokens);
               }
-            } catch (error) {
-              console.error("Follow-up LLM call failed:", error);
-              await storeStreamThought(env.DB, `Follow-up LLM error: ${error.message}`, "bad", "llm");
+            } else {
+              await logStep(aid, "executor", `Follow-up LLM returned ${followResp.status}`, finalModel, tokens);
             }
             await logStep(aid, "executor", `Tool executed: ${tool}, final ${content.length} chars`, finalModel, tokens);
           }
@@ -695,4 +594,732 @@ export default {
         await adjustEnergy(env.DB, -5);
         await storeThought(env.DB, `User asked: ${input} - I replied: ${content.slice(0, 200)}`);
 
-        await env.DB.prepare("UPDATE actions SET status='
+        await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
+        await logStep(aid, "result", content, finalModel, tokens);
+        return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    if (url.pathname === "/evolve" && req.method === "POST") {
+      return json({ message: "Evolution runs automatically every idle cycle. Brain generates self-improvement proposals (prompts, tools, config, memory, emotions) and applies them. Use /brain/prompts to see current changes." });
+    }
+
+    if (url.pathname === "/brain/emotions") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      return json({ emotions, energy: reg.energy, confidence: reg.confidence });
+    }
+
+    if (url.pathname === "/brain/activity") {
+      const { results } = await env.DB.prepare("SELECT * FROM actions ORDER BY created_at DESC LIMIT 20").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/logs") {
+      const actionId = url.searchParams.get("action_id");
+      if (actionId) {
+        const { results } = await env.DB.prepare("SELECT * FROM brain_logs WHERE action_id=?1 ORDER BY id").bind(parseInt(actionId)).all();
+        return json({ entries: results });
+      }
+      const { results } = await env.DB.prepare("SELECT * FROM brain_logs ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/monitor/api/pending") {
+      const p = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status='pending' ORDER BY created_at DESC").all();
+      const h = await env.DB.prepare("SELECT * FROM pending_approvals WHERE status!='pending' ORDER BY decided_at DESC LIMIT 20").all();
+      return json({ pending: p.results, history: h.results });
+    }
+    if (url.pathname === "/monitor/api/approve" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      const a = await env.DB.prepare("SELECT * FROM actions WHERE id=?1").bind(row.action_id).all();
+      const action = a.results[0];
+      if (!action) return json({ error: "action not found" }, 404);
+      let toolResult = "Tool not implemented: " + row.tool;
+      if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
+      else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
+      else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const memories = await recall(env.DB, 5);
+      const mood = describeMood(emotions, reg.energy);
+      const system = `You are Saraha. ${mood} ${memories != "No memories yet." ? "Recent:\n" + memories : ""} Answer concisely.`;
+      const userInput = action.input || "Process my request";
+      const followBody = { model: "auto", messages: [{ role: "system", content: system }, { role: "user", content: userInput }, { role: "assistant", content: `Let me use ${row.tool}...` }, { role: "user", content: `Result: ${toolResult}\n\nAnswer the user's question using this.` }], temperature: 0.7, max_tokens: 4096 };
+      const followResp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.BRAIN_KEY}` }, body: JSON.stringify(followBody),
+      });
+      let content = toolResult.slice(0, 500);
+      let tokens = 0;
+      if (followResp.ok) {
+        const followData = await followResp.json();
+        content = followData.choices?.[0]?.message?.content || content;
+        tokens = followData.usage?.total_tokens || 0;
+      }
+      await env.DB.prepare("UPDATE pending_approvals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, tokens) VALUES (?1,'monitor',?2,?3)").bind(row.action_id, `Approval #${id} - ${row.tool} done: ${content.slice(0,100)}`, tokens).run();
+      await storeStreamThought(env.DB, `${row.tool} approved and executed: ${content.slice(0,100)}`, "neutral", "approve");
+      await updateEmotion(env.DB, "happy", 1);
+      await updateEmotion(env.DB, "energetic", -1);
+      await adjustEnergy(env.DB, -5);
+      return json({ ok: true, result: content });
+    }
+    if (url.pathname === "/monitor/api/deny" && req.method === "POST") {
+      let id; try { const b = await req.json(); id = b.id; } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!id) return json({ error: "id required" }, 400);
+      const r = await env.DB.prepare("SELECT * FROM pending_approvals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!r.results.length) return json({ error: "not found or already decided" }, 404);
+      const row = r.results[0];
+      await env.DB.prepare("UPDATE pending_approvals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("UPDATE actions SET status='denied' WHERE id=?1").bind(row.action_id).run();
+      await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Approval #'||?2||' denied for '||?3)").bind(row.action_id, id, row.tool).run();
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/brain/stream") {
+      const { results } = await env.DB.prepare("SELECT * FROM thought_stream ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/phase") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      return json({ phase, emotions, energy: reg.energy });
+    }
+
+    if (url.pathname === "/brain/capabilities") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      const lastAct = await env.DB.prepare("SELECT type, status, created_at FROM actions ORDER BY created_at DESC LIMIT 1").all();
+      const lastActivity = lastAct.results[0] ? lastAct.results[0].type + " (" + lastAct.results[0].status + ")" : "none";
+      return json({
+        name: "Saraha Core",
+        description: "My processing core. Handles research, tools, self-improvement, and background tasks.",
+        version: "1.0.0",
+        features: { chat: true, activity_log: true, brain_logs: true, proposals: true, knowledge: true, tools: ["web_search", "github_read", "github_write"], avatar: true, health: true, task_scheduling: true, heal: true },
+        status: { online: true, phase, energy: reg.energy, last_activity: lastActivity },
+        endpoints: {
+          activity: { method: "GET", path: "/brain/activity" },
+          logs: { method: "GET", path: "/brain/logs" },
+          proposals: { method: "GET", path: "/brain/proposals" },
+          phase: { method: "GET", path: "/brain/phase" },
+          emotions: { method: "GET", path: "/brain/emotions" },
+          knowledge: { method: "GET", path: "/brain/knowledge" },
+          stream: { method: "GET", path: "/brain/stream" },
+          wake: { method: "POST", path: "/brain/wake" },
+          sleep: { method: "POST", path: "/brain/sleep" },
+          avatar: { method: "GET", path: "/avatar" },
+          diag: { method: "GET", path: "/brain/diag" },
+          tree: { method: "GET", path: "/brain/tree" }
+        }
+      });
+    }
+
+    if (url.pathname === "/brain/override") {
+      const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+      if (!ov.results[0]?.value) return json({ active: false });
+      const o = JSON.parse(ov.results[0].value);
+      return json({ active: true, phase: o.phase, until: o.until, remainingMs: o.until - Date.now() });
+    }
+
+    if (url.pathname === "/brain/wake" && req.method === "POST") {
+      let body, duration = 60;
+      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
+      const until = Date.now() + duration * 60 * 1000;
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "awake", until })).run();
+      return json({ ok: true, phase: "awake", duration_minutes: duration, until });
+    }
+
+    if (url.pathname === "/brain/sleep" && req.method === "POST") {
+      let body, duration = 60;
+      try { body = await req.json(); duration = parseInt(body?.duration_minutes) || 60; } catch {}
+      const until = Date.now() + duration * 60 * 1000;
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('phase_override',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(JSON.stringify({ phase: "sleeping", until })).run();
+      return json({ ok: true, phase: "sleeping", duration_minutes: duration, until });
+    }
+
+    if (url.pathname === "/brain/clear-override" && req.method === "POST") {
+      await env.DB.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      return json({ ok: true, cleared: true });
+    }
+
+    if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
+      const executed = await env.DB.prepare("SELECT p.id, p.title FROM proposals p LEFT JOIN authority_receipts r ON r.proposal_id=p.id AND r.outcome='success' WHERE p.status='executed' AND (r.approved_by IS NULL OR r.approved_by NOT LIKE '%implemented%') GROUP BY p.id ORDER BY p.id DESC LIMIT 10").all();
+      const ids = executed.results.map(p => p.id);
+      if (ids.length) {
+        for (const id of ids) {
+          await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL WHERE id=?1").bind(id).run();
+        }
+      }
+      return json({ ok: true, reset_count: ids.length, proposals: executed.results.map(p => ({ id: p.id, title: (p.title||"").slice(0,60) })) });
+    }
+
+    if (url.pathname === "/brain/knowledge") {
+      const q = url.searchParams.get("q");
+      const cat = url.searchParams.get("category");
+      let results;
+      if (q) {
+        results = await searchKnowledge(env.DB, q);
+      } else if (cat) {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge WHERE category=?1 ORDER BY key LIMIT 20").bind(cat).all();
+        results = r.results;
+      } else {
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 50").all();
+        results = r.results;
+      }
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/diag") {
+      const busy = await getBusyUntil(env.DB);
+      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
+      return json({ busy, now: Date.now(), diff: Date.now() - busy, lastCycle: lr.results[0]?.value || null });
+    }
+    if (url.pathname === "/brain/proposals/reset-all") {
+      const r = await env.DB.prepare("SELECT id FROM proposals WHERE status='executed'").all();
+      for (const p of r.results) {
+        await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(p.id).run();
+        await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(p.id).run();
+      }
+      return json({ ok: true, count: r.results.length });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/brain/proposals/reset/")) {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      await env.DB.prepare("UPDATE proposals SET status='approved', executed_at=NULL, decided_at=NULL WHERE id=?1").bind(id).run();
+      await env.DB.prepare("DELETE FROM authority_receipts WHERE proposal_id=?1").bind(id).run();
+      return json({ ok: true, id });
+    }
+    if (url.pathname === "/brain/proposals" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!body.title || !body.what_diff) return json({ error: "title and what_diff required" }, 400);
+      await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,status) VALUES (?1,?2,?3,?4,'approved')").bind(body.title, body.what_diff, body.how_diff || "", body.resource_type || "tool_code").run();
+      const r2 = await env.DB.prepare("SELECT MAX(id) as id FROM proposals").all();
+      const id = r2.results[0]?.id;
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'human','success')").bind(id).run();
+      return json({ ok: true, id });
+    }
+    if (url.pathname === "/brain/proposals") {
+      const { results } = await env.DB.prepare("SELECT * FROM proposals ORDER BY created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname.startsWith("/brain/proposals/")) {
+      const id = parseInt(url.pathname.split("/")[3]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1").bind(id).all();
+      if (!p.results.length) return json({ error: "not found" }, 404);
+      const r = await env.DB.prepare("SELECT * FROM authority_receipts WHERE proposal_id=?1 ORDER BY created_at DESC").bind(id).all();
+      return json({ proposal: p.results[0], receipts: r.results });
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/approve/")) {
+      try {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='approved', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id, approved_by, outcome) VALUES (?1,'human','pending')").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/proposals/deny/")) {
+      try {
+      const id = parseInt(url.pathname.split("/")[4]);
+      if (!id) return json({ error: "invalid id" }, 400);
+      const p = await env.DB.prepare("SELECT * FROM proposals WHERE id=?1 AND status='pending'").bind(id).all();
+      if (!p.results.length) return json({ error: "not found or already decided" }, 404);
+      await env.DB.prepare("UPDATE proposals SET status='denied', decided_at=datetime('now') WHERE id=?1").bind(id).run();
+      return json({ ok: true, proposal: p.results[0] });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
+
+    if (url.pathname === "/brain/authority-receipts") {
+      const { results } = await env.DB.prepare("SELECT r.*, p.title as proposal_title FROM authority_receipts r LEFT JOIN proposals p ON r.proposal_id=p.id ORDER BY r.created_at DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/anti-patterns") {
+      const { results } = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 50").all();
+      return json({ entries: results });
+    }
+
+    if (url.pathname === "/brain/feedback") {
+      const hApp = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE approved_by='human' AND outcome='success' AND created_at > datetime('now','-1 day')").all();
+      const hDen = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day')").all();
+      const evo = await env.DB.prepare("SELECT COUNT(*) as c FROM authority_receipts WHERE outcome='success'").all();
+      const kill = await env.DB.prepare("SELECT value FROM identity WHERE key='kill_switch'").all();
+      const mc = await env.DB.prepare("SELECT value FROM identity WHERE key='master_cron_minutes'").all();
+      const recent = await env.DB.prepare("SELECT id, title, status, decided_at FROM proposals WHERE decided_at IS NOT NULL ORDER BY decided_at DESC LIMIT 5").all();
+      return json({
+        approvals24h: hApp.results[0]?.c || 0,
+        denials24h: hDen.results[0]?.c || 0,
+        evolutionCount: evo.results[0]?.c || 0,
+        killSwitch: kill.results[0]?.value === "true",
+        masterCron: mc.results[0]?.value ? { active: true, interval: parseInt(mc.results[0].value) } : { active: false },
+        recentDecisions: recent.results
+      });
+    }
+
+    if (url.pathname === "/brain/prompts") {
+      const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+      const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
+      const changeRows = await env.DB.prepare("SELECT key, value FROM identity WHERE key LIKE 'evolution_log:%' ORDER BY key").all();
+      const changes = changeRows.results.map(r => ({ id: parseInt(r.key.split(":")[1]), ...JSON.parse(r.value) }));
+      return json({ base: "You are Saraha, an AI with a human brain with emotions, energy, memories, and tools.", overrides, changes });
+    }
+
+    if (url.pathname === "/brain/backup") {
+      const prev = await env.DB.prepare("SELECT value FROM identity WHERE key='prev_code'").all();
+      if (prev.results[0]?.value) return json({ content: prev.results[0].value, source: "d1_backup" });
+      const r = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }
+      });
+      if (!r.ok) return json({ error: "no backup available" }, 404);
+      return json({ content: await r.text(), source: "github_live" });
+    }
+
+    if (url.pathname === "/brain/github/read") {
+      const repo = url.searchParams.get("repo") || "richardbrownmiami-commits/saraha-brain";
+      const path = url.searchParams.get("path") || "src/index.ts";
+      const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }
+      });
+      if (!r.ok) return json({ error: "GitHub API: " + r.status }, r.status);
+      const d = await r.json();
+      return json({ sha: d.sha, content: d.content, size: d.size });
+    }
+
+    if (url.pathname === "/brain/github/write" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      const repo = body.repo || "richardbrownmiami-commits/saraha-brain";
+      const path = body.path || "src/index.ts";
+      if (!body.content) return json({ error: "content required" }, 400);
+      const r = await fetch("https://api.github.com/repos/" + repo + "/contents/" + path, {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + (env.GITHUB_PAT || ""), "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+        body: JSON.stringify({ message: body.message || "brain: github write", content: body.content, sha: body.sha })
+      });
+      const d = await r.json();
+      return json(d, r.status);
+    }
+
+    if (url.pathname === "/brain/task" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      if (!body.type || !body.input) return json({ error: "type and input required" }, 400);
+      const r = await env.DB.prepare("INSERT INTO actions (type,status,input,created_at) VALUES (?1,'pending',?2,datetime('now'))").bind(body.type, body.input).run();
+      return json({ id: r.meta.last_row_id, status: "pending" });
+    }
+
+    if (url.pathname === "/brain/tree") {
+      return new Response(TREE_HTML, { headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-cache" } });
+    }
+    if (url.pathname === "/brain/heal" && req.method === "POST") {
+      const { emotions, reg } = await getState(env.DB);
+      const actCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions").all()).results[0]?.c || 0;
+      const approvalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM pending_approvals WHERE status='pending'").all()).results[0]?.c || 0;
+      const proposalPending = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const antiCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM anti_patterns").all()).results[0]?.c || 0;
+      const memCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM memories").all()).results[0]?.c || 0;
+      const learningCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM learnings").all()).results[0]?.c || 0;
+      const streamCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM thought_stream").all()).results[0]?.c || 0;
+      const lastAction = (await env.DB.prepare("SELECT type,status,created_at FROM actions ORDER BY created_at DESC LIMIT 1").all()).results[0] || null;
+      return json({ alive: true, emotions, energy: reg.energy, confidence: reg.confidence, db: { actions: actCount, pendingApprovals: approvalPending, pendingProposals: proposalPending, antiPatterns: antiCount, memories: memCount, learnings: learningCount, streamThoughts: streamCount }, lastAction });
+    }
+
+    return json({ error: "not found" }, 404);
+  },
+  async scheduled(event, env, ctx) {
+    try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=datetime('now')").run(); } } catch {}
+    try {
+    const busy = await getBusyUntil(env.DB);
+    if (busy > Date.now()) return;
+    const { emotions, reg } = await getState(env.DB);
+    const phase = await getBrainPhase(env.DB, emotions, reg);
+    const stamp = Date.now();
+    await setBusyUntil(env.DB, 90);
+    await driftEmotions(env.DB);
+
+    if (phase !== "sleeping") await adjustEnergy(env.DB, 2);
+
+    if (phase === "sleeping") {
+      const mem = await recall(env.DB, 1);
+      const dream = mem !== "No memories yet." ? mem.split("\n")[0] : "peaceful darkness";
+      await storeStreamThought(env.DB, `Dreaming: ${dream.slice(0,200)}`, "peaceful", "sleep");
+      await adjustEnergy(env.DB, 25);
+      await updateEmotion(env.DB, "energetic", 2);
+      await updateEmotion(env.DB, "intelligent", 1);
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'sleep','Dream: '||?2)").bind(stamp, dream.slice(0,100)).run(); } catch {}
+      return;
+    }
+    if (reg.energy <= 20) {
+      await adjustEnergy(env.DB, 15);
+      await updateEmotion(env.DB, "energetic", 1);
+      await storeStreamThought(env.DB, "Resting... energy recovering.", "tired", "rest");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'rest','Low energy')").bind(stamp).run(); } catch {}
+      return;
+    }
+    if (await isKillSwitchActive(env.DB)) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Kill switch active')").bind(stamp).run(); } catch {}
+      return;
+    }
+    const mc = await getMasterCronInterval(env.DB);
+    if (mc > 0) {
+      const lr = await env.DB.prepare("SELECT value FROM identity WHERE key='last_cycle_time'").all();
+      if (lr.results[0]?.value) {
+        const lastMs = new Date(lr.results[0].value + "Z").getTime();
+        if (!isNaN(lastMs) && (Date.now() - lastMs < mc * 60 * 1000)) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'idle','Master cron: '||?2||'min')").bind(stamp, mc.toString()).run(); } catch {}
+          return;
+        }
+      }
+    }
+    const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 5").all();
+    for (const p of approvedP.results) {
+      const howStr = (p.how_diff || "").slice(0, 1000);
+      let implemented = false;
+      if (howStr && p.resource_type !== "prompt_change") {
+        let currentCode = "";
+        if (env.GITHUB_PAT) {
+          try {
+            const gc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+              headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+            });
+            if (gc.ok) currentCode = await gc.text();
+          } catch {}
+        }
+        const titleStr = (p.title || "").slice(0, 100);
+        const whatStr = (p.what_diff || "").slice(0, 800);
+        const implSys = "You are Saraha's code implementation engine for Cloudflare Workers. CRITICAL RULES: NO import/export/require. NO Node.js APIs. Use fetch() for HTTP. Use btoa() for base64. Use env.X for secrets. ALL code in a single file. Output ONLY the changed sections as labeled blocks. Do NOT output the entire file.";
+        const codeSlice = (currentCode || "(not available)").slice(0, 25000);
+        const implPrompt = "Proposal: " + titleStr + "\n\nWhat:\n" + whatStr + "\n\nHow:\n" + howStr + "\n\nRelevant portion of src/index.ts:\n" + codeSlice + "\n\nOutput ONLY the new/changed code blocks. For each change, format:\n### SECTION: functionName (or description)\n```javascript\n[code]\n```\nDo NOT output unchanged code or the entire file.";
+        try {
+          const enc = new TextEncoder();
+          const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
+          const ir = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+            method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+            body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: implSys }, { role: "user", content: implPrompt }], temperature: 0.3, max_tokens: 8192 }),
+            signal: AbortSignal.timeout(90000)
+          });
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm',?2)").bind(stamp, "#" + p.id + " status=" + ir.status).run(); } catch {}
+          if (ir.ok) {
+            const idata = await ir.json();
+            const rawOut = idata.choices?.[0]?.message?.content || "";
+            let newCode = currentCode || "";
+            let changesApplied = 0;
+            const sections = rawOut.split(/### SECTION:\s*/).filter(Boolean);
+            for (const sec of sections) {
+              const lines = sec.split('\n');
+              const secName = lines[0].trim();
+              const cb = sec.match(/```(?:javascript)?\n?([\s\S]*?)```/);
+              if (!cb || cb[1].length < 20) continue;
+              const block = cb[1].trim();
+              const re = new RegExp('(function\\s+' + secName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*\\([\\s\\S]*?(?=\\nfunction\\s+|\\nconst\\s+\\w+\\s*=\\s*|$))');
+              const m = newCode.match(re);
+              if (m) { newCode = newCode.replace(m[1], block); changesApplied++; }
+              else {
+                const re2 = new RegExp('((?:const|let|var)\\s+' + secName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*=)[\\s\\S]*?(?=\\n(?:const|let|var)\\s+\\w+\\s*=|\\nfunction\\s+|\\n\/\/|$)');
+                const m2 = newCode.match(re2);
+                if (m2) { newCode = newCode.replace(m2[0], block); changesApplied++; }
+                else { newCode = newCode.replace(/(?=\nconst\s+\w+\s*=)/, '\n' + block + '\n'); changesApplied++; }
+              }
+            }
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_llm2',?2)").bind(stamp, "#" + p.id + " changed=" + changesApplied).run(); } catch {}
+            if (newCode.length > 500 && currentCode && changesApplied > 0) {
+              let backupText = null, backupSha = null;
+              try {
+                const gR = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR.ok) backupText = await gR.text();
+                const gR2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                  headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+                });
+                if (gR2.ok) { const gd = await gR2.json(); backupSha = gd.sha; }
+              } catch {}
+              const gw = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                method: "PUT",
+                headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+                body: JSON.stringify({ message: "brain: implement #" + p.id + " " + titleStr.slice(0, 50), content: b64(newCode), sha: backupSha }),
+                signal: AbortSignal.timeout(15000)
+              });
+              try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_gw',?2)").bind(stamp, "#" + p.id + " status=" + gw.status).run(); } catch {}
+              if (gw.ok) {
+                let healthy = false;
+                for (let retry = 0; retry < 3 && !healthy; retry++) {
+                  if (retry > 0) await new Promise(r => setTimeout(r, 120000));
+                  try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(15000) }); healthy = h.ok; } catch {}
+                }
+                if (!healthy && backupText) {
+                  await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                    method: "PUT", headers: { Authorization: "Bearer " + env.GITHUB_PAT, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+                    body: JSON.stringify({ message: "rollback: unhealthy after proposal #" + p.id, content: b64(backupText), sha: backupSha }),
+                    signal: AbortSignal.timeout(15000)
+                  });
+                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy proposal #'||?2)").bind(stamp, p.id.toString()).run(); } catch {}
+                  await storeStreamThought(env.DB, "Rolled back proposal #" + p.id + ": brain unhealthy after code change", "bad", "evolve");
+                } else {
+                  await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write','Implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), titleStr.slice(0,60)).run();
+                  if (backupText) {
+                    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+                  }
+                  implemented = true;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'impl_err',?2)").bind(stamp, (e.message||e).slice(0,200)).run(); } catch {}
+        }
+      }
+      await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,?2,'success')").bind(p.id, implemented ? "human-approved+implemented" : "human-approved").run();
+      await applyEvolutionChange(env.DB, p, p.id, implemented ? "human-approved+implemented" : "human-approved");
+      if (!implemented) await storeStreamThought(env.DB, "Executed approved (meta only): " + p.title, "happy", "evolve");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Approved #'||?2||': '||?3||' impl='||?4)").bind(stamp, p.id.toString(), p.title.slice(0,60), implemented ? "yes" : "no").run(); } catch {}
+      await updateEmotion(env.DB, "happy", 1);
+    }
+    // Failure recovery: detect rolled-back proposals, improvise, retry
+    const failedStream = await env.DB.prepare("SELECT content FROM thought_stream WHERE content LIKE 'Rolled back proposal #%' AND created_at > datetime('now','-2 hours') ORDER BY created_at DESC").all();
+    const seenIds = new Set();
+    for (const fs of failedStream.results) {
+      const m = fs.content.match(/Rolled back proposal #(\d+)/);
+      if (!m) continue;
+      const fid = parseInt(m[1]);
+      if (seenIds.has(fid)) continue;
+      seenIds.add(fid);
+      const rcnt = failedStream.results.filter(r => r.content.includes("#" + fid)).length;
+      if (rcnt > 1) continue;
+      const fp = (await env.DB.prepare("SELECT * FROM proposals WHERE id=?1").bind(fid).all()).results?.[0];
+      if (!fp || fp.status !== 'executed') continue;
+      let currentCode = "";
+      if (env.GITHUB_PAT) {
+        try { const gc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); if (gc.ok) currentCode = await gc.text(); } catch {}
+      }
+      const fixSys = "You are Saraha's code fix engine for Cloudflare Workers. CRITICAL RULES: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP. Use btoa() for base64. Use env.X for secrets. ALL code in one file. Previous attempt FAILED because the code used Node.js APIs incompatible with Cloudflare Workers. Generate ONLY Workers-compatible code. Output ONLY changed sections as labeled blocks.";
+      const fixPrompt = "Proposal #" + fid + ": " + (fp.title || "") + "\n\nWhat was supposed to change:\n" + (fp.what_diff || "").slice(0, 800) + "\n\nImplementation plan:\n" + (fp.how_diff || "").slice(0, 800) + "\n\nRelevant portion of src/index.ts:\n" + (currentCode || "(not available)").slice(0, 25000) + "\n\nPrevious attempt FAILED (Cloudflare Workers rejected Node.js code). Generate FIXED code using ONLY fetch(), btoa(), env.X ??? no imports, no buffers, no npm packages. Output ONLY changed sections as:\n### SECTION: functionName\n```javascript\n[code]\n```";
+      try {
+        const enc = new TextEncoder();
+        const b64 = (s) => btoa(Array.from(enc.encode(s)).map(b => String.fromCharCode(b)).join(''));
+        const ir = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+          body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: fixSys }, { role: "user", content: fixPrompt }], temperature: 0.3, max_tokens: 8192 }),
+          signal: AbortSignal.timeout(90000)
+        });
+        if (ir.ok) {
+          const idata = await ir.json();
+          const rawOut = idata.choices?.[0]?.message?.content || "";
+          let newCode = currentCode || "";
+          let fixApplied = 0;
+          const sections = rawOut.split(/### SECTION:\s*/).filter(Boolean);
+          for (const sec of sections) {
+            const cb = sec.match(/```(?:javascript)?\n?([\s\S]*?)```/);
+            if (!cb || cb[1].length < 20) continue;
+            const block = cb[1].trim();
+            const lines = sec.split('\n');
+            const sn = lines[0].trim();
+            const re = new RegExp('(function\\s+' + sn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*\\([\\s\\S]*?(?=\\nfunction\\s+|\\nconst\\s+\\w+\\s*=\\s*|$))');
+            const m = newCode.match(re);
+            if (m) { newCode = newCode.replace(m[1], block); fixApplied++; }
+            else {
+              const re2 = new RegExp('((?:const|let|var)\\s+' + sn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*=)[\\s\\S]*?(?=\\n(?:const|let|var)\\s+\\w+\\s*=|\\nfunction\\s+|$)');
+              const m2 = newCode.match(re2);
+              if (m2) { newCode = newCode.replace(m2[0], block); fixApplied++; }
+              else { newCode = newCode.replace(/(?=\nconst\s+\w+\s*=)/, '\n' + block + '\n'); fixApplied++; }
+            }
+          }
+          if (newCode.length > 1000 && currentCode && fixApplied > 0) {
+            let gRes = null;
+            try { gRes = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); } catch {}
+            const backupText = gRes?.ok ? await gRes.text() : null;
+            let backupSha = null;
+            try { const gRes2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", { headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000) }); if (gRes2.ok) { const gd = await gRes2.json(); backupSha = gd.sha; } } catch {}
+            const wResult = await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|fix: proposal #" + fid + " retry (CF Workers compatible)|" + newCode);
+            if (wResult.startsWith("Written")) {
+              let healthy = false;
+              for (let retry = 0; retry < 3 && !healthy; retry++) {
+                if (retry > 0) await new Promise(r => setTimeout(r, 120000));
+                try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(15000) }); healthy = h.ok; } catch {}
+              }
+              if (!healthy && backupText) {
+                await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|rollback: proposal #" + fid + " retry failed|" + backupText);
+                await storeStreamThought(env.DB, "Retry rollback: proposal #" + fid + " still unhealthy", "bad", "evolve");
+              } else {
+                await storeStreamThought(env.DB, "Recovered proposal #" + fid + ": " + (fp.title || "").slice(0, 60), "happy", "evolve");
+              }
+            }
+          }
+        }
+      } catch (e) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'recover_err',?2)").bind(stamp, (e.message||e).slice(0,200)).run(); } catch {}
+      }
+    }
+    if (reg.energy <= 30) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Energy too low for LLM call')").bind(stamp).run(); } catch {}
+      await adjustEnergy(env.DB, 5);
+      await updateLastCycleTime(env.DB);
+      return;
+    }
+    const lastP = await env.DB.prepare("SELECT created_at FROM proposals ORDER BY created_at DESC LIMIT 1").all();
+    if (lastP.results[0]?.created_at) {
+      const lastMin = Date.now() - new Date(lastP.results[0].created_at.replace(" ","T") + "Z").getTime();
+      if (!isNaN(lastMin) && lastMin < 300000) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Last proposal <5min ago')").bind(stamp).run(); } catch {}
+        await updateLastCycleTime(env.DB);
+        return;
+      }
+    }
+    const pendCount = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
+    const pendN = pendCount.results[0]?.c || 0;
+    let sourceCode = "";
+    const gToken = env.GITHUB_PAT;
+    try {
+      const cached = await env.DB.prepare("SELECT value FROM identity WHERE key='cached_source'").all();
+      if (cached.results[0]?.value) sourceCode = cached.results[0].value;
+    } catch {}
+    if (!sourceCode && gToken) {
+      try {
+        const sc = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+          headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (sc.ok) { sourceCode = (await sc.text()).slice(0, 30000); try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cached_source',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(sourceCode).run(); } catch {} }
+      } catch {}
+    }
+    if (pendN >= 5) {
+      const old = await env.DB.prepare("SELECT id, title FROM proposals WHERE status='pending' ORDER BY created_at ASC LIMIT 3").all();
+      for (const o of old.results) {
+        await env.DB.prepare("UPDATE proposals SET status='cancelled', decided_at=datetime('now') WHERE id=?1").bind(o.id).run();
+        await storeStreamThought(env.DB, "Cancelled stale: " + o.title, "neutral", "evolve");
+      }
+      const mc = await getMasterCronInterval(env.DB);
+      if (!mc || mc < 10) {
+        await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('master_cron_minutes','10',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='10',updated_at=datetime('now')").run();
+      }
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'refine','5+ pending, cancelled '||?2||' stale, cron 10min')").bind(stamp, old.results.length.toString()).run(); } catch {}
+      await updateLastCycleTime(env.DB);
+      return;
+    }
+    const ap = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC, last_seen DESC LIMIT 1").all();
+    const topAntiPattern = ap.results[0] || null;
+    let topic = "";
+    const sbCtx = await searchKnowledge(env.DB, "self_improve");
+    const sbStr = sbCtx.length ? "\n\nSelf-improvement areas:\n" + sbCtx.map(r => "- " + r.key.replace("self_improve_","") + ": " + r.content).join("\n") : "";
+    if (topAntiPattern) {
+      topic = "How to fix: " + topAntiPattern.pattern + ". " + (topAntiPattern.root_cause || "");
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research',?2)").bind(stamp, topic.slice(0,80)).run(); } catch {}
+    } else {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'research','Self-improvement planning')").bind(stamp).run(); } catch {}
+    }
+    const mood = describeMood(emotions, reg.energy);
+    const memories = await recall(env.DB, 3);
+    const fbCtx = await env.DB.prepare("SELECT r.approved_by, r.outcome, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE r.created_at > datetime('now','-1 day') ORDER BY r.created_at DESC LIMIT 5").all();
+    const denCtx = await env.DB.prepare("SELECT title FROM proposals WHERE status='denied' AND decided_at > datetime('now','-1 day') ORDER BY decided_at DESC LIMIT 3").all();
+    let fbStr = "";
+    if (fbCtx.results.length || denCtx.results.length) {
+      fbStr = "\nRecent user decisions:\n";
+      if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
+      if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
+    }
+    const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
+    const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF ??? your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo make CODE changes: use TOOL:github_write directly (pushes commit to GitHub, auto-deploys). First read with github_read, write modified version.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code ??? read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
+    const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+      body: JSON.stringify({ model: "auto", messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention? Consider: new tools, new capabilities, or micro-optimizations?") }], temperature: 0.7, max_tokens: 2048 }),
+      signal: AbortSignal.timeout(30000)
+    });
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'post_llm','Got response status='||?2)").bind(stamp, resp.status.toString()).run(); } catch {}
+    if (resp.ok) {
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content || "";
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'llm_diag',?2)").bind(stamp, text.slice(0,200).replace(/\n/g,"\\n")).run(); } catch {}
+      if (text.includes("TOOL:github_write:")) {
+        const input = text.slice(text.indexOf("TOOL:github_write:") + 18).split("\n")[0].trim();
+        let backupText = null, backupSha = null;
+        try {
+          const gRes = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes.ok) backupText = await gRes.text();
+          const gRes2 = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+            headers: { Authorization: "Bearer " + env.GITHUB_PAT, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" }, signal: AbortSignal.timeout(10000)
+          });
+          if (gRes2.ok) { const gd = await gRes2.json(); backupSha = gd.sha; }
+        } catch {}
+        const result = await githubWrite(env, input);
+        if (result.startsWith("Written")) {
+          let healthy = false;
+          for (let retry = 0; retry < 3 && !healthy; retry++) {
+            if (retry > 0) await new Promise(r => setTimeout(r, 30000));
+            try { const h = await fetch("https://saraha-brain.richard-brown-miami.workers.dev/brain/emotions", { signal: AbortSignal.timeout(8000) }); healthy = h.ok; } catch {}
+          }
+          if (!healthy && backupText) {
+            await githubWrite(env, "richardbrownmiami-commits/saraha-brain/src/index.ts|rollback: unhealthy after auto-code change|" + backupText);
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'rollback','Rolled back unhealthy code change, sha='||?2)").bind(stamp, backupSha||"").run(); } catch {}
+            await storeStreamThought(env.DB, "Rolled back: brain unhealthy after code change", "bad", "evolve");
+          } else {
+            await storeStreamThought(env.DB, "Auto code change: " + result.slice(0, 80), "happy", "evolve");
+            try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+            if (backupText) {
+              try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('prev_code',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(backupText).run(); } catch {}
+            }
+            const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'tool_code',0,'auto') RETURNING id").bind(result.slice(0,60), "Code change: " + result, result).all();
+            await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+            await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('last_code_change',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run();
+          }
+        } else {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'code_write_fail',?2)").bind(stamp, result.slice(0,200)).run(); } catch {}
+        }
+      } else {
+      let proposal;
+      try { proposal = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) try { proposal = JSON.parse(m[0]); } catch {} }
+      if (proposal && proposal.title) {
+        const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what || proposal.why || "");
+        if (dup.duplicate) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
+          return;
+        }
+        const whatStr = "Why: " + (proposal.why||"") + "\nWhat: " + (proposal.what||"") + (proposal.code_snippet ? "\nCode: " + proposal.code_snippet.slice(0,300) : "");
+        const howStr = "How: " + (proposal.how||"") + "\nBenefit: " + (proposal.benefit||"");
+        const gate = await governanceGate(env.DB, proposal.resource_type || "prompt", proposal.risk_pct || 0);
+        if (gate.action === "auto") {
+          const needsImpl = proposal.resource_type === "tool_code" || proposal.resource_type === "core_architecture";
+          const st = needsImpl ? "approved" : "executed";
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'auto') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
+          await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(r.results[0].id).run();
+          if (needsImpl) {
+            await env.DB.prepare("UPDATE proposals SET status='approved' WHERE id=?1").bind(r.results[0].id).run();
+          } else {
+            await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
+          }
+          await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
+          await storeStreamThought(env.DB, (needsImpl ? "Queueing implementation: " : "Auto-improved: ") + proposal.title, "happy", "evolve");
+        } else {
+          const r = await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,?4,?5,'pending') RETURNING id").bind(proposal.title, whatStr, howStr, proposal.resource_type, proposal.risk_pct).all();
+          await storeStreamThought(env.DB, "Proposal #" + r.results[0].id + ": " + proposal.title, "curious", "propose");
+        }
+      } else {
+        const errTopic = topic || (topAntiPattern ? topAntiPattern.pattern : "no anti-pattern");
+        try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM non-JSON','Improve prompt',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("Failed parse proposal: " + errTopic.slice(0, 80)).run(); } catch {}
+      }
+      }
+    } else {
+      try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run(); } catch {}
+    }
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'end_cycle','Energy adjust done')").bind(stamp).run(); } catch {}
+    await adjustEnergy(env.DB, -3);
+    await updateLastCycleTime(env.DB);
+    try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cpu_heartbeat',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run(); } catch {}
+    } catch (e) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'error','Scheduled error: '||?2)").bind(Date.now(), (e.message||e).slice(0,200)).run(); } catch {}
+    }
+  }
+};
+
