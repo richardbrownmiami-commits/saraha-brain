@@ -120,7 +120,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -2021,6 +2021,110 @@ async function githubEdit(input) {
     throw new Error(`Failed to edit repository file: ${error.message}`);
   }
 }
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'github_edit':
+    result = await githubEdit(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+async function githubEdit(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    // Parse input format: owner/repo/path|commit_message|old_content|new_content
+    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
+    if (!repoPath || !commitMsg || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit_message|old_content|new_content");
+    }
+
+    const [owner, repo, path] = repoPath.split('/');
+    if (!owner || !repo) {
+      throw new Error("Repository path must be in format owner/repo/path");
+    }
+
+    // Get current file content
+    const readInput = `${owner}/${repo}/${path}`;
+    const currentContent = await githubRead(readInput);
+    if (currentContent.error) {
+      throw new Error(`Failed to read file: ${currentContent.error}`);
+    }
+
+    // Verify old content matches
+    if (currentContent !== oldContent) {
+      throw new Error("Current file content doesn't match old content - potential race condition");
+    }
+
+    // Create diff and commit
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    // Get current file SHA
+    const fileInfo = await fetch(apiUrl, { headers });
+    if (!fileInfo.ok) {
+      throw new Error(`Failed to get file info: ${fileInfo.status}`);
+    }
+    const fileData = await fileInfo.json();
+    const sha = fileData.sha;
+
+    // Create commit
+    const commitData = {
+      message: commitMsg,
+      content: btoa(unescape(encodeURIComponent(newContent))),
+      sha: sha
+    };
+
+    const commitResponse = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(commitData)
+    });
+
+    if (!commitResponse.ok) {
+      const errorData = await commitResponse.json().catch(() => ({}));
+      throw new Error(`GitHub commit failed: ${commitResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const result = await commitResponse.json();
+    return {
+      success: true,
+      commit: result.commit,
+      content: newContent,
+      sha: result.content.sha
+    };
+  } catch (error) {
+    console.error('GitHub edit operation failed:', error.message);
+    throw new Error(`Failed to edit file: ${error.message}`);
+  }
+}
+
+{ k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range edits in GitHub files. Requires exact old content match for safety. Returns commit SHA and new content.", cat: "tools" },
 
 const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
 
