@@ -942,6 +942,15 @@ export default {
       return json({ alive: true, emotions, energy: reg.energy, confidence: reg.confidence, db: { actions: actCount, pendingApprovals: approvalPending, pendingProposals: proposalPending, antiPatterns: antiCount, memories: memCount, learnings: learningCount, streamThoughts: streamCount }, lastAction });
     }
 
+    if (url.pathname === "/brain/reset-all" && req.method === "POST") {
+      const allP = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all();
+      await env.DB.prepare("UPDATE proposals SET status='pending', decided_at=NULL, executed_at=NULL").run();
+      await env.DB.prepare("DELETE FROM identity WHERE key='system_prompt_overrides'").run();
+      await env.DB.prepare("DELETE FROM identity WHERE key LIKE 'evolution_log:%'").run();
+      const remaining = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
+      return json({ ok: true, totalProposals: allP.results[0].c, nowAllPending: remaining.results[0].c });
+    }
+
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
@@ -1121,5 +1130,6 @@ export default {
     }
   }
 };
+
 
 
