@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -116,7 +116,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -289,7 +289,7 @@ function isToolSafe(tool) {
   }
 }
 
-async async async function getBrainPhase(db, emotions, reg) {
+async async async async function getBrainPhase(db, emotions, reg) {
   try {
     if (!db || !emotions || !reg) {
       throw new Error("Missing required parameters");
@@ -398,7 +398,7 @@ async function getBrainPhase(db, emotions, reg) {
   }
 }
 
-async async function checkDuplicateProposal(db, title, whatDiff) {
+async async async function checkDuplicateProposal(db, title, whatDiff) {
   try {
     if (!db) {
       throw new Error("Database connection required");
@@ -558,7 +558,7 @@ const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
-async async function getEmotions(db) {
+async async async function getEmotions(db) {
   try {
     if (!db) {
       throw new Error("Database connection required");
@@ -593,7 +593,7 @@ function describeMood(emotions, energy) {
   return "You feel " + parts.join(", ") + ".";
 }
 
-async async function driftEmotions(db) {
+async async async function driftEmotions(db) {
   try {
     if (!db) {
       throw new Error("Database connection required");
