@@ -79,8 +79,7 @@ function isToolSafe(tool) {
       github_read: true,
       github_list: true,
       github_write: false,
-      github_push: false,
-      github_edit: true
+      github_push: false
     };
 
     if (!(tool in rules)) {
