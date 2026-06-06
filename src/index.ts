@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -95,7 +95,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async function governanceGate(db, resourceType, riskPct) {
+async async async async function governanceGate(db, resourceType, riskPct) {
   if (resourceType === "github_list") {
     return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
   }
@@ -138,7 +138,7 @@ async function governanceGate(db, resourceType, riskPct) {
   return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
 }
 
-async async async function githubList(input) {
+async async async async function githubList(input) {
   const [repoPath, recursive, limitStr] = input.split('|');
   if (!repoPath) throw new Error("Repository path required: owner/repo/path");
 
@@ -205,11 +205,6 @@ async async async function githubList(input) {
       }
     } catch (error) {
       console.error(`Error processing ${item.url}:`, error.message);
-      if (attempt < maxRetries) {
-        const delay = Math.pow(2, attempt) * 100;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
       throw error;
     }
   }
