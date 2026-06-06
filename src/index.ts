@@ -10,7 +10,128 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS github_issues_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT NOT NULL, body TEXT, labels TEXT DEFAULT '[]', state TEXT DEFAULT 'open', created_at TEXT, updated_at TEXT)`,
 ];
+async function github_searchIssues(query, per_page = 30, sort = "updated", order = "desc") {
+  const token = env.GITHUB_PAT;
+  if (!token) throw new Error("GITHUB_PAT not configured");
+  const url = `https://api.github.com/search/issues?q=${encodeURIComponent(query)}&per_page=${per_page}&sort=${sort}&order=${order}`;
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `token ${token}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Saraha-Brain"
+    }
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GitHub search failed: ${res.status} ${err}`);
+  }
+  const data = await res.json();
+  return data.items || [];
+}
+
+async function github_fetchIssue(owner, repo, issue_number) {
+  const token = env.GITHUB_PAT;
+  if (!token) throw new Error("GITHUB_PAT not configured");
+  const url = `https://api.github.com/repos/${owner}/${repo}/issues/${issue_number}`;
+  const res = await fetch(url, {
+    headers: {
+      "Authorization": `token ${token}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "Saraha-Brain"
+    }
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GitHub fetch failed: ${res.status} ${err}`);
+  }
+  return await res.json();
+}
+
+async function search_github_issues(db, input) {
+  const parts = input.split("|");
+  const query = parts[0] || "";
+  const per_page = parseInt(parts[1]) || 30;
+  const sort = parts[2] || "updated";
+  const order = parts[3] || "desc";
+  const items = await github_searchIssues(query, per_page, sort, order);
+  const results = items.map(it => ({
+    repo: it.repository_url.replace("https://api.github.com/repos/", ""),
+    issue_number: it.number,
+    title: it.title,
+    body: it.body,
+    labels: JSON.stringify(it.labels.map(l => typeof l === "string" ? l : l.name)),
+    state: it.state,
+    created_at: it.created_at,
+    updated_at: it.updated_at
+  }));
+  for (const r of results) {
+    await db.prepare("INSERT OR REPLACE INTO github_issues_cache (repo, issue_number, title, body, labels, state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+      .bind(r.repo, r.issue_number, r.title, r.body, r.labels, r.state, r.created_at, r.updated_at)
+      .run();
+  }
+  return results;
+}
+
+async function fetch_github_issue(db, input) {
+  const parts = input.split("/");
+  if (parts.length < 3) throw new Error("Invalid input format. Use owner/repo/issue_number");
+  const owner = parts[0];
+  const repo = parts[1];
+  const issue_number = parseInt(parts[2]);
+  if (isNaN(issue_number)) throw new Error("Invalid issue number");
+  const cached = await db.prepare("SELECT * FROM github_issues_cache WHERE repo=?1 AND issue_number=?2").bind(`${owner}/${repo}`, issue_number).first();
+  if (cached) return cached;
+  const issue = await github_fetchIssue(owner, repo, issue_number);
+  const result = {
+    repo: `${owner}/${repo}`,
+    issue_number: issue.number,
+    title: issue.title,
+    body: issue.body,
+    labels: JSON.stringify(issue.labels.map(l => typeof l === "string" ? l : l.name)),
+    state: issue.state,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at
+  };
+  await db.prepare("INSERT OR REPLACE INTO github_issues_cache (repo, issue_number, title, body, labels, state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
+    .bind(result.repo, result.issue_number, result.title, result.body, result.labels, result.state, result.created_at, result.updated_at)
+    .run();
+  return result;
+}
+
+async function getResearchTopic(db, emotions, reg) {
+  const anti = await db.prepare("SELECT pattern FROM anti_patterns ORDER BY last_seen DESC LIMIT 1").first();
+  if (anti) {
+    const sources = ["anti-patterns"];
+    return { topic: `Address anti-pattern: ${anti.pattern}`, sources };
+  }
+  const learn = await db.prepare("SELECT pattern FROM learnings ORDER BY last_used ASC LIMIT 1").first();
+  if (learn) {
+    const sources = ["learnings"];
+    return { topic: `Improve pattern: ${learn.pattern}`, sources };
+  }
+  // Try GitHub issues as knowledge source
+  try {
+    const issues = await db.prepare("SELECT repo, issue_number, title FROM github_issues_cache WHERE state='open' ORDER BY updated_at DESC LIMIT 5").all();
+    if (issues.results.length) {
+      const pick = issues.results[Math.floor(Math.random() * issues.results.length)];
+      const sources = ["github_issues"];
+      return { topic: `Research GitHub issue: ${pick.title} (${pick.repo}#${pick.issue_number})`, sources };
+    }
+  } catch {}
+  const sources = ["default"];
+  return { topic: "Explore self-improvement opportunities", sources };
+}
+
+const TOOLS = {
+  web_search: async (db, input) => ({ result: await webSearch(db, input) }),
+  web_fetch: async (db, input) => ({ result: await webFetch(db, input) }),
+  github_read: async (db, input) => ({ result: await githubRead(db, input) }),
+  github_write: async (db, input) => ({ result: await githubWrite(db, input) }),
+  search_github_issues: async (db, input) => ({ result: await search_github_issues(db, input) }),
+  fetch_github_issue: async (db, input) => ({ result: await fetch_github_issue(db, input) }),
+};
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
@@ -94,7 +215,15 @@ async function recall(db, limit = 10) {
 }
 
 function isToolSafe(tool) {
-  const rules = { web_search: true, web_fetch: true, github_read: true, github_write: false, github_edit: true, github_push: false };
+  const rules = {
+    web_search: true,
+    web_fetch: true,
+    github_read: true,
+    github_write: false,
+    github_push: false,
+    search_github_issues: true,
+    fetch_github_issue: true
+  };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
 }
 const SEED_KNOWLEDGE = [
@@ -103,7 +232,8 @@ const SEED_KNOWLEDGE = [
   { k: "tool_web_search", c: "Use TOOL:web_search:query to search the web for current information.", cat: "tools" },
   { k: "tool_github_read", c: "Use TOOL:github_read:owner/repo/path to read file contents from GitHub.", cat: "tools" },
   { k: "tool_github_write", c: "Use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new content to write files on GitHub. Content is base64-encoded automatically.", cat: "tools" },
-  { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit msg|old content|new content to make precise line/range edits in GitHub files. Uses diff-based updates for safer self-modifications.", cat: "tools" },
+  { k: "tool_github_search_issues", c: "Use TOOL:search_github_issues:query|per_page|sort|order to discover GitHub issues/PRs across repositories. Example: 'self-improvement in:title in:body saraha label:enhancement'.", cat: "tools" },
+  { k: "tool_github_fetch_issue", c: "Use TOOL:fetch_github_issue:owner/repo/issue_number to get full details of a specific GitHub issue/PR.", cat: "tools" },
   { k: "governance_prompt", c: "Prompt changes <=30% risk auto-approved. >30% needs human. Healer rate-limits >3 high-risk/hr.", cat: "governance" },
   { k: "governance_config", c: "Config changes <=30% risk auto-approved. >30% needs human. Healer saves backup timestamps.", cat: "governance" },
   { k: "governance_tool_code", c: "Tool code changes <=30% auto. >30% human. Healer checks brain health after execution.", cat: "governance" },
