@@ -1043,6 +1043,172 @@ async function webFetch(input) {
   }
 }
 
+function isToolSafe(tool) {
+  try {
+    if (!tool || typeof tool !== 'string') {
+      return { safe: false, reason: "tool must be a non-empty string" };
+    }
+
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_edit: true,
+      github_push: false
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (!resourceType || typeof resourceType !== 'string') {
+      throw new Error("Resource type must be a non-empty string");
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    if (resourceType === "github_edit") {
+      return { action: riskPct <= 50 ? "auto" : "pending", reason: "github_edit at " + riskPct + "% requires human approval for surgical modifications" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'github_edit':
+    result = await githubEdit(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+async function githubEdit(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    // Parse input format: owner/repo/path|commit_msg|old_content|new_content
+    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
+    if (!repoPath || !commitMsg || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit_msg|old_content|new_content");
+    }
+
+    const [owner, repo, path] = repoPath.split('/');
+    if (!owner || !repo || !path) {
+      throw new Error("Repository path must be in format owner/repo/path");
+    }
+
+    // Get current file content
+    const fileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const response = await fetch(fileUrl, { headers });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const fileData = await response.json();
+    if (fileData.type !== 'file') {
+      throw new Error("Target path is not a file");
+    }
+
+    // Verify content matches expected old content
+    const currentContent = atob(fileData.content);
+    if (currentContent !== oldContent) {
+      throw new Error("File content has changed since last read. Aborting edit to prevent conflicts.");
+    }
+
+    // Prepare new content
+    const newContentB64 = btoa(unescape(encodeURIComponent(newContent)));
+
+    // Create commit
+    const commitData = {
+      message: commitMsg,
+      content: newContentB64,
+      sha: fileData.sha
+    };
+
+    const commitUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const commitResponse = await fetch(commitUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(commitData)
+    });
+
+    if (!commitResponse.ok) {
+      const errorData = await commitResponse.json().catch(() => ({}));
+      throw new Error(`GitHub commit failed: ${commitResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const result = await commitResponse.json();
+    return {
+      success: true,
+      commit: {
+        sha: result.content.sha,
+        url: result.content.html_url,
+        message: commitMsg
+      },
+      oldSha: fileData.sha
+    };
+  } catch (error) {
+    console.error('GitHub edit operation failed:', error.message);
+    throw new Error(`Failed to edit repository file: ${error.message}`);
+  }
+}
+
+{ k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform surgical edits on GitHub files. The tool verifies the file hasn't changed since you last read it, then applies precise changes. Requires exact old content match to prevent conflicts. Returns commit SHA and URL.", cat: "tools" },
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
