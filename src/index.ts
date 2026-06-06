@@ -711,6 +711,194 @@ async function webFetch(input) {
   }
 }
 
+function isToolSafe(tool) {
+  try {
+    if (!tool || typeof tool !== 'string') {
+      return { safe: false, reason: "tool must be a non-empty string" };
+    }
+
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_push: false
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (!resourceType || typeof resourceType !== 'string') {
+      throw new Error("Resource type must be a non-empty string");
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+async function webFetch(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    // Parse input format: url|method|headers|body
+    const [url, method = 'GET', headersStr = '{}', body = ''] = input.split('|');
+    if (!url) throw new Error("URL is required");
+
+    const parsedHeaders = headersStr ? JSON.parse(headersStr) : {};
+    const headers = {
+      'User-Agent': 'Saraha-Brain/1.0 (+https://github.com/your-repo)',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate, br',
+      ...parsedHeaders
+    };
+
+    let lastError = null;
+    const maxRetries = 3;
+    const baseDelay = 1000;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+        const response = await fetch(url, {
+          method: method.toUpperCase(),
+          headers,
+          body: body || undefined,
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          if (response.status === 429) {
+            const retryAfter = response.headers.get('Retry-After') || Math.pow(2, attempt) * 1000;
+            throw new Error(`Rate limited. Retry after ${retryAfter}ms`);
+          }
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        let text = '';
+        if (contentType.includes('application/json')) {
+          text = JSON.stringify(await response.json(), null, 2);
+        } else if (contentType.includes('text/html')) {
+          text = await response.text();
+        } else {
+          text = await response.text();
+        }
+
+        return {
+          url,
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          content_type: contentType,
+          content: text,
+          size: text.length
+        };
+      } catch (error) {
+        lastError = error;
+        console.error(`[web_fetch] Attempt ${attempt + 1} failed:`, error.message);
+
+        if (attempt < maxRetries && !(error.message.includes('Rate limited') && attempt >= 2)) {
+          const delay = Math.pow(2, attempt) * baseDelay;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    throw new Error('Max retries exceeded');
+  } catch (error) {
+    console.error('Web fetch operation failed:', error.message);
+    throw new Error(`Failed to fetch URL: ${error.message}`);
+  }
+}
+
+async async async async function applyTool(tool, input, maxRetries = 2) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const safeCheck = isToolSafe(tool);
+      if (!safeCheck.safe) {
+        throw new Error(`Tool ${tool} is unsafe: ${safeCheck.reason}`);
+      }
+
+      let result;
+      switch (tool) {
+        case 'web_search':
+          result = await webSearch(input);
+          break;
+        case 'web_fetch':
+          result = await webFetch(input);
+          break;
+        case 'github_read':
+          result = await githubRead(input);
+          break;
+        case 'github_write':
+          result = await githubWrite(input);
+          break;
+        case 'github_list':
+          result = await githubList(input);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${tool}`);
+      }
+
+      if (!result || (typeof result === 'object' && result.error)) {
+        throw new Error(result?.error || 'Tool returned empty or invalid result');
+      }
+
+      return { success: true, result };
+    } catch (error) {
+      lastError = error;
+      console.error(`[Tool ${tool}] Attempt ${attempt + 1} failed:`, error.message);
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 100;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  return {
+    success: false,
+    error: lastError?.message || 'Tool failed after retries',
+    lastError: lastError?.stack
+  };
+}
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
