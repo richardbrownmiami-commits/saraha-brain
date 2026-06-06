@@ -12,59 +12,6 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async function applyTool(tool, input, maxRetries = 2) {
-  let lastError = null;
-  let attempt = 0;
-
-  while (attempt <= maxRetries) {
-    try {
-      const safeCheck = isToolSafe(tool);
-      if (!safeCheck.safe) {
-        throw new Error(`Tool ${tool} is unsafe: ${safeCheck.reason}`);
-      }
-
-      let result;
-      switch (tool) {
-        case 'web_search':
-          result = await webSearch(input);
-          break;
-        case 'web_fetch':
-          result = await webFetch(input);
-          break;
-        case 'github_read':
-          result = await githubRead(input);
-          break;
-        case 'github_write':
-          result = await githubWrite(input);
-          break;
-        default:
-          throw new Error(`Unknown tool: ${tool}`);
-      }
-
-      if (!result || (typeof result === 'string' && result.includes('error'))) {
-        throw new Error(`Tool ${tool} returned invalid result: ${result}`);
-      }
-
-      return { success: true, result };
-    } catch (error) {
-      lastError = error;
-      attempt++;
-      if (attempt <= maxRetries) {
-        const delay = Math.min(100 * Math.pow(2, attempt), 5000);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  // Enhanced error logging
-  const errorMsg = lastError?.message || 'Tool application failed after retries';
-  console.error(`Tool ${tool} failed after ${maxRetries} retries:`, errorMsg);
-  return {
-    success: false,
-    error: errorMsg,
-    lastError
-  };
-}
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
