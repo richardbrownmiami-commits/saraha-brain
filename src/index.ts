@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async function applyTool(tool, input, maxRetries = 2) {
+async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -23,18 +23,61 @@ async function applyTool(tool, input, maxRetries = 2) {
 
       let result;
       switch (tool) {
-        case 'web_search':
-          result = await webSearch(input);
+        case 'web_search': {
+          const query = typeof input === 'string' ? input : JSON.stringify(input);
+          const response = await fetch(`https://api.brave.com/search?q=${encodeURIComponent(query)}`, {
+            headers: { 'Accept': 'application/json', 'X-Subscription-Token': env.BRAVE_API_KEY }
+          });
+          if (!response.ok) throw new Error(`Web search failed: ${response.status}`);
+          const data = await response.json();
+          result = data;
           break;
-        case 'web_fetch':
-          result = await webFetch(input);
+        }
+        case 'web_fetch': {
+          const url = typeof input === 'string' ? input : input?.url;
+          if (!url) throw new Error('Invalid URL for web_fetch');
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`Web fetch failed: ${response.status}`);
+          result = await response.text();
           break;
-        case 'github_read':
-          result = await githubRead(input);
+        }
+        case 'github_read': {
+          const [owner, repo, path] = input.split('/');
+          if (!owner || !repo || !path) throw new Error('Invalid GitHub path format');
+          const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+          const response = await fetch(url, {
+            headers: { 'Authorization': `token ${env.GITHUB_PAT}`, 'Accept': 'application/vnd.github.v3.raw' }
+          });
+          if (!response.ok) throw new Error(`GitHub read failed: ${response.status}`);
+          result = await response.text();
           break;
-        case 'github_write':
-          result = await githubWrite(input);
+        }
+        case 'github_write': {
+          const [path, message, contentB64] = input.split('|');
+          if (!path || !message || !contentB64) throw new Error('Invalid GitHub write format');
+          const content = atob(contentB64);
+          const url = `https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/${path}`;
+          const shaResponse = await fetch(`https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/${path}`, {
+            headers: { 'Authorization': `token ${env.GITHUB_PAT}` }
+          });
+          const { sha } = shaResponse.ok ? await shaResponse.json() : { sha: null };
+
+          const response = await fetch(url, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `token ${env.GITHUB_PAT}`,
+              'Accept': 'application/vnd.github.v3+json'
+            },
+            body: JSON.stringify({
+              message,
+              content: btoa(content),
+              ...(sha && { sha })
+            })
+          });
+          if (!response.ok) throw new Error(`GitHub write failed: ${response.status}`);
+          result = { success: true, path };
           break;
+        }
         default:
           throw new Error(`Unknown tool: ${tool}`);
       }
@@ -61,7 +104,6 @@ async function applyTool(tool, input, maxRetries = 2) {
     lastError: lastError?.stack
   };
 }
-
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
