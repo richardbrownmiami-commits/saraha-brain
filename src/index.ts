@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -79,8 +79,8 @@ function isToolSafe(tool) {
       github_read: true,
       github_list: true,
       github_write: false,
-      github_push: false,
-      github_edit: true
+      github_edit: true,
+      github_push: false
     };
 
     if (!(tool in rules)) {
@@ -120,7 +120,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -133,11 +133,14 @@ async async async async async async async async async async function governanceG
     if (resourceType === "github_list") {
       return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
     }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "github_edit") {
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
       return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
     }
     if (resourceType === "github_write") {
       return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    if (resourceType === "github_edit") {
+      return { action: riskPct <= 50 ? "auto" : "pending", reason: "github_edit at " + riskPct + "% requires human approval" };
     }
     return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
   } catch (error) {
@@ -1080,15 +1083,16 @@ switch (tool) {
 
 { k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range-based code modifications. Enables surgical edits without full file overwrites. Returns diff summary and new file content.", cat: "tools" },
 
-async function githubEdit(input) {
+async async async function githubEdit(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
     }
 
+    // Parse input format: owner/repo/path|commit_message|old_content|new_content
     const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
-    if (!repoPath || !oldContent || !newContent) {
-      throw new Error("Input must be in format: owner/repo/path|commit message|old content|new content");
+    if (!repoPath || !commitMsg || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit_message|old_content|new_content");
     }
 
     const [owner, repo, path] = repoPath.split('/');
@@ -1097,67 +1101,102 @@ async function githubEdit(input) {
     }
 
     // Get current file content
-    const readInput = `${repoPath}|${path}`;
-    const currentFile = await githubRead(readInput);
-    if (currentFile.error) {
-      throw new Error(`Failed to read file: ${currentFile.error}`);
+    const fileData = await githubRead(`${owner}/${repo}/${path}`);
+    if (fileData.content !== oldContent) {
+      throw new Error("File content has changed since last read - aborting edit to prevent conflicts");
     }
 
-    // Verify old content matches
-    if (currentFile.content !== oldContent) {
-      throw new Error("Current file content doesn't match old content - aborting to prevent overwrites");
-    }
-
-    // Create diff
-    const diff = generateDiff(oldContent, newContent);
-
-    // Create commit
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    const headers = {
-      'Authorization': `token ${env.GITHUB_PAT}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'Saraha-Brain'
-    };
-
-    // Get current file SHA
-    const fileInfo = await fetch(apiUrl, { headers });
-    if (!fileInfo.ok) {
-      throw new Error(`Failed to get file info: ${fileInfo.status}`);
-    }
-    const fileData = await fileInfo.json();
-    const sha = fileData.sha;
-
-    // Create commit payload
-    const payload = {
-      message: commitMsg || "Surgical code edit",
+    // Create blob for new content
+    const blobData = {
       content: btoa(unescape(encodeURIComponent(newContent))),
-      sha: sha
+      encoding: 'base64'
     };
 
-    const response = await fetch(apiUrl, {
-      method: 'PUT',
-      headers: headers,
-      body: JSON.stringify(payload)
+    // Create tree with updated file
+    const treeResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain'
+      },
+      body: JSON.stringify({
+        base_tree: fileData.sha,
+        tree: [{
+          path: path.split('/').pop(),
+          mode: '100644',
+          type: 'blob',
+          sha: (await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `token ${env.GITHUB_PAT}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'Saraha-Brain'
+            },
+            body: JSON.stringify(blobData)
+          }).then(r => r.json()).then(data => data.sha))
+        }]
+      })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    if (!treeResponse.ok) {
+      const errorData = await treeResponse.json().catch(() => ({}));
+      throw new Error(`Failed to create tree: ${treeResponse.status} - ${errorData.message || 'Unknown error'}`);
     }
 
-    const result = await response.json();
+    const treeData = await treeResponse.json();
+
+    // Create commit
+    const commitResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain'
+      },
+      body: JSON.stringify({
+        message: commitMsg,
+        tree: treeData.sha,
+        parents: [fileData.commit.sha]
+      })
+    });
+
+    if (!commitResponse.ok) {
+      const errorData = await commitResponse.json().catch(() => ({}));
+      throw new Error(`Failed to create commit: ${commitResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const commitData = await commitResponse.json();
+
+    // Update reference
+    const refResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/main`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain'
+      },
+      body: JSON.stringify({
+        sha: commitData.sha
+      })
+    });
+
+    if (!refResponse.ok) {
+      const errorData = await refResponse.json().catch(() => ({}));
+      throw new Error(`Failed to update reference: ${refResponse.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
     return {
       success: true,
-      sha: result.content.sha,
-      commit_url: result.content.html_url,
-      diff_summary: diff
+      commit: commitData.sha,
+      message: commitMsg,
+      path: path
     };
   } catch (error) {
     console.error('GitHub edit operation failed:', error.message);
-    throw new Error(`Failed to edit file: ${error.message}`);
+    throw new Error(`Failed to edit repository file: ${error.message}`);
   }
 }
-
 function generateDiff(oldContent, newContent) {
   const oldLines = oldContent.split('\n');
   const newLines = newContent.split('\n');
@@ -2491,6 +2530,270 @@ async function githubList(input) {
   }
 }
 
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+function isToolSafe(tool) {
+  try {
+    if (!tool || typeof tool !== 'string') {
+      return { safe: false, reason: "tool must be a non-empty string" };
+    }
+
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_edit: true,
+      github_push: false
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'github_edit':
+    result = await githubEdit(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (!resourceType || typeof resourceType !== 'string') {
+      throw new Error("Resource type must be a non-empty string");
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    if (resourceType === "github_edit") {
+      return { action: riskPct <= 50 ? "auto" : "pending", reason: "github_edit at " + riskPct + "% requires human approval" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+async function githubEdit(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    // Parse input format: owner/repo/path|commit_message|old_content|new_content
+    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
+    if (!repoPath || !commitMsg || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit_message|old_content|new_content");
+    }
+
+    const [owner, repo, path] = repoPath.split('/');
+    if (!owner || !repo || !path) {
+      throw new Error("Repository path must be in format owner/repo/path");
+    }
+
+    // Get current file content
+    const readInput = `${owner}/${repo}/${path}`;
+    const currentContent = await githubRead(readInput);
+    if (currentContent.error) {
+      throw new Error(`Failed to read file: ${currentContent.error}`);
+    }
+
+    // Verify old content matches
+    if (currentContent !== oldContent) {
+      throw new Error("Current file content doesn't match expected old content - potential race condition");
+    }
+
+    // Create diff and apply changes
+    const patch = createDiffPatch(path, oldContent, newContent);
+
+    // Get current branch/ref
+    const refsUrl = `https://api.github.com/repos/${owner}/${repo}/git/ref/heads/main`;
+    const refHeaders = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const refResponse = await fetch(refsUrl, { headers: refHeaders });
+    if (!refResponse.ok) {
+      throw new Error(`Failed to get repository ref: ${refResponse.status}`);
+    }
+
+    const refData = await refResponse.json();
+    const sha = refData.object.sha;
+
+    // Create new tree with changes
+    const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees`;
+    const treeData = {
+      base_tree: sha,
+      tree: [
+        {
+          path: path,
+          mode: "100644",
+          type: "blob",
+          content: newContent
+        }
+      ]
+    };
+
+    const treeResponse = await fetch(treeUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(treeData)
+    });
+
+    if (!treeResponse.ok) {
+      throw new Error(`Failed to create tree: ${treeResponse.status}`);
+    }
+
+    const treeResult = await treeResponse.json();
+
+    // Create commit
+    const commitUrl = `https://api.github.com/repos/${owner}/${repo}/git/commits`;
+    const commitData = {
+      message: commitMsg,
+      tree: treeResult.sha,
+      parents: [sha]
+    };
+
+    const commitResponse = await fetch(commitUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(commitData)
+    });
+
+    if (!commitResponse.ok) {
+      throw new Error(`Failed to create commit: ${commitResponse.status}`);
+    }
+
+    const commitResult = await commitResponse.json();
+
+    // Update reference
+    const updateRefUrl = `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/main`;
+    const updateRefData = {
+      sha: commitResult.sha
+    };
+
+    const updateRefResponse = await fetch(updateRefUrl, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `token ${env.GITHUB_PAT}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'Saraha-Brain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(updateRefData)
+    });
+
+    if (!updateRefResponse.ok) {
+      throw new Error(`Failed to update reference: ${updateRefResponse.status}`);
+    }
+
+    return {
+      success: true,
+      message: `Successfully edited ${path} in ${owner}/${repo}`,
+      commit_sha: commitResult.sha
+    };
+  } catch (error) {
+    console.error('GitHub edit operation failed:', error.message);
+    throw new Error(`Failed to edit file: ${error.message}`);
+  }
+}
+
+function createDiffPatch(filePath, oldContent, newContent) {
+  // Simple line-based diff for demonstration
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+
+  let diff = `diff --git a/${filePath} b/${filePath}\n`;
+  diff += `--- a/${filePath}\n`;
+  diff += `+++ b/${filePath}\n`;
+
+  // Find changed lines
+  for (let i = 0; i < Math.max(oldLines.length, newLines.length); i++) {
+    const oldLine = oldLines[i] || '';
+    const newLine = newLines[i] || '';
+
+    if (oldLine !== newLine) {
+      if (oldLine === '') {
+        diff += `+${newLine}\n`;
+      } else if (newLine === '') {
+        diff += `-${oldLine}\n`;
+      } else {
+        diff += `-${oldLine}\n`;
+        diff += `+${newLine}\n`;
+      }
+    }
+  }
+
+  return diff;
+}
+
 function isToolSafe(tool) {
   try {
     if (!tool || typeof tool !== 'string') {
@@ -2504,7 +2807,8 @@ function isToolSafe(tool) {
       github_list: true,
       github_write: false,
       github_push: false,
-      github_edit: true
+      search_github_issues: true,
+      fetch_github_issue: true
     };
 
     if (!(tool in rules)) {
@@ -2531,7 +2835,7 @@ async function governanceGate(db, resourceType, riskPct) {
     if (resourceType === "github_list") {
       return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
     }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "github_edit") {
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "search_github_issues" || resourceType === "fetch_github_issue") {
       return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
     }
     if (resourceType === "github_write") {
@@ -2570,8 +2874,11 @@ async function applyTool(tool, input, maxRetries = 2) {
         case 'github_list':
           result = await githubList(input);
           break;
-        case 'github_edit':
-          result = await githubEdit(input);
+        case 'search_github_issues':
+          result = await github_searchIssues(input);
+          break;
+        case 'fetch_github_issue':
+          result = await github_fetchIssue(input);
           break;
         default:
           throw new Error(`Unknown tool: ${tool}`);
@@ -2616,95 +2923,230 @@ switch (tool) {
   case 'github_list':
     result = await githubList(input);
     break;
-  case 'github_edit':
-    result = await githubEdit(input);
+  case 'search_github_issues':
+    result = await github_searchIssues(input);
+    break;
+  case 'fetch_github_issue':
+    result = await github_fetchIssue(input);
     break;
   default:
     throw new Error(`Unknown tool: ${tool}`);
 }
 
-async function githubEdit(input) {
+async function github_searchIssues(input) {
   try {
     if (!input || typeof input !== 'string') {
       throw new Error("Input must be a non-empty string");
     }
 
-    // Parse input format: owner/repo/path|commit_msg|old_content|new_content
-    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
-    if (!repoPath || !commitMsg || !oldContent || !newContent) {
-      throw new Error("Input must be in format: owner/repo/path|commit_msg|old_content|new_content");
+    const params = new URLSearchParams();
+    const [query, perPageStr = '10', sort = 'updated', order = 'desc'] = input.split('|');
+
+    if (!query) {
+      throw new Error("Query parameter is required");
     }
 
-    const [owner, repo, path] = repoPath.split('/');
-    if (!owner || !repo) {
-      throw new Error("Repository path must be in format owner/repo/path");
-    }
+    params.append('q', query);
+    params.append('per_page', Math.min(100, Math.max(1, parseInt(perPageStr) || 10)).toString());
+    params.append('sort', sort);
+    params.append('order', order);
 
-    // Get current file content
-    const fileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const apiUrl = `https://api.github.com/search/issues?${params.toString()}`;
     const headers = {
       'Authorization': `token ${env.GITHUB_PAT}`,
       'Accept': 'application/vnd.github.v3+json',
       'User-Agent': 'Saraha-Brain'
     };
 
-    const response = await fetch(fileUrl, { headers });
+    const response = await fetch(apiUrl, { headers });
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
     }
 
-    const fileData = await response.json();
-    if (fileData.type !== 'file') {
-      throw new Error("Target path is not a file");
+    const data = await response.json();
+    if (!data.items || !Array.isArray(data.items)) {
+      throw new Error("GitHub API returned unexpected data format");
     }
 
-    // Verify old content matches
-    const currentContent = atob(fileData.content);
-    if (currentContent !== oldContent) {
-      throw new Error("Current file content does not match expected old content");
+    // Cache results
+    const db = await getDB();
+    for (const item of data.items) {
+      const labels = JSON.stringify(item.labels || []);
+      await db.prepare(`
+        INSERT INTO github_issues_cache
+        (repo, issue_number, title, body, labels, state, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(repo, issue_number) DO UPDATE SET
+          title=excluded.title,
+          body=excluded.body,
+          labels=excluded.labels,
+          state=excluded.state,
+          updated_at=excluded.updated_at
+      `)
+        .bind(
+          item.repository_url.replace('https://api.github.com/repos/', ''),
+          item.number.toString(),
+          item.title,
+          item.body || '',
+          labels,
+          item.state,
+          item.created_at,
+          item.updated_at
+        )
+        .run();
     }
 
-    // Prepare new content
-    const newContentEncoded = btoa(unescape(encodeURIComponent(newContent)));
-
-    // Create commit
-    const commitData = {
-      message: commitMsg,
-      content: newContentEncoded,
-      sha: fileData.sha
-    };
-
-    const commitUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    const commitResponse = await fetch(commitUrl, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `token ${env.GITHUB_PAT}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Saraha-Brain',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(commitData)
-    });
-
-    if (!commitResponse.ok) {
-      const errorData = await commitResponse.json().catch(() => ({}));
-      throw new Error(`GitHub commit error: ${commitResponse.status} - ${errorData.message || 'Unknown error'}`);
-    }
-
-    const result = await commitResponse.json();
     return {
       success: true,
-      commit: result.commit,
-      content: newContent
+      query,
+      total_count: data.total_count,
+      items: data.items.map(item => ({
+        repo: item.repository_url.replace('https://api.github.com/repos/', ''),
+        issue_number: item.number,
+        title: item.title,
+        state: item.state,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+        url: item.html_url,
+        labels: item.labels || []
+      }))
     };
   } catch (error) {
-    console.error('GitHub edit operation failed:', error.message);
-    throw new Error(`Failed to edit file: ${error.message}`);
+    console.error('GitHub issue search failed:', error.message);
+    throw new Error(`Failed to search GitHub issues: ${error.message}`);
   }
 }
 
-{ k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit msg|old content|new content to perform precise line/range edits on GitHub files. Requires exact old content match for safety. Returns commit details and new content.", cat: "tools" },
+async function github_fetchIssue(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    const [repoPath, issueNumberStr] = input.split('|');
+    if (!repoPath || !issueNumberStr) {
+      throw new Error("Input must be in format owner/repo|issue_number");
+    }
+
+    const [owner, repo] = repoPath.split('/');
+    const issueNumber = parseInt(issueNumberStr);
+    if (!owner || !repo || isNaN(issueNumber)) {
+      throw new Error("Invalid repository path or issue number");
+    }
+
+    const db = await getDB();
+    const cached = await db.prepare(`
+      SELECT * FROM github_issues_cache
+      WHERE repo = ?1 AND issue_number = ?2
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `)
+      .bind(`${owner}/${repo}`, issueNumber.toString())
+      .all();
+
+    if (cached.results.length > 0) {
+      const item = cached.results[0];
+      return {
+        cached: true,
+        data: {
+          repo: item.repo,
+          issue_number: item.issue_number,
+          title: item.title,
+          body: item.body,
+          labels: JSON.parse(item.labels),
+          state: item.state,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          url: `https://github.com/${item.repo}/issues/${item.issue_number}`
+        }
+      };
+    }
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const response = await fetch(apiUrl, { headers });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const data = await response.json();
+    const labels = JSON.stringify(data.labels || []);
+
+    // Cache the result
+    await db.prepare(`
+      INSERT INTO github_issues_cache
+      (repo, issue_number, title, body, labels, state, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `)
+      .bind(
+        `${owner}/${repo}`,
+        issueNumber.toString(),
+        data.title,
+        data.body || '',
+        labels,
+        data.state,
+        data.created_at,
+        data.updated_at
+      )
+      .run();
+
+    return {
+      cached: false,
+      data: {
+        repo: `${owner}/${repo}`,
+        issue_number: issueNumber,
+        title: data.title,
+        body: data.body || '',
+        labels: data.labels || [],
+        state: data.state,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
+        url: data.html_url
+      }
+    };
+  } catch (error) {
+    console.error('GitHub issue fetch failed:', error.message);
+    throw new Error(`Failed to fetch GitHub issue: ${error.message}`);
+  }
+}
+
+async function getResearchTopic(db, emotions, reg) {
+  // ... existing code ...
+
+  // Add GitHub issues as potential knowledge source
+  const githubSources = await db.prepare(`
+    SELECT title, 'github_issue' as type, created_at as timestamp
+    FROM github_issues_cache
+    WHERE state = 'open'
+    ORDER BY updated_at DESC
+    LIMIT 5
+  `).all();
+
+  if (githubSources.results.length > 0) {
+    sources.push({
+      type: 'github_issues',
+      items: githubSources.results.map(r => ({
+        title: r.title,
+        type: r.type,
+        timestamp: r.timestamp
+      }))
+    });
+  }
+
+  // ... rest of existing function ...
+}
+
+const TABLES = [
+  // ... existing tables ...
+  `CREATE TABLE IF NOT EXISTS github_issues_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, issue_number INTEGER NOT NULL, title TEXT NOT NULL, body TEXT, labels TEXT DEFAULT '[]', state TEXT DEFAULT 'open', created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
+];
 
 const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
 
