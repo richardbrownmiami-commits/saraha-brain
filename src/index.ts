@@ -79,7 +79,6 @@ function isToolSafe(tool) {
       github_read: true,
       github_list: true,
       github_write: false,
-      github_edit: true,
       github_push: false
     };
 
@@ -133,7 +132,7 @@ async async async async async async async async async async async function gover
     if (resourceType === "github_list") {
       return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
     }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "github_edit") {
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
       return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
     }
     if (resourceType === "github_write") {
@@ -2507,82 +2506,8 @@ switch (tool) {
   case 'github_list':
     result = await githubList(input);
     break;
-  case 'github_edit':
-    result = await githubEdit(input);
-    break;
   default:
     throw new Error(`Unknown tool: ${tool}`);
-}
-
-async function githubEdit(input) {
-  try {
-    if (!input || typeof input !== 'string') {
-      throw new Error("Input must be a non-empty string");
-    }
-
-    // Parse input format: owner/repo/path|commit_message|old_content|new_content
-    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
-    if (!repoPath || !commitMsg || !oldContent || !newContent) {
-      throw new Error("Input must be in format: owner/repo/path|commit_message|old_content|new_content");
-    }
-
-    const [owner, repo, path] = repoPath.split('/');
-    if (!owner || !repo || !path) {
-      throw new Error("Repository path must be in format owner/repo/path");
-    }
-
-    // Get current file content
-    const currentContent = await githubRead(`${owner}/${repo}/${path}`);
-
-    // Verify old content matches
-    if (currentContent !== oldContent) {
-      throw new Error("Current content does not match old content - potential conflict detected");
-    }
-
-    // Create new file content
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    const headers = {
-      'Authorization': `token ${env.GITHUB_PAT}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'Saraha-Brain'
-    };
-
-    // Get current file SHA
-    const fileInfo = await fetch(apiUrl, { headers });
-    if (!fileInfo.ok) {
-      throw new Error(`Failed to get file info: ${fileInfo.status}`);
-    }
-    const fileData = await fileInfo.json();
-    const sha = fileData.sha;
-
-    // Create new file
-    const payload = {
-      message: commitMsg,
-      content: btoa(unescape(encodeURIComponent(newContent))),
-      sha: sha
-    };
-
-    const response = await fetch(apiUrl, {
-      method: 'PUT',
-      headers,
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
-    }
-
-    const result = await response.json();
-    return {
-      success: true,
-      commit_url: result.content.html_url,
-      commit_sha: result.content.sha
-    };
-  } catch (error) {
-    console.error('GitHub edit operation failed:', error.message);
-    throw new Error(`Failed to edit repository file: ${error.message}`);
-  }
 }
 
 const rules = { web_search: true, web_fetch: true, github_read: true, github_list: true, github_write: false, github_push: false };
