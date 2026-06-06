@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -37,6 +37,9 @@ async async async async function applyTool(tool, input, maxRetries = 2) {
           break;
         case 'github_list':
           result = await githubList(input);
+          break;
+        case 'github_edit':
+          result = await githubEdit(input);
           break;
         default:
           throw new Error(`Unknown tool: ${tool}`);
@@ -76,7 +79,8 @@ function isToolSafe(tool) {
       github_read: true,
       github_list: true,
       github_write: false,
-      github_push: false
+      github_push: false,
+      github_edit: true
     };
 
     if (!(tool in rules)) {
@@ -116,7 +120,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -129,7 +133,7 @@ async async async async async async function governanceGate(db, resourceType, ri
     if (resourceType === "github_list") {
       return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
     }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch" || resourceType === "github_edit") {
       return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
     }
     if (resourceType === "github_write") {
@@ -1049,6 +1053,135 @@ async function webFetch(input) {
     console.error('Web fetch operation failed:', error.message);
     throw new Error(`Failed to fetch URL: ${error.message}`);
   }
+}
+
+switch (tool) {
+  case 'web_search':
+    result = await webSearch(input);
+    break;
+  case 'web_fetch':
+    result = await webFetch(input);
+    break;
+  case 'github_read':
+    result = await githubRead(input);
+    break;
+  case 'github_write':
+    result = await githubWrite(input);
+    break;
+  case 'github_list':
+    result = await githubList(input);
+    break;
+  case 'github_edit':
+    result = await githubEdit(input);
+    break;
+  default:
+    throw new Error(`Unknown tool: ${tool}`);
+}
+
+{ k: "tool_github_edit", c: "Use TOOL:github_edit:owner/repo/path|commit message|old content|new content to perform precise line/range-based code modifications. Enables surgical edits without full file overwrites. Returns diff summary and new file content.", cat: "tools" },
+
+async function githubEdit(input) {
+  try {
+    if (!input || typeof input !== 'string') {
+      throw new Error("Input must be a non-empty string");
+    }
+
+    const [repoPath, commitMsg, oldContent, newContent] = input.split('|');
+    if (!repoPath || !oldContent || !newContent) {
+      throw new Error("Input must be in format: owner/repo/path|commit message|old content|new content");
+    }
+
+    const [owner, repo, path] = repoPath.split('/');
+    if (!owner || !repo) {
+      throw new Error("Repository path must be in format owner/repo/path");
+    }
+
+    // Get current file content
+    const readInput = `${repoPath}|${path}`;
+    const currentFile = await githubRead(readInput);
+    if (currentFile.error) {
+      throw new Error(`Failed to read file: ${currentFile.error}`);
+    }
+
+    // Verify old content matches
+    if (currentFile.content !== oldContent) {
+      throw new Error("Current file content doesn't match old content - aborting to prevent overwrites");
+    }
+
+    // Create diff
+    const diff = generateDiff(oldContent, newContent);
+
+    // Create commit
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    // Get current file SHA
+    const fileInfo = await fetch(apiUrl, { headers });
+    if (!fileInfo.ok) {
+      throw new Error(`Failed to get file info: ${fileInfo.status}`);
+    }
+    const fileData = await fileInfo.json();
+    const sha = fileData.sha;
+
+    // Create commit payload
+    const payload = {
+      message: commitMsg || "Surgical code edit",
+      content: btoa(unescape(encodeURIComponent(newContent))),
+      sha: sha
+    };
+
+    const response = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: headers,
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+    }
+
+    const result = await response.json();
+    return {
+      success: true,
+      sha: result.content.sha,
+      commit_url: result.content.html_url,
+      diff_summary: diff
+    };
+  } catch (error) {
+    console.error('GitHub edit operation failed:', error.message);
+    throw new Error(`Failed to edit file: ${error.message}`);
+  }
+}
+
+function generateDiff(oldContent, newContent) {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  const diff = [];
+
+  let i = 0, j = 0;
+  while (i < oldLines.length || j < newLines.length) {
+    if (i < oldLines.length && j < newLines.length && oldLines[i] === newLines[j]) {
+      diff.push({ type: 'equal', line: oldLines[i] });
+      i++;
+      j++;
+    } else {
+      if (i < oldLines.length) {
+        diff.push({ type: 'remove', line: oldLines[i] });
+        i++;
+      }
+      if (j < newLines.length) {
+        diff.push({ type: 'add', line: newLines[j] });
+        j++;
+      }
+    }
+  }
+
+  return diff;
 }
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
