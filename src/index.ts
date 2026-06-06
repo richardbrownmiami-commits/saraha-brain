@@ -12,68 +12,59 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async function applyTool(tool, ...args) {
-  const maxRetries = 3;
-  const retryDelay = 1000; // 1 second
+async async function applyTool(tool, input, maxRetries = 2) {
+  let lastError = null;
+  let attempt = 0;
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  while (attempt <= maxRetries) {
     try {
       const safeCheck = isToolSafe(tool);
       if (!safeCheck.safe) {
-        throw new Error(`Tool ${tool} is not safe: ${safeCheck.reason}`);
+        throw new Error(`Tool ${tool} is unsafe: ${safeCheck.reason}`);
       }
 
       let result;
       switch (tool) {
         case 'web_search':
-          result = await webSearch(args[0]);
+          result = await webSearch(input);
           break;
         case 'web_fetch':
-          result = await webFetch(args[0]);
+          result = await webFetch(input);
           break;
         case 'github_read':
-          result = await githubRead(args[0]);
+          result = await githubRead(input);
           break;
         case 'github_write':
-          result = await githubWrite(args[0], args[1], args[2]);
+          result = await githubWrite(input);
           break;
         default:
           throw new Error(`Unknown tool: ${tool}`);
       }
 
-      if (!result || (typeof result === 'object' && result.error)) {
-        throw new Error(`Tool ${tool} returned invalid result: ${JSON.stringify(result)}`);
+      if (!result || (typeof result === 'string' && result.includes('error'))) {
+        throw new Error(`Tool ${tool} returned invalid result: ${result}`);
       }
 
-      return result;
+      return { success: true, result };
     } catch (error) {
-      console.error(`[Attempt ${attempt + 1}/${maxRetries}] Tool ${tool} failed:`, error.message);
-
-      if (attempt === maxRetries - 1) {
-        console.error(`Tool ${tool} failed after ${maxRetries} attempts. Falling back to safe default.`);
-        return getFallbackResult(tool);
+      lastError = error;
+      attempt++;
+      if (attempt <= maxRetries) {
+        const delay = Math.min(100 * Math.pow(2, attempt), 5000);
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
-
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
     }
   }
-}
 
-function getFallbackResult(tool) {
-  switch (tool) {
-    case 'web_search':
-      return { results: [], query: '', sources: [] };
-    case 'web_fetch':
-      return { content: '', url: '', status: 404 };
-    case 'github_read':
-      return { content: '', path: '', sha: '' };
-    case 'github_write':
-      return { success: false, message: 'Fallback: write operation failed' };
-    default:
-      return { error: 'Fallback result for unknown tool' };
-  }
+  // Enhanced error logging
+  const errorMsg = lastError?.message || 'Tool application failed after retries';
+  console.error(`Tool ${tool} failed after ${maxRetries} retries:`, errorMsg);
+  return {
+    success: false,
+    error: errorMsg,
+    lastError
+  };
 }
-
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
