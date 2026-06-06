@@ -216,6 +216,305 @@ async async async function githubList(input) {
 
   return result;
 }
+async function githubList(input) {
+  try {
+    const [repoPath, recursive, limitStr] = input.split('|');
+    if (!repoPath) throw new Error("Repository path required: owner/repo/path");
+
+    const [owner, repo, path = ''] = repoPath.split('/');
+    const recursiveFlag = recursive === 'true';
+    const limit = parseInt(limitStr) || 100;
+
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const headers = {
+      'Authorization': `token ${env.GITHUB_PAT}`,
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'Saraha-Brain'
+    };
+
+    const result = { path, is_dir: true, items: [] };
+    const queue = [{ path, url: apiUrl }];
+    const visited = new Set();
+
+    while (queue.length > 0 && result.items.length < limit) {
+      const item = queue.shift();
+      if (visited.has(item.url)) continue;
+      visited.add(item.url);
+
+      try {
+        const response = await fetch(item.url, { headers });
+        if (!response.ok) {
+          if (response.status === 404) continue;
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(`GitHub API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+        }
+
+        const items = await response.json();
+        if (!Array.isArray(items)) {
+          // Single file case
+          result.items.push({
+            name: item.path.split('/').pop(),
+            path: item.path,
+            type: 'file',
+            size: items.size,
+            sha: items.sha,
+            url: items.download_url
+          });
+          continue;
+        }
+
+        for (const entry of items) {
+          if (result.items.length >= limit) break;
+
+          if (entry.type === 'file') {
+            result.items.push({
+              name: entry.name,
+              path: entry.path,
+              type: 'file',
+              size: entry.size,
+              sha: entry.sha,
+              url: entry.download_url
+            });
+          } else if (entry.type === 'dir' && recursiveFlag) {
+            queue.push({
+              path: entry.path,
+              url: entry.url
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`Error processing ${item.url}:`, error.message);
+        throw error; // Re-throw to be caught by outer try-catch
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error('GitHub list operation failed:', error.message);
+    throw new Error(`Failed to list repository contents: ${error.message}`);
+  }
+}
+
+async function storeThought(db, content) {
+  try {
+    await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
+  } catch (error) {
+    console.error('Failed to store thought:', error.message);
+    throw new Error(`Memory storage failed: ${error.message}`);
+  }
+}
+
+async function recall(db, limit = 10) {
+  try {
+    const rows = await db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT ?1").bind(limit).all();
+    if (!rows.results.length) return "No memories yet.";
+    return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
+  } catch (error) {
+    console.error('Failed to recall memories:', error.message);
+    throw new Error(`Memory recall failed: ${error.message}`);
+  }
+}
+
+async function storeStreamThought(db, content, mood, source) {
+  try {
+    await db.prepare("INSERT INTO thought_stream (content,mood,source) VALUES (?1,?2,?3)").bind(content, mood||"neutral", source||"cron").run();
+  } catch (error) {
+    console.error('Failed to store stream thought:', error.message);
+    // Don't throw to prevent brain disruption from failed logging
+  }
+}
+
+async function applyTool(tool, input, maxRetries = 2) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const safeCheck = isToolSafe(tool);
+      if (!safeCheck.safe) {
+        throw new Error(`Tool ${tool} is unsafe: ${safeCheck.reason}`);
+      }
+
+      let result;
+      switch (tool) {
+        case 'web_search':
+          result = await webSearch(input);
+          break;
+        case 'web_fetch':
+          result = await webFetch(input);
+          break;
+        case 'github_read':
+          result = await githubRead(input);
+          break;
+        case 'github_write':
+          result = await githubWrite(input);
+          break;
+        case 'github_list':
+          result = await githubList(input);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${tool}`);
+      }
+
+      if (!result || (typeof result === 'object' && result.error)) {
+        throw new Error(result?.error || 'Tool returned empty or invalid result');
+      }
+
+      return { success: true, result };
+    } catch (error) {
+      lastError = error;
+      console.error(`[Tool ${tool}] Attempt ${attempt + 1} failed:`, error.message);
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 100;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  return {
+    success: false,
+    error: lastError?.message || 'Tool failed after retries',
+    lastError: lastError?.stack
+  };
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+function isToolSafe(tool) {
+  try {
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_push: false
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+async function getBrainPhase(db, emotions, reg) {
+  try {
+    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+    if (ov.results[0]?.value) {
+      try {
+        const o = JSON.parse(ov.results[0].value);
+        if (o.until > Date.now()) return o.phase;
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      } catch (e) {
+        console.error('Failed to parse phase override:', e.message);
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      }
+    }
+
+    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
+    if (reg.energy <= 20) return "tired";
+    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+    return "awake";
+  } catch (error) {
+    console.error('Failed to determine brain phase:', error.message);
+    return "awake"; // Default to safe state
+  }
+}
+
+async function checkDuplicateProposal(db, title, whatDiff) {
+  try {
+    if (!title && !whatDiff) {
+      throw new Error("At least one of title or whatDiff must be provided");
+    }
+
+    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2")
+      .bind(title, whatDiff)
+      .all();
+
+    if (existing.results.length) {
+      return { duplicate: true, existing: existing.results[0] };
+    }
+
+    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'")
+      .bind(title)
+      .all();
+
+    if (receipts.results.length) {
+      return { duplicate: true, existing: receipts.results[0] };
+    }
+
+    return { duplicate: false };
+  } catch (error) {
+    console.error('Duplicate proposal check failed:', error.message);
+    throw new Error(`Proposal validation failed: ${error.message}`);
+  }
+}
+
+async function applyEvolutionChange(db, proposal, proposalId, reason) {
+  try {
+    if (!proposal || !proposalId) {
+      throw new Error("Proposal and proposalId are required");
+    }
+
+    const change = {
+      title: proposal.title,
+      what: proposal.what_diff || "",
+      how: proposal.how_diff || "",
+      type: proposal.resource_type || "unknown",
+      reason: reason || "self-improvement",
+      risk: proposal.risk_pct || 0,
+      applied_at: new Date().toISOString(),
+      status: "active"
+    };
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
+      .bind("evolution_log:" + proposalId, JSON.stringify(change))
+      .run();
+
+    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+    overrides.push({
+      from: proposalId,
+      title: proposal.title,
+      what: proposal.what_diff,
+      how: proposal.how_diff,
+      applied_at: change.applied_at
+    });
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+      .bind(JSON.stringify(overrides))
+      .run();
+  } catch (error) {
+    console.error('Failed to apply evolution change:', error.message);
+    throw new Error(`Evolution change failed: ${error.message}`);
+  }
+}
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
