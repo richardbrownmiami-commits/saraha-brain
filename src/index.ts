@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async async async async async function applyTool(tool, input, maxRetries = 2) {
+async async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -116,7 +116,7 @@ switch (tool) {
 
 { k: "tool_github_list", c: "Use TOOL:github_list:owner/repo/path|recursive|limit to browse GitHub repository directory structures. Path can be empty for root. Use recursive=true for full tree. Limit controls pagination (default 100). Returns directory structure with file metadata.", cat: "tools" },
 
-async async async async async async function governanceGate(db, resourceType, riskPct) {
+async async async async function governanceGate(db, resourceType, riskPct) {
   try {
     if (riskPct < 0 || riskPct > 100) {
       throw new Error(`Invalid risk percentage: ${riskPct}`);
@@ -289,7 +289,7 @@ function isToolSafe(tool) {
   }
 }
 
-async async async async function getBrainPhase(db, emotions, reg) {
+async async function getBrainPhase(db, emotions, reg) {
   try {
     if (!db || !emotions || !reg) {
       throw new Error("Missing required parameters");
@@ -317,88 +317,7 @@ async async async async function getBrainPhase(db, emotions, reg) {
     return "awake"; // Default to safe state
   }
 }
-function isToolSafe(tool) {
-  try {
-    if (!tool || typeof tool !== 'string') {
-      return { safe: false, reason: "tool must be a non-empty string" };
-    }
-
-    const rules = {
-      web_search: true,
-      web_fetch: true,
-      github_read: true,
-      github_list: true,
-      github_write: false,
-      github_push: false
-    };
-
-    if (!(tool in rules)) {
-      return { safe: false, reason: "unknown tool" };
-    }
-
-    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
-  } catch (error) {
-    console.error('Tool safety check failed:', error.message);
-    return { safe: false, reason: "safety check error" };
-  }
-}
-
-async function governanceGate(db, resourceType, riskPct) {
-  try {
-    if (riskPct < 0 || riskPct > 100) {
-      throw new Error(`Invalid risk percentage: ${riskPct}`);
-    }
-
-    if (!resourceType || typeof resourceType !== 'string') {
-      throw new Error("Resource type must be a non-empty string");
-    }
-
-    if (resourceType === "github_list") {
-      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
-    }
-    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
-      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
-    }
-    if (resourceType === "github_write") {
-      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
-    }
-    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
-  } catch (error) {
-    console.error('Governance gate error:', error.message);
-    return { action: "denied", reason: `Governance check failed: ${error.message}` };
-  }
-}
-
-async function getBrainPhase(db, emotions, reg) {
-  try {
-    if (!db || !emotions || !reg) {
-      throw new Error("Missing required parameters");
-    }
-
-    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
-    if (ov.results[0]?.value) {
-      try {
-        const o = JSON.parse(ov.results[0].value);
-        if (o.until > Date.now()) return o.phase;
-        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-      } catch (e) {
-        console.error('Failed to parse phase override:', e.message);
-        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
-      }
-    }
-
-    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
-    if (reg.energy <= 20) return "tired";
-    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-    return "awake";
-  } catch (error) {
-    console.error('Failed to determine brain phase:', error.message);
-    return "awake"; // Default to safe state
-  }
-}
-
-async async async function checkDuplicateProposal(db, title, whatDiff) {
+async function checkDuplicateProposal(db, title, whatDiff) {
   try {
     if (!db) {
       throw new Error("Database connection required");
@@ -430,6 +349,7 @@ async async async function checkDuplicateProposal(db, title, whatDiff) {
     throw new Error(`Proposal validation failed: ${error.message}`);
   }
 }
+
 async function applyEvolutionChange(db, proposal, proposalId, reason) {
   try {
     if (!db || !proposal || !proposalId) {
@@ -554,11 +474,299 @@ async function adjustEnergy(db, delta) {
   }
 }
 
+function isToolSafe(tool) {
+  try {
+    if (!tool || typeof tool !== 'string') {
+      return { safe: false, reason: "tool must be a non-empty string" };
+    }
+
+    const rules = {
+      web_search: true,
+      web_fetch: true,
+      github_read: true,
+      github_list: true,
+      github_write: false,
+      github_push: false
+    };
+
+    if (!(tool in rules)) {
+      return { safe: false, reason: "unknown tool" };
+    }
+
+    return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
+  } catch (error) {
+    console.error('Tool safety check failed:', error.message);
+    return { safe: false, reason: "safety check error" };
+  }
+}
+
+async function governanceGate(db, resourceType, riskPct) {
+  try {
+    if (riskPct < 0 || riskPct > 100) {
+      throw new Error(`Invalid risk percentage: ${riskPct}`);
+    }
+
+    if (!resourceType || typeof resourceType !== 'string') {
+      throw new Error("Resource type must be a non-empty string");
+    }
+
+    if (resourceType === "github_list") {
+      return { action: "auto", reason: "repository browsing at " + riskPct + "% auto-approved (self-exploration)" };
+    }
+    if (resourceType === "github_read" || resourceType === "web_search" || resourceType === "web_fetch") {
+      return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (read-only)" };
+    }
+    if (resourceType === "github_write") {
+      return { action: riskPct <= 30 ? "auto" : "pending", reason: "github_write at " + riskPct + "% requires human approval" };
+    }
+    return { action: "auto", reason: resourceType + " at " + riskPct + "% auto-approved (self-evolution)" };
+  } catch (error) {
+    console.error('Governance gate error:', error.message);
+    return { action: "denied", reason: `Governance check failed: ${error.message}` };
+  }
+}
+
+async function getBrainPhase(db, emotions, reg) {
+  try {
+    if (!db || !emotions || !reg) {
+      throw new Error("Missing required parameters");
+    }
+
+    const ov = await db.prepare("SELECT value FROM identity WHERE key='phase_override'").all();
+    if (ov.results[0]?.value) {
+      try {
+        const o = JSON.parse(ov.results[0].value);
+        if (o.until > Date.now()) return o.phase;
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      } catch (e) {
+        console.error('Failed to parse phase override:', e.message);
+        await db.prepare("DELETE FROM identity WHERE key='phase_override'").run();
+      }
+    }
+
+    const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (utcMin >= 1170 || utcMin < 30) return "sleeping";
+    if (reg.energy <= 20) return "tired";
+    if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+    return "awake";
+  } catch (error) {
+    console.error('Failed to determine brain phase:', error.message);
+    return "awake"; // Default to safe state
+  }
+}
+
+async function checkDuplicateProposal(db, title, whatDiff) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    if (!title && !whatDiff) {
+      throw new Error("At least one of title or whatDiff must be provided");
+    }
+
+    const existing = await db.prepare("SELECT id, title, status FROM proposals WHERE title=?1 OR what_diff=?2")
+      .bind(title, whatDiff)
+      .all();
+
+    if (existing.results.length) {
+      return { duplicate: true, existing: existing.results[0] };
+    }
+
+    const receipts = await db.prepare("SELECT r.id, p.title FROM authority_receipts r JOIN proposals p ON r.proposal_id=p.id WHERE p.title=?1 AND r.outcome='success'")
+      .bind(title)
+      .all();
+
+    if (receipts.results.length) {
+      return { duplicate: true, existing: receipts.results[0] };
+    }
+
+    return { duplicate: false };
+  } catch (error) {
+    console.error('Duplicate proposal check failed:', error.message);
+    throw new Error(`Proposal validation failed: ${error.message}`);
+  }
+}
+
+async function applyEvolutionChange(db, proposal, proposalId, reason) {
+  try {
+    if (!db || !proposal || !proposalId) {
+      throw new Error("Database connection, proposal, and proposalId are required");
+    }
+
+    if (!proposal.title) {
+      throw new Error("Proposal must have a title");
+    }
+
+    const change = {
+      title: proposal.title,
+      what: proposal.what_diff || "",
+      how: proposal.how_diff || "",
+      type: proposal.resource_type || "unknown",
+      reason: reason || "self-improvement",
+      risk: proposal.risk_pct || 0,
+      applied_at: new Date().toISOString(),
+      status: "active"
+    };
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')")
+      .bind("evolution_log:" + proposalId, JSON.stringify(change))
+      .run();
+
+    const existing = await db.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
+    const overrides = existing.results[0]?.value ? JSON.parse(existing.results[0].value) : [];
+    overrides.push({
+      from: proposalId,
+      title: proposal.title,
+      what: proposal.what_diff,
+      how: proposal.how_diff,
+      applied_at: change.applied_at
+    });
+
+    await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('system_prompt_overrides',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')")
+      .bind(JSON.stringify(overrides))
+      .run();
+  } catch (error) {
+    console.error('Failed to apply evolution change:', error.message);
+    throw new Error(`Evolution change failed: ${error.message}`);
+  }
+}
+
+async function getState(db) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
+    const emotions = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in emotions) emotions[key] = Math.min(parseInt(r.value) || emotions[key], RANGES[key][1]);
+    }
+    const reg = { energy: 100, confidence: 50 };
+    for (const r of rows.results) {
+      if (r.key === "energy") reg.energy = parseFloat(r.value) || 100;
+      if (r.key === "confidence") reg.confidence = parseFloat(r.value) || 50;
+    }
+    return { emotions, reg };
+  } catch (error) {
+    console.error('Failed to get brain state:', error.message);
+    throw new Error(`State retrieval failed: ${error.message}`);
+  }
+}
+
+async function updateEmotion(db, name, delta) {
+  try {
+    if (!db || !name || typeof name !== 'string') {
+      throw new Error("Database connection and valid emotion name required");
+    }
+
+    const emotions = await getEmotions(db);
+    if (!(name in emotions)) {
+      throw new Error(`Invalid emotion name: ${name}`);
+    }
+
+    const [min, max] = RANGES[name];
+    const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')")
+      .bind("emotion_" + name, newVal.toString())
+      .run();
+    return newVal;
+  } catch (error) {
+    console.error('Failed to update emotion:', error.message);
+    throw new Error(`Emotion update failed: ${error.message}`);
+  }
+}
+
+async function getRegulator(db) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
+    const vals = { energy: 100, confidence: 50 };
+    for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
+    return { energy: vals.energy, confidence: vals.confidence };
+  } catch (error) {
+    console.error('Failed to get regulator values:', error.message);
+    throw new Error(`Regulator retrieval failed: ${error.message}`);
+  }
+}
+
+async function adjustEnergy(db, delta) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const { energy } = await getRegulator(db);
+    const newVal = Math.max(0, Math.min(100, energy + delta));
+    await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')")
+      .bind(newVal.toString())
+      .run();
+  } catch (error) {
+    console.error('Failed to adjust energy:', error.message);
+    throw new Error(`Energy adjustment failed: ${error.message}`);
+  }
+}
+
+async function getEmotions(db) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+    const result = { ...EMO_DEFAULTS };
+    for (const r of rows.results) {
+      const key = r.key.replace("emotion_", "");
+      if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
+    }
+    return result;
+  } catch (error) {
+    console.error('Failed to get emotions:', error.message);
+    throw new Error(`Emotion retrieval failed: ${error.message}`);
+  }
+}
+
+async function driftEmotions(db) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const emo = await getEmotions(db);
+    if (emo.happy > 7) await updateEmotion(db, "happy", -1);
+    if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+    if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+    if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+  } catch (error) {
+    console.error('Failed to drift emotions:', error.message);
+    // Don't throw to prevent brain disruption from failed emotion drift
+  }
+}
+
+async function getBusyUntil(db) {
+  try {
+    if (!db) {
+      throw new Error("Database connection required");
+    }
+
+    const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
+    return parseInt(r.results[0]?.value) || 0;
+  } catch (error) {
+    console.error('Failed to get busy until:', error.message);
+    return 0; // Default to not busy
+  }
+}
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
-async async async function getEmotions(db) {
+async async function getEmotions(db) {
   try {
     if (!db) {
       throw new Error("Database connection required");
@@ -593,7 +801,7 @@ function describeMood(emotions, energy) {
   return "You feel " + parts.join(", ") + ".";
 }
 
-async async async function driftEmotions(db) {
+async async function driftEmotions(db) {
   try {
     if (!db) {
       throw new Error("Database connection required");
