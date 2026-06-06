@@ -554,7 +554,8 @@ export default {
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
-        await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
+      if (system.length > 80000) system = system.slice(0, 80000) + "\n[truncated]";
+      await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
         const body = { messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
         await logStep(aid, "planner", "Calling LLM");
