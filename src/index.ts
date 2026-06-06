@@ -12,6 +12,56 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
+async function applyTool(tool, input, maxRetries = 2) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const safeCheck = isToolSafe(tool);
+      if (!safeCheck.safe) {
+        throw new Error(`Tool ${tool} is unsafe: ${safeCheck.reason}`);
+      }
+
+      let result;
+      switch (tool) {
+        case 'web_search':
+          result = await webSearch(input);
+          break;
+        case 'web_fetch':
+          result = await webFetch(input);
+          break;
+        case 'github_read':
+          result = await githubRead(input);
+          break;
+        case 'github_write':
+          result = await githubWrite(input);
+          break;
+        default:
+          throw new Error(`Unknown tool: ${tool}`);
+      }
+
+      if (!result || (typeof result === 'object' && result.error)) {
+        throw new Error(result?.error || 'Tool returned empty or invalid result');
+      }
+
+      return { success: true, result };
+    } catch (error) {
+      lastError = error;
+      console.error(`[Tool ${tool}] Attempt ${attempt + 1} failed:`, error.message);
+
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 100;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  return {
+    success: false,
+    error: lastError?.message || 'Tool failed after retries',
+    lastError: lastError?.stack
+  };
+}
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
