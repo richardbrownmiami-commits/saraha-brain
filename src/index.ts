@@ -12,7 +12,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-async function applyTool(tool, input, maxRetries = 2) {
+async async function applyTool(tool, input, maxRetries = 2) {
   let lastError = null;
   let attempt = 0;
 
@@ -56,13 +56,15 @@ async function applyTool(tool, input, maxRetries = 2) {
     }
   }
 
+  // Enhanced error logging
+  const errorMsg = lastError?.message || 'Tool application failed after retries';
+  console.error(`Tool ${tool} failed after ${maxRetries} retries:`, errorMsg);
   return {
     success: false,
-    error: lastError?.message || 'Tool application failed after retries',
+    error: errorMsg,
     lastError
   };
 }
-
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
