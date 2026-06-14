@@ -600,14 +600,7 @@ export default {
           } else if (!result.ok) {
             toolContent = `I tried to use ${tool} but got: ${result.error}`;
           } else {
-            const followBody = { messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me use ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
-            const followResp = await callLLM(env, followBody);
-            if (followResp.ok) {
-              const followData = await followResp.json();
-              toolContent = followData.choices?.[0]?.message?.content || result.data;
-            } else {
-              toolContent = result.data;
-            }
+            toolContent = result.data;
           }
           await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(toolContent, aid).run();
           await logStep(aid, "result", toolContent);
