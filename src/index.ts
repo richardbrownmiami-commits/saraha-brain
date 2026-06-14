@@ -961,11 +961,12 @@ export default {
           if (gToken3) {
             try {
               const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                headers: { Authorization: "Bearer " + gToken3, Accept: "application/vnd.github.v3+json" },
+                headers: { Authorization: "Bearer " + gToken3, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
                 signal: AbortSignal.timeout(10000)
               });
+              if (!metaResp.ok) { const errBody = await metaResp.text(); results.push({ id: p.id, error: "GitHub API " + metaResp.status + ": " + errBody.slice(0,200) }); continue; }
               const meta = await metaResp.json();
-              if (!meta.content) { results.push({ id: p.id, error: "GitHub read failed: " + JSON.stringify(meta).slice(0,100) }); continue; }
+              if (!meta.content) { results.push({ id: p.id, error: "GitHub read missing content: " + JSON.stringify(meta).slice(0,100) }); continue; }
               const currentSource = atob(meta.content);
               const implBody = {
                 messages: [
