@@ -166,7 +166,10 @@ async function checkDuplicateProposal(db, title, whatDiff) {
 }
 
 async function callLLMDirect(env, body, model) {
-  const groqKey = env.GROQ_API_KEY;
+  let groqKey = env.GROQ_API_KEY;
+  if (!groqKey) {
+    try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='groq_api_key'").all(); groqKey = kr.results[0]?.value; } catch {}
+  }
   if (!groqKey) return null;
   const groqBody = {
     model: model || "llama-3.1-8b-instant",
