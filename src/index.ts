@@ -180,7 +180,7 @@ async function callLLMDirect(env, body, model) {
   try {
     const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
-      body: JSON.stringify(groqBody), signal: AbortSignal.timeout(30000)
+      body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
     });
     if (resp.ok) return resp;
     return null;
@@ -1006,7 +1006,7 @@ export default {
             { role: "user", content: "Source code (~" + sourceSlice.length + " chars):\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications to implement this proposal." }
           ],
           temperature: 0.3,
-          max_tokens: 4096
+          max_tokens: 2048
         };
         const implResp = await callLLM(env, implBody);
         if (!implResp.ok) {
