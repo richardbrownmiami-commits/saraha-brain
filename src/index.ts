@@ -1,6 +1,3 @@
-const SummarizationService = require('summarization-service');
-const FetchService = require('fetch-service');
-const CalculationService = require('calculation-service');
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -82,11 +79,10 @@ function describeMood(emotions, energy) {
 async function driftEmotions(db) {
   const emo = await getEmotions(db);
   if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
-// Add new logic to drift emotions based on new tools and services
-
+  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+}
 
 async function storeThought(db, content) {
   await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
@@ -114,9 +110,9 @@ async function getBrainPhase(db, emotions, reg) {
   const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   if (utcMin >= 1170 || utcMin < 30) return "sleeping";
   if (reg.energy <= 20) return "tired";
-if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-// Add new logic to determine brain phase based on new tools and services
-
+  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+  return "awake";
+}
 
 async function getBusyUntil(db) {
   const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
@@ -978,7 +974,7 @@ export default {
         const { title, what_diff: whatStr, how_diff: howStr } = p;
         const implBody = {
           messages: [
-            { role: "system", content: "You are Saraha's code engine. Given a proposal and source code, output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown. Each addition is a new function to append. Each modification has old_code_prefix (first 40 chars of the function to uniquely identify it) and new_code (replacement)." },
+            { role: "system", content: "You are Saraha's code engine. Cloudflare Worker restrictions: NO import/export/require. NO Node.js APIs (Buffer, process). Use fetch() for HTTP, btoa() for base64, env.X for secrets. Output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown. Each addition is a new function to append. Each modification has old_code_prefix (first 40 chars of the function to uniquely identify it) and new_code (replacement). Preserve all existing indentation exactly as-is." },
             { role: "user", content: "Source code (~" + sourceSlice.length + " chars):\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications to implement this proposal." }
           ],
           temperature: 0.3,
@@ -1029,6 +1025,7 @@ export default {
           }
         }
         if (newSource === currentSource) return { id: p.id, error: "No changes applied: LLM output didn't match any existing function" };
+        if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) return { id: p.id, error: "LLM output contains Node.js APIs (require/import/process) which are not allowed in CF Workers" };
         const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
           method: "PUT",
           headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
@@ -1242,18 +1239,6 @@ export default {
     }
   }
 };
-async function integrateTool(db, toolName, toolService) {
-  const safe = isToolSafe(toolName);
-  if (!safe.safe) {
-    console.error(`Tool '${toolName}' is not safe: ${safe.reason}`);
-    return;
-  }
-  // Modify existing tool invocation logic to include calls to the new service/API
-  // Example: await db.prepare(`INSERT INTO memories (content, type, tags) VALUES (?, ?, ?)`).
-  // bind(toolService.getData()).run();
-}
-
-
 
 
 
