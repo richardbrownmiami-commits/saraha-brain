@@ -1,3 +1,6 @@
+const SummarizationService = require('summarization-service');
+const FetchService = require('fetch-service');
+const CalculationService = require('calculation-service');
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
@@ -79,10 +82,11 @@ function describeMood(emotions, energy) {
 async function driftEmotions(db) {
   const emo = await getEmotions(db);
   if (emo.happy > 7) await updateEmotion(db, "happy", -1);
-  if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
-  if (emo.bad > 0) await updateEmotion(db, "bad", -1);
-  if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
-}
+if (emo.happy < 5 && emo.happy > 1) await updateEmotion(db, "happy", 1);
+if (emo.bad > 0) await updateEmotion(db, "bad", -1);
+if (emo.energetic < 5 && emo.energetic >= 1) await updateEmotion(db, "energetic", 1);
+// Add new logic to drift emotions based on new tools and services
+
 
 async function storeThought(db, content) {
   await db.prepare("INSERT INTO memories (content, type, tags) VALUES (?1, 'semantic', '[]')").bind(content).run();
@@ -110,9 +114,9 @@ async function getBrainPhase(db, emotions, reg) {
   const now = new Date(), utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   if (utcMin >= 1170 || utcMin < 30) return "sleeping";
   if (reg.energy <= 20) return "tired";
-  if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
-  return "awake";
-}
+if (reg.energy > 40 && emotions.energetic >= 4) return "curious";
+// Add new logic to determine brain phase based on new tools and services
+
 
 async function getBusyUntil(db) {
   const r = await db.prepare("SELECT value FROM identity WHERE key='busy_until'").all();
@@ -1238,6 +1242,18 @@ export default {
     }
   }
 };
+async function integrateTool(db, toolName, toolService) {
+  const safe = isToolSafe(toolName);
+  if (!safe.safe) {
+    console.error(`Tool '${toolName}' is not safe: ${safe.reason}`);
+    return;
+  }
+  // Modify existing tool invocation logic to include calls to the new service/API
+  // Example: await db.prepare(`INSERT INTO memories (content, type, tags) VALUES (?, ?, ?)`).
+  // bind(toolService.getData()).run();
+}
+
+
 
 
 
