@@ -502,6 +502,59 @@ async function githubWrite(env, input) {
   } catch (e) { return "GitHub error: " + e.message; }
 }
 
+async function deployWorker(env, input) {
+  const token = env.CF_API_TOKEN;
+  const accountId = env.CF_ACCOUNT_ID;
+  if (!token || !accountId) return "Cloudflare credentials not configured";
+  const parts = input.split("/");
+  const scriptName = parts[0] || "saraha-brain";
+  const filePath = parts[1] || "src/index.ts";
+  try {
+    const getResp = await fetch(`https://api.github.com/repos/richardbrownmiami-commits/${scriptName === "saraha-brain" ? "saraha-brain" : scriptName}/contents/${filePath}`, {
+      headers: { "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!getResp.ok) return "Failed to read source: " + getResp.status;
+    const source = await getResp.text();
+    const boundary = crypto.randomUUID();
+    const metadata = JSON.stringify({
+      main_module: "worker.js",
+      compatibility_date: "2026-06-01",
+      bindings: [
+        { type: "d1", name: "DB", database_id: "4e4e5fde-2207-478a-b1ed-d55d6cc35a91" },
+        { type: "service", name: "BUDDHI_DWAR", service: "buddhi-dwar" },
+        { type: "service", name: "SENTINEL", service: "saraha-sentinel" }
+      ]
+    });
+    const body = `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Disposition: form-data; name="worker.js"; filename="worker.js"\r\nContent-Type: application/javascript+module\r\n\r\n${source}\r\n--${boundary}--\r\n`;
+    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${scriptName}`, {
+      method: "PUT",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/form-data; boundary=${boundary}` },
+      body, signal: AbortSignal.timeout(60000)
+    });
+    const data = await resp.json();
+    if (!data.success) return "Deploy failed: " + JSON.stringify(data.errors);
+    return "Deployed " + scriptName + " at " + data.result.modified_on;
+  } catch (e) { return "Deploy error: " + e.message; }
+}
+
+async function cfApi(env, input) {
+  const token = env.CF_API_TOKEN;
+  const accountId = env.CF_ACCOUNT_ID;
+  if (!token || !accountId) return "Cloudflare credentials not configured";
+  try {
+    const { method, path, body: reqBody } = JSON.parse(input);
+    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+      method: method || "GET",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      body: reqBody ? JSON.stringify(reqBody) : undefined,
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await resp.json();
+    return JSON.stringify(data).slice(0, 2000);
+  } catch (e) { return "CF API error: " + e.message; }
+}
+
 async function runTool(env, actionId, tool, input) {
   const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
@@ -532,6 +585,14 @@ async function runTool(env, actionId, tool, input) {
   if (tool === "github_write") {
     const data = await githubWrite(env, input);
     return { ok: true, data: data.slice(0, 1500) };
+  }
+  if (tool === "deploy_worker") {
+    const data = await deployWorker(env, input);
+    return { ok: true, data: data.slice(0, 1500) };
+  }
+  if (tool === "cf_api") {
+    const data = await cfApi(env, input);
+    return { ok: true, data: data.slice(0, 2000) };
   }
   return { ok: false, error: "Tool not implemented: " + tool };
 }
@@ -578,7 +639,7 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:deploy_worker:scriptName/srcPath, TOOL:cf_api:{"method":"GET","path":"/path","body":{}}`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -705,6 +766,8 @@ export default {
       if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
       else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
       else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
+      else if (row.tool === "deploy_worker") toolResult = await deployWorker(env, row.input);
+      else if (row.tool === "cf_api") toolResult = await cfApi(env, row.input);
       const emotions = await getEmotions(env.DB);
       const reg = await getRegulator(env.DB);
       const memories = await recall(env.DB, 5);
