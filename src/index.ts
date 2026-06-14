@@ -585,6 +585,35 @@ export default {
       if (system.length > 80000) system = system.slice(0, 80000) + "\n[truncated]";
       await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
+        // Direct TOOL: execution from input (bypasses LLM)
+        if (input.trim().startsWith("TOOL:")) {
+          const afterTool = input.trim().slice(5);
+          const parts = afterTool.split(":");
+          const tool = parts[0].trim();
+          const toolInput = parts.slice(1).join(":").trim();
+          await logStep(aid, "planner", `Direct tool call: ${tool}(${toolInput})`);
+          const result = await runTool(env, aid, tool, toolInput);
+          let toolContent = "";
+          if (result.pending) {
+            toolContent = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
+            await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
+          } else if (!result.ok) {
+            toolContent = `I tried to use ${tool} but got: ${result.error}`;
+          } else {
+            const followBody = { messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me use ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followResp = await callLLM(env, followBody);
+            if (followResp.ok) {
+              const followData = await followResp.json();
+              toolContent = followData.choices?.[0]?.message?.content || result.data;
+            } else {
+              toolContent = result.data;
+            }
+          }
+          await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(toolContent, aid).run();
+          await logStep(aid, "result", toolContent);
+          return json({ result: toolContent, action_id: aid, emotions: await getEmotions(env.DB) });
+        }
+
         const body = { messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
         await logStep(aid, "planner", "Calling LLM");
         const resp = await callLLM(env, body);
