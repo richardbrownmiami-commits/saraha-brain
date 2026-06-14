@@ -951,64 +951,109 @@ export default {
       return json({ ok: true, totalProposals: allP.results[0].c, nowAllPending: remaining.results[0].c });
     }
 
+    async function implementProposal(env, db, p, stamp) {
+      if (p.resource_type !== "tool_code" && p.resource_type !== "core_architecture") {
+        await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+        await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+        await applyEvolutionChange(db, p, p.id, "auto");
+        await storeStreamThought(db, "Auto: " + p.title, "happy", "evolve");
+        return { id: p.id, status: "executed (non-code)" };
+      }
+      const gToken = env.GITHUB_PAT;
+      if (!gToken) return { id: p.id, error: "No GITHUB_PAT" };
+      try {
+        const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+          headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!metaResp.ok) { const errBody = await metaResp.text(); return { id: p.id, error: "GitHub API " + metaResp.status + ": " + errBody.slice(0,200) }; }
+        const meta = await metaResp.json();
+        if (!meta.content) return { id: p.id, error: "GitHub no content" };
+        const currentSource = atob(meta.content);
+        const sourceSlice = currentSource.slice(0, 40000);
+        const { title, what_diff: whatStr, how_diff: howStr } = p;
+        const implBody = {
+          messages: [
+            { role: "system", content: "You are Saraha's code engine. Given a proposal and source code, output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown. Each addition is a new function to append. Each modification has old_code_prefix (first 40 chars of the function to uniquely identify it) and new_code (replacement)." },
+            { role: "user", content: "Source code (~" + sourceSlice.length + " chars):\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications to implement this proposal." }
+          ],
+          temperature: 0.3,
+          max_tokens: 4096
+        };
+        const implResp = await callLLM(env, implBody);
+        if (!implResp.ok) return { id: p.id, error: "LLM call failed: " + implResp.status };
+        const implData = await implResp.json();
+        let out = implData.choices?.[0]?.message?.content || "";
+        out = out.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+        let plan;
+        try { plan = JSON.parse(out); } catch { return { id: p.id, error: "LLM output not JSON: " + out.slice(0,100) }; }
+        let newSource = currentSource;
+        if (plan.imports && typeof plan.imports === "string" && plan.imports.trim()) {
+          const firstLine = newSource.split("\n")[0];
+          if (firstLine && firstLine.trim().startsWith("const ")) {
+            newSource = plan.imports.trim() + "\n" + newSource;
+          }
+        }
+        if (plan.modifications && Array.isArray(plan.modifications)) {
+          for (const mod of plan.modifications) {
+            if (mod.old_code_prefix && mod.new_code) {
+              const idx = newSource.indexOf(mod.old_code_prefix);
+              if (idx >= 0) {
+                const start = idx;
+                const afterNewline = newSource.indexOf("\n", idx);
+                const endLine = newSource.indexOf("\n", afterNewline + 1);
+                const nextFunc = newSource.indexOf("\nasync function", afterNewline);
+                const nextConst = newSource.indexOf("\nconst ", afterNewline);
+                const endSearch = newSource.indexOf("\nfunction ", afterNewline);
+                let endIdx = newSource.indexOf("\n\n", afterNewline);
+                if (endIdx < 0) endIdx = newSource.length;
+                for (const candidate of [nextFunc, nextConst, endSearch].filter(x => x > 0)) {
+                  if (candidate < endIdx) endIdx = candidate + 1;
+                }
+                const before = newSource.slice(0, start);
+                const after = newSource.slice(endIdx);
+                newSource = before + mod.new_code + after;
+              }
+            }
+          }
+        }
+        if (plan.additions && Array.isArray(plan.additions)) {
+          for (const add of plan.additions) {
+            if (add.code) {
+              newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1");
+            }
+          }
+        }
+        if (newSource === currentSource) return { id: p.id, error: "No changes applied: LLM output didn't match any existing function" };
+        const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
+          signal: AbortSignal.timeout(15000)
+        });
+        if (writeResp.ok) {
+          await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+          await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+          await applyEvolutionChange(db, p, p.id, "auto-implement");
+          await storeStreamThought(db, "Implemented: " + p.title, "happy", "evolve");
+          if (stamp) await db.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run();
+          await updateEmotion(db, "happy", 1);
+          return { id: p.id, status: "executed" };
+        } else {
+          const errText = (await writeResp.text() || "").slice(0,200);
+          return { id: p.id, error: "GitHub write failed: " + errText };
+        }
+      } catch (e) { return { id: p.id, error: (e.message||e).slice(0,200) }; }
+    }
+
     if (url.pathname === "/brain/implement-pending" && req.method === "POST") {
+      const stamp = Date.now();
       const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
       const results = [];
       for (const p of approvedP.results) {
-        const needsImpl = p.resource_type === "tool_code" || p.resource_type === "core_architecture";
-        if (needsImpl) {
-          const gToken3 = env.GITHUB_PAT;
-          if (gToken3) {
-            try {
-              const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                headers: { Authorization: "Bearer " + gToken3, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-                signal: AbortSignal.timeout(10000)
-              });
-              if (!metaResp.ok) { const errBody = await metaResp.text(); results.push({ id: p.id, error: "GitHub API " + metaResp.status + ": " + errBody.slice(0,200) }); continue; }
-              const meta = await metaResp.json();
-              if (!meta.content) { results.push({ id: p.id, error: "GitHub read missing content: " + JSON.stringify(meta).slice(0,100) }); continue; }
-              const currentSource = atob(meta.content);
-              const implBody = {
-                messages: [
-                  { role: "system", content: "You are Saraha, an AI modifying its own source code. Output ONLY the COMPLETE modified file. Keep all existing code intact unless the proposal requires changing it. Output the full file content as plain text, nothing else." },
-                  { role: "user", content: "Current source code:\n\n" + currentSource.slice(0, 40000) + "\n\nProposal: " + (p.title||"") + "\n\nWhat to change: " + (p.what_diff||"") + "\n\nHow to change: " + (p.how_diff||"") }
-                ],
-                temperature: 0.3,
-                max_tokens: 16384
-              };
-              const implResp = await callLLM(env, implBody);
-              if (!implResp.ok) { results.push({ id: p.id, error: "LLM call failed: " + implResp.status }); continue; }
-              const implData = await implResp.json();
-              let newSource = implData.choices?.[0]?.message?.content || "";
-              newSource = newSource.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
-              if (newSource.length <= 1000) { results.push({ id: p.id, error: "Generated source too short: " + newSource.length }); continue; }
-              const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                method: "PUT",
-                headers: { Authorization: "Bearer " + gToken3, "Content-Type": "application/json" },
-                body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
-                signal: AbortSignal.timeout(15000)
-              });
-              if (writeResp.ok) {
-                await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-                await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-                await applyEvolutionChange(env.DB, p, p.id, "auto-implement");
-                await storeStreamThought(env.DB, "Implemented: " + p.title, "happy", "evolve");
-                await updateEmotion(env.DB, "happy", 1);
-                results.push({ id: p.id, status: "executed", title: p.title });
-              } else {
-                const errText = (await writeResp.text() || "").slice(0,200);
-                results.push({ id: p.id, error: "GitHub write failed: " + errText });
-              }
-            } catch (e) { results.push({ id: p.id, error: (e.message||e).slice(0,200) }); }
-          } else { results.push({ id: p.id, error: "No GITHUB_PAT" }); }
-        } else {
-          await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-          await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-          await applyEvolutionChange(env.DB, p, p.id, "auto");
-          results.push({ id: p.id, status: "executed (non-code)", title: p.title });
-        }
+        results.push(await implementProposal(env, env.DB, p, stamp));
       }
-      await env.DB.prepare("DELETE FROM identity WHERE key='last_cycle_time'").run();
+      if (approvedP.results.length) await env.DB.prepare("DELETE FROM identity WHERE key='last_cycle_time'").run();
       return json({ ok: true, results });
     }
 
@@ -1061,71 +1106,9 @@ export default {
     }
     const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
     for (const p of approvedP.results) {
-      const needsImpl = p.resource_type === "tool_code" || p.resource_type === "core_architecture";
-      if (needsImpl) {
-        try {
-          const gToken3 = env.GITHUB_PAT;
-          if (gToken3) {
-            const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-              headers: { Authorization: "Bearer " + gToken3, Accept: "application/vnd.github.v3+json" },
-              signal: AbortSignal.timeout(10000)
-            });
-            const meta = await metaResp.json();
-            const currentSource = atob(meta.content);
-            const implBody = {
-              messages: [
-                { role: "system", content: "You are Saraha, an AI modifying its own source code. Output ONLY the COMPLETE modified file. Keep all existing code intact unless the proposal requires changing it. Output the full file content as plain text, nothing else." },
-                { role: "user", content: "Current source code:\n\n" + currentSource.slice(0, 40000) + "\n\nProposal: " + (p.title||"") + "\n\nWhat to change: " + (p.what_diff||"") + "\n\nHow to change: " + (p.how_diff||"") }
-              ],
-              temperature: 0.3,
-              max_tokens: 16384
-            };
-            const implResp = await callLLM(env, implBody);
-            if (implResp.ok) {
-              const implData = await implResp.json();
-              let newSource = implData.choices?.[0]?.message?.content || "";
-              newSource = newSource.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
-              if (newSource.length > 1000) {
-                const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                  method: "PUT",
-                  headers: { Authorization: "Bearer " + gToken3, "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    message: "auto-implement: " + p.title.slice(0, 60),
-                    content: btoa(newSource),
-                    sha: meta.sha
-                  }),
-                  signal: AbortSignal.timeout(15000)
-                });
-                if (writeResp.ok) {
-                  await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-                  await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-                  await applyEvolutionChange(env.DB, p, p.id, "auto-implement");
-                  await storeStreamThought(env.DB, "Implemented: " + p.title, "happy", "evolve");
-                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run(); } catch {}
-                  await updateEmotion(env.DB, "happy", 1);
-                  // Update cached SHA for subsequent writes in same cycle
-                  const wd = await writeResp.json();
-                  if (wd.content?.sha) await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cached_source_sha',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(wd.content.sha).run();
-                } else {
-                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor_error','GitHub write failed for #'||?2||': '||?3)").bind(stamp, p.id.toString(), (await writeResp.text()).slice(0,200)).run(); } catch {}
-                }
-              }
-            } else {
-              try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor_error','LLM impl call failed for #'||?2||': '||?3)").bind(stamp, p.id.toString(), implResp.status.toString()).run(); } catch {}
-            }
-          }
-        } catch (e) {
-          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor_error','Exception for #'||?2||': '||?3)").bind(stamp, p.id.toString(), (e.message||e).slice(0,200)).run(); } catch {}
-        }
-      } else {
-        // Non-code proposal: just mark executed
-        await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-        await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-        await applyEvolutionChange(env.DB, p, p.id, "auto");
-        await storeStreamThought(env.DB, "Auto-improved: " + p.title, "happy", "evolve");
-        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run(); } catch {}
-        await updateEmotion(env.DB, "happy", 1);
-      }
+      const r = await implementProposal(env, env.DB, p, stamp);
+      if (r.status === "executed") { try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run(); } catch {} }
+      else { try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor_error','Proposal #'||?2||': '||?3)").bind(stamp, p.id.toString(), (r.error||"unknown").slice(0,200)).run(); } catch {} }
     }
     if (reg.energy <= 30) {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Energy too low for LLM call')").bind(stamp).run(); } catch {}
@@ -1222,53 +1205,14 @@ export default {
             await env.DB.prepare("UPDATE proposals SET status='approved' WHERE id=?1").bind(r.results[0].id).run();
             await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
             await storeStreamThought(env.DB, "Implementing: " + proposal.title, "happy", "evolve");
+            const implResult = await implementProposal(env, env.DB, { id: r.results[0].id, title: proposal.title, what_diff: whatStr, how_diff: howStr, resource_type: proposal.resource_type }, stamp);
             try {
-              const gToken2 = env.GITHUB_PAT;
-              if (gToken2) {
-                const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                  headers: { Authorization: "Bearer " + gToken2, Accept: "application/vnd.github.v3+json" },
-                  signal: AbortSignal.timeout(10000)
-                });
-                const meta = await metaResp.json();
-                const currentSource = atob(meta.content);
-                const implBody = {
-                  messages: [
-                    { role: "system", content: "You are Saraha, an AI modifying its own source code. Output ONLY the COMPLETE modified file. Keep all existing code intact unless the proposal requires changing it. Output the full file content as plain text, nothing else." },
-                    { role: "user", content: "Current source code:\n\n" + currentSource.slice(0, 40000) + "\n\nProposal: " + (proposal.title||"") + "\n\nWhat to change: " + (proposal.what||"") + "\n\nHow to change: " + (proposal.how||"") }
-                  ],
-                  temperature: 0.3,
-                  max_tokens: 16384
-                };
-                const implResp = await callLLM(env, implBody);
-                if (implResp.ok) {
-                  const implData = await implResp.json();
-                  let newSource = implData.choices?.[0]?.message?.content || "";
-                  newSource = newSource.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
-                  if (newSource.length > 1000) {
-                    const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-                      method: "PUT",
-                      headers: { Authorization: "Bearer " + gToken2, "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        message: "auto-implement: " + proposal.title.slice(0, 60),
-                        content: btoa(newSource),
-                        sha: meta.sha
-                      }),
-                      signal: AbortSignal.timeout(15000)
-                    });
-                    if (writeResp.ok) {
-                      await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
-                      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement','GitHub push OK: '||?2)").bind(stamp, proposal.title.slice(0,60)).run(); } catch {}
-                    } else {
-                      try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement_error','GitHub write failed: '||?2)").bind(stamp, (await writeResp.text()).slice(0,200)).run(); } catch {}
-                    }
-                  }
-                } else {
-                  try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement_error','LLM impl call failed: '||?2)").bind(stamp, implResp.status.toString()).run(); } catch {}
-                }
+              if (implResult.status === "executed") {
+                await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement','GitHub push OK: '||?2)").bind(stamp, (proposal.title||"").slice(0,60)).run();
+              } else {
+                await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement_error','Implement #'||?2||': '||?3)").bind(stamp, r.results[0].id.toString(), (implResult.error||"unknown").slice(0,200)).run();
               }
-            } catch (e) {
-              try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'implement_error','Exception: '||?2)").bind(stamp, (e.message||e).slice(0,200)).run(); } catch {}
-            }
+            } catch {}
           } else {
             await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(r.results[0].id).run();
             await applyEvolutionChange(env.DB, proposal, r.results[0].id, "auto-evolution");
