@@ -93,6 +93,10 @@ async function recall(db, limit = 10) {
   return rows.results.map((m) => `[${m.type}] ${m.content} (${m.created_at})`).join("\n");
 }
 
+async function pingCf() {
+  return { alive: true, timestamp: Date.now() };
+}
+
 function isToolSafe(tool) {
   const rules = { web_search: true, web_fetch: true, github_read: true, github_write: true, github_push: false };
   return { safe: rules[tool] !== false, reason: rules[tool] ? "read-only" : "dangerous" };
@@ -161,6 +165,25 @@ async function checkDuplicateProposal(db, title, whatDiff) {
   return { duplicate: false };
 }
 
+async function callLLMDirect(env, body, model) {
+  const groqKey = env.GROQ_API_KEY;
+  if (!groqKey) return null;
+  const groqBody = {
+    model: model || "llama-3.1-8b-instant",
+    messages: body.messages,
+    temperature: body.temperature || 0.3,
+    max_tokens: body.max_tokens || 2048
+  };
+  try {
+    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
+      body: JSON.stringify(groqBody), signal: AbortSignal.timeout(30000)
+    });
+    if (resp.ok) return resp;
+    return null;
+  } catch { return null; }
+}
+
 async function callLLM(env, body) {
   const models = ["auto", "mistral-small-latest", "openrouter/auto"];
   let last;
@@ -173,6 +196,8 @@ async function callLLM(env, body) {
     if (resp.ok) return resp;
     last = resp;
   }
+  const direct = await callLLMDirect(env, body, "llama-3.1-8b-instant");
+  if (direct) return direct;
   return last;
 }
 
@@ -981,7 +1006,10 @@ export default {
           max_tokens: 4096
         };
         const implResp = await callLLM(env, implBody);
-        if (!implResp.ok) return { id: p.id, error: "LLM call failed: " + implResp.status };
+        if (!implResp.ok) {
+          await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+          return { id: p.id, error: "LLM call failed: " + implResp.status };
+        }
         const implData = await implResp.json();
         let out = implData.choices?.[0]?.message?.content || "";
         out = out.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
