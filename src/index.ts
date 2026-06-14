@@ -1027,7 +1027,7 @@ export default {
         if (newSource === currentSource) return { id: p.id, error: "No changes applied: LLM output didn't match any existing function" };
         const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
           method: "PUT",
-          headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json" },
+          headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
           body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
           signal: AbortSignal.timeout(15000)
         });
