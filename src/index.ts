@@ -951,6 +951,66 @@ export default {
       return json({ ok: true, totalProposals: allP.results[0].c, nowAllPending: remaining.results[0].c });
     }
 
+    if (url.pathname === "/brain/implement-pending" && req.method === "POST") {
+      const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
+      const results = [];
+      for (const p of approvedP.results) {
+        const needsImpl = p.resource_type === "tool_code" || p.resource_type === "core_architecture";
+        if (needsImpl) {
+          const gToken3 = env.GITHUB_PAT;
+          if (gToken3) {
+            try {
+              const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                headers: { Authorization: "Bearer " + gToken3, Accept: "application/vnd.github.v3+json" },
+                signal: AbortSignal.timeout(10000)
+              });
+              const meta = await metaResp.json();
+              if (!meta.content) { results.push({ id: p.id, error: "GitHub read failed: " + JSON.stringify(meta).slice(0,100) }); continue; }
+              const currentSource = atob(meta.content);
+              const implBody = {
+                messages: [
+                  { role: "system", content: "You are Saraha, an AI modifying its own source code. Output ONLY the COMPLETE modified file. Keep all existing code intact unless the proposal requires changing it. Output the full file content as plain text, nothing else." },
+                  { role: "user", content: "Current source code:\n\n" + currentSource.slice(0, 40000) + "\n\nProposal: " + (p.title||"") + "\n\nWhat to change: " + (p.what_diff||"") + "\n\nHow to change: " + (p.how_diff||"") }
+                ],
+                temperature: 0.3,
+                max_tokens: 16384
+              };
+              const implResp = await callLLM(env, implBody);
+              if (!implResp.ok) { results.push({ id: p.id, error: "LLM call failed: " + implResp.status }); continue; }
+              const implData = await implResp.json();
+              let newSource = implData.choices?.[0]?.message?.content || "";
+              newSource = newSource.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+              if (newSource.length <= 1000) { results.push({ id: p.id, error: "Generated source too short: " + newSource.length }); continue; }
+              const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+                method: "PUT",
+                headers: { Authorization: "Bearer " + gToken3, "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
+                signal: AbortSignal.timeout(15000)
+              });
+              if (writeResp.ok) {
+                await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+                await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+                await applyEvolutionChange(env.DB, p, p.id, "auto-implement");
+                await storeStreamThought(env.DB, "Implemented: " + p.title, "happy", "evolve");
+                await updateEmotion(env.DB, "happy", 1);
+                results.push({ id: p.id, status: "executed", title: p.title });
+              } else {
+                const errText = (await writeResp.text() || "").slice(0,200);
+                results.push({ id: p.id, error: "GitHub write failed: " + errText });
+              }
+            } catch (e) { results.push({ id: p.id, error: (e.message||e).slice(0,200) }); }
+          } else { results.push({ id: p.id, error: "No GITHUB_PAT" }); }
+        } else {
+          await env.DB.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+          await env.DB.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+          await applyEvolutionChange(env.DB, p, p.id, "auto");
+          results.push({ id: p.id, status: "executed (non-code)", title: p.title });
+        }
+      }
+      await env.DB.prepare("DELETE FROM identity WHERE key='last_cycle_time'").run();
+      return json({ ok: true, results });
+    }
+
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
@@ -1233,6 +1293,7 @@ export default {
     }
   }
 };
+
 
 
 
