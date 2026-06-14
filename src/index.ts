@@ -970,7 +970,7 @@ export default {
         const meta = await metaResp.json();
         if (!meta.content) return { id: p.id, error: "GitHub no content" };
         const currentSource = atob(meta.content);
-        const sourceSlice = currentSource.slice(0, 40000);
+        const sourceSlice = currentSource.slice(0, 8000);
         const { title, what_diff: whatStr, how_diff: howStr } = p;
         const implBody = {
           messages: [
