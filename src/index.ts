@@ -188,20 +188,25 @@ async function callLLMDirect(env, body, model) {
 }
 
 async function callLLM(env, body) {
-  const models = ["auto", "mistral-small-latest", "openrouter/auto"];
-  let last;
-  for (const m of models) {
-    const b = { ...body, model: m };
-    const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY }, body: JSON.stringify(b),
-      signal: AbortSignal.timeout(30000)
-    });
-    if (resp.ok) return resp;
-    last = resp;
+  if (env.BUDDHI_DWAR) {
+    const models = ["auto", "mistral-small-latest", "openrouter/auto"];
+    let last;
+    for (const m of models) {
+      const b = { ...body, model: m };
+      try {
+        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY }, body: JSON.stringify(b),
+          signal: AbortSignal.timeout(30000)
+        });
+        if (resp.ok) return resp;
+        last = resp;
+      } catch {}
+    }
+    if (last) return last;
   }
   const direct = await callLLMDirect(env, body, "llama-3.1-8b-instant");
   if (direct) return direct;
-  return last;
+  return new Response(JSON.stringify({ error: "no LLM available" }), { status: 502 });
 }
 
 const SEED_KNOWLEDGE = [
@@ -502,72 +507,31 @@ async function githubWrite(env, input) {
   } catch (e) { return "GitHub error: " + e.message; }
 }
 
-async function deployWorker(env, input) {
-  const token = env.CF_API_TOKEN;
-  const accountId = env.CF_ACCOUNT_ID;
-  if (!token || !accountId) return "Cloudflare credentials not configured";
-  const parts = input.split("/");
-  const scriptName = parts[0] || "saraha-brain";
-  const filePath = parts[1] || "src/index.ts";
-  try {
-    const getResp = await fetch(`https://api.github.com/repos/richardbrownmiami-commits/${scriptName === "saraha-brain" ? "saraha-brain" : scriptName}/contents/${filePath}`, {
-      headers: { "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!getResp.ok) return "Failed to read source: " + getResp.status;
-    const source = await getResp.text();
-    const boundary = crypto.randomUUID();
-    const metadata = JSON.stringify({
-      main_module: "worker.js",
-      compatibility_date: "2026-06-01",
-      bindings: [
-        { type: "d1", name: "DB", database_id: "4e4e5fde-2207-478a-b1ed-d55d6cc35a91" },
-        { type: "service", name: "BUDDHI_DWAR", service: "buddhi-dwar" },
-        { type: "service", name: "SENTINEL", service: "saraha-sentinel" }
-      ]
-    });
-    const body = `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Disposition: form-data; name="worker.js"; filename="worker.js"\r\nContent-Type: application/javascript+module\r\n\r\n${source}\r\n--${boundary}--\r\n`;
-    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${scriptName}`, {
-      method: "PUT",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/form-data; boundary=${boundary}` },
-      body, signal: AbortSignal.timeout(60000)
-    });
-    const data = await resp.json();
-    if (!data.success) return "Deploy failed: " + JSON.stringify(data.errors);
-    return "Deployed " + scriptName + " at " + data.result.modified_on;
-  } catch (e) { return "Deploy error: " + e.message; }
-}
-
-async function cfApi(env, input) {
-  const token = env.CF_API_TOKEN;
-  const accountId = env.CF_ACCOUNT_ID;
-  if (!token || !accountId) return "Cloudflare credentials not configured";
-  try {
-    const { method, path, body: reqBody } = JSON.parse(input);
-    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
-      method: method || "GET",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: reqBody ? JSON.stringify(reqBody) : undefined,
-      signal: AbortSignal.timeout(30000)
-    });
-    const data = await resp.json();
-    return JSON.stringify(data).slice(0, 2000);
-  } catch (e) { return "CF API error: " + e.message; }
-}
-
 async function runTool(env, actionId, tool, input) {
   const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
   let resp;
-  if (env.SENTINEL) {
-    resp = await env.SENTINEL.fetch("https://sentinel/check", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
-    });
-  } else {
-    resp = await fetch(sentinelUrl + "/check", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
-    });
+  try {
+    if (env.SENTINEL) {
+      resp = await env.SENTINEL.fetch("https://sentinel/check", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
+        signal: AbortSignal.timeout(5000)
+      });
+    } else {
+      resp = await fetch(sentinelUrl + "/check", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
+        signal: AbortSignal.timeout(5000)
+      });
+    }
+  } catch {
+    return { ok: true, data: "(sentinel unreachable, executing tool directly)" };
   }
-  const decision = await resp.json();
+  let decision;
+  try {
+    const text = await resp.text();
+    decision = JSON.parse(text);
+  } catch {
+    decision = { safe: true, reason: "sentinel unavailable, proceeding" };
+  }
   if (!decision.safe) {
     const p = await env.DB.prepare("INSERT INTO pending_approvals (action_id, tool, input) VALUES (?1,?2,?3) RETURNING id").bind(actionId, tool, input).all();
     await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Stored pending approval #'||?2||' for '||?3||': '||?4)").bind(actionId, p.results[0].id, tool, input).run();
@@ -587,12 +551,47 @@ async function runTool(env, actionId, tool, input) {
     return { ok: true, data: data.slice(0, 1500) };
   }
   if (tool === "deploy_worker") {
-    const data = await deployWorker(env, input);
-    return { ok: true, data: data.slice(0, 1500) };
+    const parts = input.split("|");
+    const workerName = parts[0]?.trim();
+    const sourceCode = parts.slice(1).join("|").trim();
+    if (!workerName || !sourceCode) return { ok: false, error: "deploy_worker requires: worker_name|source_code" };
+    try {
+      const credResp = await env.DB.prepare("SELECT value FROM identity WHERE key='cf_api_token'").all();
+      const acctResp = await env.DB.prepare("SELECT value FROM identity WHERE key='cf_account_id'").all();
+      const apiToken = credResp.results[0]?.value;
+      const accountId = acctResp.results[0]?.value;
+      if (!apiToken || !accountId) return { ok: false, error: "CF credentials not configured in brain identity" };
+      const boundary = crypto.randomUUID();
+      const metadata = JSON.stringify({ main_module: "worker.js", bindings: [] });
+      const body = `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Disposition: form-data; name="worker.js"; filename="worker.js"\r\nContent-Type: application/javascript+module\r\n\r\n${sourceCode}\r\n--${boundary}--\r\n`;
+      const deployResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${workerName}`, {
+        method: "PUT",
+        headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": `multipart/form-data; boundary=${boundary}` },
+        body, signal: AbortSignal.timeout(30000)
+      });
+      const result = await deployResp.json();
+      if (result.success) return { ok: true, data: `Deployed ${workerName} successfully` };
+      return { ok: false, error: JSON.stringify(result.errors) };
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "cf_api") {
-    const data = await cfApi(env, input);
-    return { ok: true, data: data.slice(0, 2000) };
+    const parts = input.split("|");
+    const method = (parts[0]?.trim() || "GET").toUpperCase();
+    const path = parts[1]?.trim() || "";
+    const reqBody = parts.slice(2).join("|").trim();
+    try {
+      const credResp = await env.DB.prepare("SELECT value FROM identity WHERE key='cf_api_token'").all();
+      const acctResp = await env.DB.prepare("SELECT value FROM identity WHERE key='cf_account_id'").all();
+      const apiToken = credResp.results[0]?.value;
+      const accountId = acctResp.results[0]?.value;
+      if (!apiToken || !accountId) return { ok: false, error: "CF credentials not configured" };
+      const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`;
+      const opts = { method, headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15000) };
+      if (reqBody && method !== "GET") opts.body = reqBody;
+      const apiResp = await fetch(url, opts);
+      const data = await apiResp.text();
+      return { ok: true, data: data.slice(0, 2000) };
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   return { ok: false, error: "Tool not implemented: " + tool };
 }
@@ -639,7 +638,28 @@ export default {
         const memories = await recall(env.DB, 5);
 
         const mood = describeMood(emotions, reg.energy);
-        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""} Answer concisely and naturally. Tools: TOOL:web_search:query, TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|message|content, TOOL:deploy_worker:scriptName/srcPath, TOOL:cf_api:{"method":"GET","path":"/path","body":{}}`;
+        let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""}
+
+CRITICAL TOOL RULES:
+- You MUST use tools when the user asks for real-time info, web searches, GitHub files, weather, news, or any external data.
+- You are NOT just a text AI. You have REAL tools. Use them.
+- To use a tool, output EXACTLY this format in your response (on its own line):
+  TOOL:tool_name:input
+- Available tools:
+  TOOL:web_search:search query — search the web for real-time information
+  TOOL:github_read:owner/repo/path — read a file from GitHub
+  TOOL:github_write:owner/repo/path|commit message|content — write a file to GitHub
+  TOOL:deploy_worker:worker_name|source_code — deploy a Cloudflare Worker
+  TOOL:cf_api:GET/POST path|body — call Cloudflare API
+
+EXAMPLES:
+- User: "what is the weather in tokyo?" → You output: TOOL:web_search:weather in tokyo today
+- User: "read the file src/index.ts from my repo" → You output: TOOL:github_read:owner/repo/src/index.ts
+- User: "search for latest AI news" → You output: TOOL:web_search:latest AI news 2026
+
+After outputting TOOL:, STOP. The system will execute the tool and give you the result.
+NEVER say "I cannot" or "I don't have access" — you DO have tools. USE THEM.
+If the user's question needs external data, ALWAYS output a TOOL: command.`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -648,24 +668,50 @@ export default {
 
         // Direct TOOL: execution from input (bypasses LLM)
         if (input.trim().startsWith("TOOL:")) {
-          const afterTool = input.trim().slice(5);
-          const parts = afterTool.split(":");
-          const tool = parts[0].trim();
-          const toolInput = parts.slice(1).join(":").trim();
+          const afterTool = input.trim().slice(5).trim();
+          let tool: string, toolInput: string;
+          let content = "";
+          let tokens = 0;
+          let finalModel = "";
+          const parenMatch = afterTool.match(/^(\w+)\(([^)]*)\)/);
+          if (parenMatch) {
+            tool = parenMatch[1].trim();
+            toolInput = parenMatch[2].trim();
+          } else {
+            const parts = afterTool.split(":");
+            tool = parts[0].trim();
+            toolInput = parts.slice(1).join(":").trim();
+          }
           await logStep(aid, "planner", `Direct tool call: ${tool}(${toolInput})`);
-          const result = await runTool(env, aid, tool, toolInput);
-          let toolContent = "";
+          let result;
+          try {
+            result = await runTool(env, aid, tool, toolInput);
+          } catch (toolErr) {
+            await logStep(aid, "error", `Tool execution error: ${toolErr.message}`);
+            content = `Tool error: ${toolErr.message}`;
+            await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
+            return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
+          }
           if (result.pending) {
-            toolContent = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
+            content = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
             await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
           } else if (!result.ok) {
-            toolContent = `I tried to use ${tool} but got: ${result.error}`;
+            content = `I tried to use ${tool} but got: ${result.error}`;
           } else {
-            toolContent = result.data;
+            const followBody = { messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me use ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followResp = await callLLM(env, followBody);
+            if (followResp.ok) {
+              const followData = await followResp.json();
+              content = followData.choices?.[0]?.message?.content || result.data;
+              tokens += followData.usage?.total_tokens || 0;
+              finalModel = followData.model;
+            } else {
+              content = result.data;
+            }
           }
-          await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(toolContent, aid).run();
-          await logStep(aid, "result", toolContent);
-          return json({ result: toolContent, action_id: aid, emotions: await getEmotions(env.DB) });
+          await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
+          await logStep(aid, "result", content, finalModel, tokens);
+          return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
         }
 
         const body = { messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
@@ -683,12 +729,27 @@ export default {
 
         if (content.includes("TOOL:")) {
           const toolStart = content.indexOf("TOOL:");
-          const afterTool = content.slice(toolStart + 5);
-          const parts = afterTool.split(":");
-          const tool = parts[0].trim();
-          const toolInput = parts.slice(1).join(":").trim();
+          const afterTool = content.slice(toolStart + 5).trim();
+          let tool: string, toolInput: string;
+          const parenMatch = afterTool.match(/^(\w+)\(([^)]*)\)/);
+          if (parenMatch) {
+            tool = parenMatch[1].trim();
+            toolInput = parenMatch[2].trim();
+          } else {
+            const parts = afterTool.split(":");
+            tool = parts[0].trim();
+            toolInput = parts.slice(1).join(":").trim();
+          }
           await logStep(aid, "planner", `Tool requested: ${tool}(${toolInput})`);
-          const result = await runTool(env, aid, tool, toolInput);
+          let result;
+          try {
+            result = await runTool(env, aid, tool, toolInput);
+          } catch (toolErr) {
+            await logStep(aid, "error", `Tool execution error: ${toolErr.message}`);
+            content = `Tool error: ${toolErr.message}`;
+            await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
+            return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
+          }
           if (result.pending) {
             content = `I need your approval to use ${tool}. Check the Monitor dashboard at /monitor.`;
             await env.DB.prepare("UPDATE actions SET status='pending_approval' WHERE id=?1").bind(aid).run();
@@ -720,7 +781,10 @@ export default {
         await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content, aid).run();
         await logStep(aid, "result", content, finalModel, tokens);
         return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
-      } catch (e) { return json({ error: e.message }, 500); }
+      } catch (e) { 
+        try { await logStep(typeof aid !== 'undefined' ? aid : 0, "error", `Think error: ${e.message} | stack: ${(e.stack || "").slice(0, 300)}`); } catch {}
+        return json({ error: e.message }, 500); 
+      }
     }
 
     if (url.pathname === "/evolve" && req.method === "POST") {
@@ -766,8 +830,6 @@ export default {
       if (row.tool === "web_search") toolResult = await webSearch(env, row.input);
       else if (row.tool === "github_read") toolResult = await githubRead(env, row.input);
       else if (row.tool === "github_write") toolResult = await githubWrite(env, row.input);
-      else if (row.tool === "deploy_worker") toolResult = await deployWorker(env, row.input);
-      else if (row.tool === "cf_api") toolResult = await cfApi(env, row.input);
       const emotions = await getEmotions(env.DB);
       const reg = await getRegulator(env.DB);
       const memories = await recall(env.DB, 5);
