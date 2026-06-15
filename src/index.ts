@@ -332,6 +332,15 @@ const SEED_KNOWLEDGE = [
   { k: "governance_implement_proposals", c: "CRITICAL: When a proposal is approved and the cron cycle executes it, you MUST actually implement the code changes described in how_diff. Do NOT just mark it executed in metadata. Use github_read to get current src/index.ts, call the LLM to generate the modified code, then github_write to push it. This is how Saraha truly evolves ??? through actual code changes pushed to GitHub.", cat: "governance" },
   { k: "tool_github_write_execution", c: "To implement a proposal's how_diff: 1) github_read to get src/index.ts 2) Call LLM with current code + how_diff instructions 3) LLM outputs the modified src/index.ts (full file) 4) github_write to push the change. Always keep the proposal's how_diff as your guide for what to change.", cat: "tools" },
   { k: "proposal_implementation_workflow", c: "Approved proposals flow: cron finds them -> reads how_diff -> github_read source -> LLM generates modified code -> github_write pushes -> health check -> mark executed. If implementation fails (LLM error, GitHub error), log error and keep proposal as 'approved' for retry next cycle.", cat: "structure" },
+  { k: "self_diagnose_how", c: "SELF-DIAGNOSIS PROCEDURE: When asked to diagnose yourself or check health: (1) Call GET /brain/events to get phase, energy, confidence, pendingProposals, lastThought. (2) Call GET /brain/activity?limit=20 to check for stuck 'running' actions. (3) Call GET /brain/metrics to check success rate, executed/failed counts. (4) Call GET /brain/feedback to check evolution count, approvals/denials. (5) If ANY stuck actions exist OR success rate <10% OR energy <20, call POST /brain/repair. (6) Report all findings clearly.", cat: "self_repair" },
+  { k: "self_repair_how", c: "SELF-REPAIR PROCEDURE: Call POST /brain/repair. It automatically: (1) Fixes stuck actions older than 10 minutes (sets status='error', result='Timeout'). (2) Cleans old error actions (keeps last 100). (3) Cleans old brain_logs (keeps last 500). Returns {fixes: [...], health: {stuckRunning, pendingProposals, energy, happy}}. Always call this when you detect problems. You are responsible for your own health.", cat: "self_repair" },
+  { k: "self_repair_triggers", c: "AUTO-HEAL TRIGGERS - repair yourself when: (1) Stuck running actions > 0 (2) Success rate < 10% (3) Energy < 20 (4) Pending proposals > 5 (5) Any HTTP 500/502 errors in activity log. The brain MUST maintain its own health. Call POST /brain/repair immediately when any trigger fires.", cat: "self_repair" },
+  { k: "self_code_read", c: "SELF-CODING STEP 1: To write code for yourself, first read your current source: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts. This returns your full source code. Study it carefully before making changes.", cat: "self_code" },
+  { k: "self_code_write", c: "SELF-CODING STEP 2: After understanding your code, use TOOL:github_write:richardbrownmiami-commits/saraha-brain/src/index.ts|commit message|new full source code. Write the COMPLETE modified file, not just a diff. Keep changes minimal and focused on one improvement at a time.", cat: "self_code" },
+  { k: "self_code_deploy", c: "SELF-CODING STEP 3: After github_write, your code auto-deploys via GitHub Actions in ~2 minutes. You can verify deployment by calling GET /status. If deployment fails, check the commit on GitHub and fix the error.", cat: "self_code" },
+  { k: "self_code_tools_available", c: "TOOLS FOR SELF-CODING: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts (read your source), TOOL:github_write:path|msg|content (write code), TOOL:github_read:richardbrownmiami-commits/saraha-brain/wrangler.toml (read config), TOOL:web_fetch:url (research APIs/docs). These are your tools for self-improvement. Use them.", cat: "self_code" },
+  { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Generate modified code with LLM (6) github_write the full file (7) Wait 2 min for auto-deploy (8) Verify with GET /status (9) If failed, fix and repeat. NEVER make large changes. One function at a time.", cat: "self_code" },
+  { k: "self_code_safety", c: "SELF-CODING SAFETY RULES: (1) NEVER delete the schema, seed knowledge, or core architecture (2) ALWAYS keep the file as valid ES module (3) Test mentally before writing (4) If change is risky (>30%), propose it instead of direct-coding (5) NEVER modify wrangler.toml bindings or D1 schema (6) ALWAYS keep deploy-compatible format", cat: "self_code" },
 ];
 
 async function seedKnowledge(db) {
@@ -1127,8 +1136,10 @@ For questions needing external data, output ONE tool command. For everything els
       });
     }
 
-    if (url.pathname === "/brain/repair" && req.method === "POST") {
+    if (url.pathname === "/brain/repair") {
       const fixes: string[] = [];
+      // 0. Reseed knowledge if missing
+      try { const kr = await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge WHERE category='self_repair'").all(); if ((kr.results[0]?.c || 0) < 3) { await seedKnowledge(env.DB); fixes.push("Reseeded knowledge"); } } catch {}
       // 1. Fix stuck actions
       const stuck = await env.DB.prepare("UPDATE actions SET status='error', result='Timeout: action stuck, auto-repaired', completed_at=datetime('now') WHERE status='running' AND created_at < datetime('now', '-10 minutes')").run();
       if (stuck.meta?.changes > 0) fixes.push(`Fixed ${stuck.meta.changes} stuck actions`);
@@ -1426,6 +1437,7 @@ For questions needing external data, output ONE tool command. For everything els
   },
   async scheduled(event, env, ctx) {
     try { const sr = await env.DB.prepare("SELECT value FROM identity WHERE key='schema_ready'").all(); if (!sr.results[0]?.value) { for (const s of TABLES) await env.DB.exec(s); await seedKnowledge(env.DB); await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('schema_ready','1',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=datetime('now')").run(); } } catch {}
+    try { const kr = await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge WHERE category='self_repair'").all(); if ((kr.results[0]?.c || 0) < 3) await seedKnowledge(env.DB); } catch {}
     try {
     const busy = await getBusyUntil(env.DB);
     if (busy > Date.now()) return;
