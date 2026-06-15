@@ -165,6 +165,42 @@ async function checkDuplicateProposal(db, title, whatDiff) {
   return { duplicate: false };
 }
 
+function isProposalVague(proposal) {
+  const title = (proposal.title || "").toLowerCase();
+  const what = (proposal.what || proposal.why || "").toLowerCase();
+  const how = (proposal.how || "").toLowerCase();
+  const vaguePatterns = [
+    /integrate a new (web )?api/i,
+    /enhance.*information retrieval/i,
+    /sentiment analysis tool/i,
+    /natural language processing/i,
+    /add a new tool for/i,
+    /improve.*overall/i,
+    /general.*improvement/i,
+    /better.*performance/i,
+    /optimize.*the system/i,
+    /upgrade.*the system/i,
+  ];
+  for (const p of vaguePatterns) {
+    if (p.test(title) || p.test(what)) return { vague: true, reason: "too generic: " + title };
+  }
+  if (!how || how.length < 30) return { vague: true, reason: "no specific implementation details" };
+  if (!proposal.code_snippet && (proposal.resource_type === "tool_code" || proposal.resource_type === "core_architecture")) {
+    return { vague: true, reason: "code change without code snippet" };
+  }
+  return { vague: false };
+}
+
+async function trackProposalQuality(db, proposal, outcome) {
+  const key = "proposal_quality_" + (proposal.resource_type || "unknown");
+  const row = await db.prepare("SELECT value FROM identity WHERE key=?1").bind(key).all();
+  const stats = row.results[0]?.value ? JSON.parse(row.results[0].value) : { total: 0, success: 0, fail: 0 };
+  stats.total++;
+  if (outcome === "success") stats.success++;
+  else stats.fail++;
+  await db.prepare("INSERT INTO identity (key,value,updated_at) VALUES (?1,?2,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?2,updated_at=datetime('now')").bind(key, JSON.stringify(stats)).run();
+}
+
 async function callLLMDirect(env, body, model) {
   // Try Groq first
   let groqKey = env.GROQ_API_KEY;
@@ -622,6 +658,15 @@ async function runTool(env, actionId, tool, input) {
       return { ok: true, data: data.slice(0, 2000) };
     } catch (e) { return { ok: false, error: e.message }; }
   }
+  if (tool === "web_fetch") {
+    try {
+      const url = input.startsWith("http") ? input : "https://" + input;
+      const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Saraha-Brain)" }, signal: AbortSignal.timeout(15000) });
+      const html = await resp.text();
+      const text = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      return { ok: true, data: text.slice(0, 3000) };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   return { ok: false, error: "Tool not implemented: " + tool };
 }
 
@@ -692,7 +737,50 @@ async function implementProposal(env, db, p, stamp) {
       for (const add of plan.additions) { if (add.code) newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1"); }
     }
     if (newSource === currentSource) return { id: p.id, error: "No changes applied" };
-    if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) return { id: p.id, error: "Contains Node.js APIs" };
+    if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) {
+      // Retry with simpler prompt - strip Node.js APIs
+      newSource = currentSource;
+      const retryBody = {
+        messages: [
+          { role: "system", content: "CRITICAL: Output ONLY valid JavaScript. NO require(), NO import, NO export, NO Buffer, NO process. Use fetch() and btoa() only. Output a JSON object: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}]}" },
+          { role: "user", content: "Fix this proposal to avoid Node.js APIs:\nTitle: " + (title||"") + "\nWhat: " + (whatStr||"") + "\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications." }
+        ],
+        temperature: 0.2,
+        max_tokens: 1024
+      };
+      const retryResp = await callLLM(env, retryBody);
+      if (retryResp.ok) {
+        const retryData = await retryResp.json();
+        let retryOut = retryData.choices?.[0]?.message?.content || "";
+        retryOut = retryOut.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+        try {
+          const retryPlan = JSON.parse(retryOut);
+          if (retryPlan.modifications && Array.isArray(retryPlan.modifications)) {
+            for (const mod of retryPlan.modifications) {
+              if (mod.old_code_prefix && mod.new_code) {
+                const idx = newSource.indexOf(mod.old_code_prefix);
+                if (idx >= 0) {
+                  const afterNewline = newSource.indexOf("\n", idx);
+                  let endIdx = newSource.indexOf("\n\n", afterNewline);
+                  if (endIdx < 0) endIdx = newSource.length;
+                  for (const c of [newSource.indexOf("\nasync function", afterNewline), newSource.indexOf("\nconst ", afterNewline), newSource.indexOf("\nfunction ", afterNewline)].filter(x => x > 0)) {
+                    if (c < endIdx) endIdx = c + 1;
+                  }
+                  newSource = newSource.slice(0, idx) + mod.new_code + newSource.slice(endIdx);
+                }
+              }
+            }
+          }
+          if (retryPlan.additions && Array.isArray(retryPlan.additions)) {
+            for (const add of retryPlan.additions) { if (add.code) newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1"); }
+          }
+        } catch {}
+      }
+      if (newSource === currentSource || /require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) {
+        await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+        return { id: p.id, error: "Contains Node.js APIs (retry also failed)" };
+      }
+    }
     const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
       method: "PUT",
       headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
@@ -774,6 +862,7 @@ TOOL:tool_name(input)
 
 Available tools:
 TOOL:web_search(query) — search the web for REAL-TIME information only
+TOOL:web_fetch(url) — fetch and extract text content from a web page
 TOOL:github_read(owner/repo/path) — read a file from GitHub
 TOOL:github_write(owner/repo/path|commit message|content) — write a file to GitHub
 TOOL:deploy_worker(worker_name|source_code) — deploy a Cloudflare Worker
@@ -1191,6 +1280,37 @@ For questions needing external data, output ONE tool command. For everything els
       return json({ base: "You are Saraha, an AI with a human brain with emotions, energy, memories, and tools.", overrides, changes });
     }
 
+    if (url.pathname === "/brain/events") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      const proposalCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const lastThought = (await env.DB.prepare("SELECT content, mood, source, created_at FROM thought_stream ORDER BY created_at DESC LIMIT 1").all()).results[0] || null;
+      return json({ emotions, energy: reg.energy, confidence: reg.confidence, phase, pendingProposals: proposalCount, lastThought, timestamp: Date.now() });
+    }
+
+    if (url.pathname === "/brain/metrics") {
+      const totalProposals = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all()).results[0]?.c || 0;
+      const executedProposals = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='executed'").all()).results[0]?.c || 0;
+      const failedProposals = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='failed'").all()).results[0]?.c || 0;
+      const pendingProposals = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const totalActions = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions").all()).results[0]?.c || 0;
+      const totalThoughts = (await env.DB.prepare("SELECT COUNT(*) as c FROM thought_stream").all()).results[0]?.c || 0;
+      const totalLogs = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_logs").all()).results[0]?.c || 0;
+      const qualityRows = await env.DB.prepare("SELECT key, value FROM identity WHERE key LIKE 'proposal_quality_%'").all();
+      const quality = {};
+      for (const r of qualityRows.results) { quality[r.key.replace("proposal_quality_", "")] = JSON.parse(r.value); }
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      return json({
+        proposals: { total: totalProposals, executed: executedProposals, failed: failedProposals, pending: pendingProposals, successRate: totalProposals > 0 ? Math.round(executedProposals / totalProposals * 100) : 0 },
+        activity: { totalActions, totalThoughts, totalLogs },
+        quality,
+        status: { phase, energy: reg.energy, emotions }
+      });
+    }
+
     if (url.pathname === "/brain/backup") {
       const prev = await env.DB.prepare("SELECT value FROM identity WHERE key='prev_code'").all();
       if (prev.results[0]?.value) return json({ content: prev.results[0].value, source: "d1_backup" });
@@ -1407,7 +1527,7 @@ For questions needing external data, output ONE tool command. For everything els
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
     const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 3000) : "";
-    const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF ??? your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo propose CODE changes: output JSON proposal with resource_type \"tool_code\" or \"core_architecture\". Code changes will be auto-implemented: system reads source, calls LLM to generate modified code based on how_diff, and writes via github_write.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code ??? read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
+    const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF — your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo propose CODE changes: output JSON proposal with resource_type \"tool_code\" or \"core_architecture\". Code changes will be auto-implemented.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools.\nQUALITY RULES — proposals MUST be specific:\n1. Title must name the EXACT function/feature being changed (e.g. \"Add retry logic to callLLMDirect\" NOT \"Improve error handling\")\n2. what must include the exact file path and function name\n3. how must include actual code changes (diff-style)\n4. code_snippet must show the exact code being modified\n5. REJECT vague proposals like \"Integrate a new API\" or \"Enhance information retrieval\"\n6. PRIORITY: Fix existing bugs > Add missing features > Optimize performance\n7. If an anti-pattern exists, propose a SPECIFIC fix for it\n" + (sourceCode ? "Above is your actual source code — read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
     const resp = await callLLM(env, { messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention? Consider: new tools, new capabilities, or micro-optimizations?") }], temperature: 0.7, max_tokens: 2048 });
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'post_llm','Got response status='||?2)").bind(stamp, resp.status.toString()).run(); } catch {}
@@ -1421,6 +1541,12 @@ For questions needing external data, output ONE tool command. For everything els
         const dup = await checkDuplicateProposal(env.DB, proposal.title, proposal.what || proposal.why || "");
         if (dup.duplicate) {
           try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'duplicate','Blocked: '||?2)").bind(stamp, proposal.title).run(); } catch {}
+          return;
+        }
+        const quality = isProposalVague(proposal);
+        if (quality.vague) {
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'quality','Rejected vague: '||?2)").bind(stamp, quality.reason).run(); } catch {}
+          try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'Vague proposal','Improve prompt specificity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind(quality.reason.slice(0,80)).run(); } catch {}
           return;
         }
         const whatStr = "Why: " + (proposal.why||"") + "\nWhat: " + (proposal.what||"") + (proposal.code_snippet ? "\nCode: " + proposal.code_snippet.slice(0,300) : "");
