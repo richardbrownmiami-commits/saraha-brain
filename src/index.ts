@@ -195,33 +195,38 @@ async function callLLMDirect(env, body, model) {
     try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='cohere_api_key'").all(); cohereKey = kr.results[0]?.value; } catch {}
   }
   if (cohereKey) {
-    try {
-      const messages = body.messages || [];
-      const systemMsg = messages.find((m: any) => m.role === "system");
-      const userMsgs = messages.filter((m: any) => m.role !== "system");
-      const cohereBody = {
-        model: "command-a-08-2025",
-        messages: userMsgs,
-        ...(systemMsg ? { preamble: systemMsg.content } : {}),
-        temperature: body.temperature || 0.3,
-        max_tokens: body.max_tokens || 2048
-      };
-      const resp = await fetch("https://api.cohere.com/v2/chat", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + cohereKey },
-        body: JSON.stringify(cohereBody), signal: AbortSignal.timeout(60000)
-      });
-      if (resp.ok) {
-        const data = await resp.json() as any;
-        const text = data.message?.content?.[0]?.text || "";
-        return new Response(JSON.stringify({
-          choices: [{ message: { content: text }, finish_reason: "stop" }],
-          model: "command-a-08-2025",
-          usage: { total_tokens: (data.usage?.tokens?.input_tokens || 0) + (data.usage?.tokens?.output_tokens || 0) }
-        }), { headers: { "Content-Type": "application/json" } });
+    const cohereModels = ["command-r-plus-08-2024", "command-r-08-2024", "command"];
+    for (const cModel of cohereModels) {
+      try {
+        const messages = body.messages || [];
+        const systemMsg = messages.find((m: any) => m.role === "system");
+        const userMsgs = messages.filter((m: any) => m.role !== "system").map((m: any) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
+        const allMsgs = [];
+        if (systemMsg) allMsgs.push({ role: "user", content: "[System instruction: " + systemMsg.content + "]" });
+        allMsgs.push(...(userMsgs.length ? userMsgs : [{ role: "user", content: body.messages?.[0]?.content || "hello" }]));
+        const cohereBody: any = {
+          model: cModel,
+          messages: allMsgs,
+          temperature: body.temperature || 0.3
+        };
+        const resp = await fetch("https://api.cohere.com/v2/chat", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + cohereKey },
+          body: JSON.stringify(cohereBody), signal: AbortSignal.timeout(60000)
+        });
+        if (resp.ok) {
+          const data = await resp.json() as any;
+          const text = data.message?.content?.[0]?.text || "";
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: text }, finish_reason: "stop" }],
+            model: cModel,
+            usage: { total_tokens: (data.usage?.tokens?.input_tokens || 0) + (data.usage?.tokens?.output_tokens || 0) }
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        const errText = await resp.text().catch(() => "");
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_FAIL:" + cModel + ":" + resp.status + ":" + errText.slice(0, 150)).run(); } catch {}
+      } catch (e) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_ERR:" + cModel + ":" + e.message).run(); } catch {}
       }
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_FAIL:" + resp.status).run(); } catch {}
-    } catch (e) {
-      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_ERR:" + e.message).run(); } catch {}
     }
   }
   return null;
@@ -628,7 +633,10 @@ async function implementProposal(env, db, p, stamp) {
     await storeStreamThought(db, "Auto: " + p.title, "happy", "evolve");
     return { id: p.id, status: "executed (non-code)" };
   }
-  const gToken = env.GITHUB_PAT;
+  let gToken = env.GITHUB_PAT;
+  if (!gToken) {
+    try { const r = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); gToken = r.results[0]?.value; } catch {}
+  }
   if (!gToken) return { id: p.id, error: "No GITHUB_PAT" };
   try {
     const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
@@ -1231,6 +1239,20 @@ For questions needing external data, output ONE tool command. For everything els
       return json({ alive: true, emotions, energy: reg.energy, confidence: reg.confidence, db: { actions: actCount, pendingApprovals: approvalPending, pendingProposals: proposalPending, antiPatterns: antiCount, memories: memCount, learnings: learningCount, streamThoughts: streamCount }, lastAction });
     }
 
+    if (url.pathname === "/brain/force-evolve" && req.method === "POST") {
+      await env.DB.prepare("DELETE FROM identity WHERE key='last_cycle_time'").run();
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('master_cron_minutes','10',datetime('now')) ON CONFLICT(key) DO UPDATE SET value='10',updated_at=datetime('now')").run();
+      await setBusyUntil(env.DB, 0);
+      return json({ ok: true, message: "Cron reset, master_cron=10min, busy cleared. Next cron tick will trigger evolution." });
+    }
+    if (url.pathname === "/brain/set-cron" && req.method === "POST") {
+      let body; try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      const mins = parseInt(body?.minutes) || 10;
+      if (mins < 2) return json({ error: "minimum 2 minutes" }, 400);
+      await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('master_cron_minutes',?1,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=?1,updated_at=datetime('now')").bind(mins.toString()).run();
+      await env.DB.prepare("DELETE FROM identity WHERE key='last_cycle_time'").run();
+      return json({ ok: true, master_cron_minutes: mins, message: "Set to " + mins + "min. last_cycle_time cleared." });
+    }
     if (url.pathname === "/brain/reset-all" && req.method === "POST") {
       const allP = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all();
       await env.DB.prepare("UPDATE proposals SET status='pending', decided_at=NULL, executed_at=NULL").run();
@@ -1313,8 +1335,8 @@ For questions needing external data, output ONE tool command. For everything els
     const lastP = await env.DB.prepare("SELECT created_at FROM proposals ORDER BY created_at DESC LIMIT 1").all();
     if (lastP.results[0]?.created_at) {
       const lastMin = Date.now() - new Date(lastP.results[0].created_at.replace(" ","T") + "Z").getTime();
-      if (!isNaN(lastMin) && lastMin < 300000) {
-        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Last proposal <5min ago')").bind(stamp).run(); } catch {}
+      if (!isNaN(lastMin) && lastMin < 120000) {
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'skip','Last proposal <2min ago')").bind(stamp).run(); } catch {}
         await updateLastCycleTime(env.DB);
         return;
       }
@@ -1322,7 +1344,10 @@ For questions needing external data, output ONE tool command. For everything els
     const pendCount = await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all();
     const pendN = pendCount.results[0]?.c || 0;
     let sourceCode = "";
-    const gToken = env.GITHUB_PAT;
+    let gToken = env.GITHUB_PAT;
+    if (!gToken) {
+      try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); gToken = kr.results[0]?.value; } catch {}
+    }
     try {
       const cached = await env.DB.prepare("SELECT value FROM identity WHERE key='cached_source'").all();
       if (cached.results[0]?.value) sourceCode = cached.results[0].value;
