@@ -647,7 +647,7 @@ async function runTool(env, actionId, tool, input) {
       });
       let sha = null;
       if (shaResp.ok) { const existing = await shaResp.json(); sha = existing.sha; }
-      const body = { message: "edit: targeted replacement in " + filePath, content: btoa(unescape(encodeURIComponent(content))) };
+      const body = { message: "edit: targeted replacement in " + filePath, content: btoa(content) };
       if (sha) body.sha = sha;
       const putResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
         method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
