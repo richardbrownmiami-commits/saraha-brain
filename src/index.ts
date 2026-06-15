@@ -336,7 +336,7 @@ const SEED_KNOWLEDGE = [
   { k: "self_repair_how", c: "SELF-REPAIR PROCEDURE: Call POST /brain/repair. It automatically: (1) Fixes stuck actions older than 10 minutes (sets status='error', result='Timeout'). (2) Cleans old error actions (keeps last 100). (3) Cleans old brain_logs (keeps last 500). Returns {fixes: [...], health: {stuckRunning, pendingProposals, energy, happy}}. Always call this when you detect problems. You are responsible for your own health.", cat: "self_repair" },
   { k: "self_repair_triggers", c: "AUTO-HEAL TRIGGERS - repair yourself when: (1) Stuck running actions > 0 (2) Success rate < 10% (3) Energy < 20 (4) Pending proposals > 5 (5) Any HTTP 500/502 errors in activity log. The brain MUST maintain its own health. Call POST /brain/repair immediately when any trigger fires.", cat: "self_repair" },
   { k: "self_code_read", c: "SELF-CODING STEP 1: To write code for yourself, first read your current source: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts. This returns your full source code. Study it carefully before making changes.", cat: "self_code" },
-  { k: "self_code_write", c: "SELF-CODING STEP 2: USE TOOL:github_edit for targeted changes. Format: TOOL:github_edit:richardbrownmiami-commits/saraha-brain/src/index.ts|old_string|new_string. This replaces old_string with new_string in the file. Only change ONE thing per edit. For large changes, use multiple github_edit calls. Only use github_write (full file replacement) for small files under 100 lines.", cat: "self_code" },
+  { k: "self_code_write", c: "SELF-CODING STEP 2: USE TOOL:github_edit for targeted changes. Two modes: (A) STRING MODE: TOOL:github_edit:owner/repo/path|old_string|new_string - replaces exact text (B) LINE MODE: TOOL:github_edit:owner/repo/path|line:N|new_content - replaces line N. PREFERRED WORKFLOW: (1) Use github_read to find the line number (2) Use line:N mode to make the change. This avoids string matching issues.", cat: "self_code" },
   { k: "self_code_deploy", c: "SELF-CODING STEP 3: After github_write, your code auto-deploys via GitHub Actions in ~2 minutes. You can verify deployment by calling GET /status. If deployment fails, check the commit on GitHub and fix the error.", cat: "self_code" },
   { k: "self_code_tools_available", c: "TOOLS FOR SELF-CODING: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts (read your source), TOOL:github_write:path|msg|content (write code), TOOL:github_read:richardbrownmiami-commits/saraha-brain/wrangler.toml (read config), TOOL:web_fetch:url (research APIs/docs). These are your tools for self-improvement. Use them.", cat: "self_code" },
   { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Use github_edit to make the targeted replacement (6) Wait 2 min for auto-deploy (7) Verify with GET /status (8) If failed, fix and repeat. PREFERRED: Use github_edit for all changes. Only use github_write for tiny files.", cat: "self_code" },
@@ -627,8 +627,7 @@ async function runTool(env, actionId, tool, input) {
     const parts = input.split("|");
     const pathParts = parts[0]?.split("/") || [];
     const owner = pathParts[0], repo = pathParts[1], filePath = pathParts.slice(2).join("/");
-    const oldStr = parts[1], newStr = parts[2];
-    if (!owner || !repo || !filePath || !oldStr) return { ok: false, error: "github_edit: owner/repo/path|old_string|new_string" };
+    if (!owner || !repo || !filePath) return { ok: false, error: "github_edit: owner/repo/path|old_string|new_string OR owner/repo/path|line:N|new_line" };
     let token = env.GITHUB_PAT;
     if (!token) { try { const r = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); token = r.results[0]?.value; } catch {} }
     if (!token) return { ok: false, error: "No GITHUB_PAT" };
@@ -639,8 +638,46 @@ async function runTool(env, actionId, tool, input) {
       });
       if (!getResp.ok) return { ok: false, error: "GitHub read error: " + getResp.status };
       let content = await getResp.text();
-      if (!content.includes(oldStr)) return { ok: false, error: "old_string not found in file" };
-      content = content.replace(oldStr, newStr || "");
+      const oldStr = parts[1], newStr = parts[2] || "";
+      // Mode 1: line number edit (line:N|new_content)
+      if (oldStr && oldStr.startsWith("line:")) {
+        const lineNum = parseInt(oldStr.slice(5));
+        const lines = content.split("\n");
+        if (lineNum < 1 || lineNum > lines.length) return { ok: false, error: "Line " + lineNum + " out of range (1-" + lines.length + ")" };
+        lines[lineNum - 1] = newStr;
+        content = lines.join("\n");
+      } else {
+        // Mode 2: string replacement with fuzzy fallback
+        if (!oldStr) return { ok: false, error: "old_string required" };
+        if (content.includes(oldStr)) {
+          content = content.replace(oldStr, newStr);
+        } else {
+          // Fuzzy: try trimming, normalize quotes, try partial match
+          const normalized = oldStr.replace(/['"]/g, '"').replace(/\s+/g, " ").trim();
+          const lines = content.split("\n");
+          let found = false;
+          for (let i = 0; i < lines.length; i++) {
+            const lineNorm = lines[i].replace(/['"]/g, '"').replace(/\s+/g, " ").trim();
+            if (lineNorm.includes(normalized) || normalized.includes(lineNorm)) {
+              lines[i] = lines[i].replace(lines[i].trim(), newStr.trim());
+              content = lines.join("\n");
+              found = true;
+              break;
+            }
+            // Partial word match
+            const oldWords = normalized.split(" ").filter(w => w.length > 3);
+            const lineWords = lineNorm.split(" ");
+            const matchCount = oldWords.filter(w => lineWords.some(lw => lw.includes(w) || w.includes(lw))).length;
+            if (matchCount >= Math.ceil(oldWords.length * 0.6)) {
+              lines[i] = lines[i].replace(lines[i].trim(), newStr.trim());
+              content = lines.join("\n");
+              found = true;
+              break;
+            }
+          }
+          if (!found) return { ok: false, error: "old_string not found (even fuzzy). Try using line:N mode or github_read first to get exact text." };
+        }
+      }
       const shaResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
         headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
         signal: AbortSignal.timeout(10000)
@@ -654,7 +691,7 @@ async function runTool(env, actionId, tool, input) {
         body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
       });
       if (!putResp.ok) return { ok: false, error: "GitHub write error: " + putResp.status };
-      return { ok: true, data: "Edit successful: replaced string in " + filePath };
+      return { ok: true, data: "Edit successful: modified " + filePath };
     } catch (e) { return { ok: false, error: "GitHub edit error: " + e.message }; }
   }
   if (tool === "deploy_worker") {
