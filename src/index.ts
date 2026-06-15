@@ -166,33 +166,65 @@ async function checkDuplicateProposal(db, title, whatDiff) {
 }
 
 async function callLLMDirect(env, body, model) {
+  // Try Groq first
   let groqKey = env.GROQ_API_KEY;
   if (!groqKey) {
     try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='groq_api_key'").all(); groqKey = kr.results[0]?.value; } catch {}
   }
-  if (!groqKey) {
-    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', 'NO_GROQ_KEY')").run(); } catch {}
-    return null;
+  if (groqKey) {
+    const groqBody = {
+      model: model || "llama-3.1-8b-instant",
+      messages: body.messages,
+      temperature: body.temperature || 0.3,
+      max_tokens: body.max_tokens || 2048
+    };
+    try {
+      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
+        body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
+      });
+      if (resp.ok) return resp;
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_FAIL:" + resp.status).run(); } catch {}
+    } catch (e) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_ERR:" + e.message).run(); } catch {}
+    }
   }
-  const groqBody = {
-    model: model || "llama-3.1-8b-instant",
-    messages: body.messages,
-    temperature: body.temperature || 0.3,
-    max_tokens: body.max_tokens || 2048
-  };
-  try {
-    const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
-      body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
-    });
-    if (resp.ok) return resp;
-    const errText = await resp.text();
-    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_FAIL:" + resp.status + ":" + errText.slice(0, 200)).run(); } catch {}
-    return null;
-  } catch (e) {
-    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_ERR:" + e.message).run(); } catch {}
-    return null;
+  // Try Cohere as fallback
+  let cohereKey = env.COHERE_API_KEY;
+  if (!cohereKey) {
+    try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='cohere_api_key'").all(); cohereKey = kr.results[0]?.value; } catch {}
   }
+  if (cohereKey) {
+    try {
+      const messages = body.messages || [];
+      const systemMsg = messages.find((m: any) => m.role === "system");
+      const userMsgs = messages.filter((m: any) => m.role !== "system");
+      const cohereBody = {
+        model: "command-a-08-2025",
+        messages: userMsgs,
+        ...(systemMsg ? { preamble: systemMsg.content } : {}),
+        temperature: body.temperature || 0.3,
+        max_tokens: body.max_tokens || 2048
+      };
+      const resp = await fetch("https://api.cohere.com/v2/chat", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + cohereKey },
+        body: JSON.stringify(cohereBody), signal: AbortSignal.timeout(60000)
+      });
+      if (resp.ok) {
+        const data = await resp.json() as any;
+        const text = data.message?.content?.[0]?.text || "";
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: text }, finish_reason: "stop" }],
+          model: "command-a-08-2025",
+          usage: { total_tokens: (data.usage?.tokens?.input_tokens || 0) + (data.usage?.tokens?.output_tokens || 0) }
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_FAIL:" + resp.status).run(); } catch {}
+    } catch (e) {
+      try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("COHERE_ERR:" + e.message).run(); } catch {}
+    }
+  }
+  return null;
 }
 
 async function callLLM(env, body) {
