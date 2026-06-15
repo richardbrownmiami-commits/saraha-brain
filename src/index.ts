@@ -736,6 +736,16 @@ export default {
       return json({ alive: true, db: dbOk, version: "1.0.0" });
     }
 
+    if (url.pathname === "/" && req.method === "GET") {
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      const phase = await getBrainPhase(env.DB, emotions, reg);
+      const proposalCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all()).results[0]?.c || 0;
+      const executedCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='executed'").all()).results[0]?.c || 0;
+      const dashboard = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saraha Brain</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:600px;width:100%}.stat{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid #21262d}.stat:last-child{border:none}.label{color:#8b949e;font-size:0.85rem}.val{font-weight:bold}.phase{color:#58a6ff;font-size:1.2rem}.links{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}h1{font-size:1.5rem;margin-bottom:1rem;color:#58a6ff}h2{font-size:1rem;margin-bottom:0.8rem;color:#8b949e}</style></head><body><h1>Saraha Brain</h1><div class="card"><h2>Status</h2><div class="stat"><span class="label">Phase</span><span class="val phase">${phase}</span></div><div class="stat"><span class="label">Energy</span><span class="val" style="color:${reg.energy > 60 ? '#10B981' : reg.energy > 30 ? '#F59E0B' : '#EF4444'}">${reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val" style="color:#10B981">${emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val" style="color:#F59E0B">${emotions.energetic}/10</span></div><div class="stat"><span class="label">Intelligent</span><span class="val" style="color:#2E86AB">${emotions.intelligent}/10</span></div><div class="stat"><span class="label">Proposals</span><span class="val">${proposalCount} (${executedCount} executed)</span></div></div><div class="card"><h2>Quick Links</h2><div class="links"><a href="/avatar">Avatar</a><a href="/brain/tree">Evolution Tree</a><a href="/brain/emotions">Emotions API</a><a href="/brain/proposals">Proposals API</a><a href="/brain/logs">Logs API</a><a href="/brain/feedback">Feedback API</a><a href="/brain/stream">Thought Stream</a><a href="/brain/phase">Phase API</a><a href="/brain/capabilities">Capabilities</a><a href="/status">Health Check</a></div></div></body></html>`;
+      return new Response(dashboard, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
+
     if (url.pathname === "/think" && req.method === "POST") {
       try {
         let input;
