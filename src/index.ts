@@ -595,7 +595,11 @@ async function githubWrite(env, input) {
     });
     let sha = null;
     if (getResp.ok) { const existing = await getResp.json(); sha = existing.sha; }
-    const body = { message: msg, content: btoa(String.fromCharCode(...new TextEncoder().encode(content))) };
+    const encoder = new TextEncoder();
+    const encoded = encoder.encode(content);
+    let binary = "";
+    for (let i = 0; i < encoded.length; i++) binary += String.fromCharCode(encoded[i]);
+    const body = { message: msg, content: btoa(binary) };
     if (sha) body.sha = sha;
     const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
       method: "PUT", headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
@@ -684,7 +688,11 @@ async function runTool(env, actionId, tool, input) {
       });
       let sha = null;
       if (shaResp.ok) { const existing = await shaResp.json(); sha = existing.sha; }
-      const body = { message: "edit: targeted replacement in " + filePath, content: btoa(String.fromCharCode(...new TextEncoder().encode(content))) };
+      const encoder = new TextEncoder();
+      const encoded = encoder.encode(content);
+      let binary = "";
+      for (let i = 0; i < encoded.length; i++) binary += String.fromCharCode(encoded[i]);
+      const body = { message: "edit: targeted replacement in " + filePath, content: btoa(binary) };
       if (sha) body.sha = sha;
       const putResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
         method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
