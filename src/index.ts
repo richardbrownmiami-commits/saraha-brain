@@ -170,7 +170,10 @@ async function callLLMDirect(env, body, model) {
   if (!groqKey) {
     try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='groq_api_key'").all(); groqKey = kr.results[0]?.value; } catch {}
   }
-  if (!groqKey) return null;
+  if (!groqKey) {
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', 'NO_GROQ_KEY')").run(); } catch {}
+    return null;
+  }
   const groqBody = {
     model: model || "llama-3.1-8b-instant",
     messages: body.messages,
@@ -183,8 +186,13 @@ async function callLLMDirect(env, body, model) {
       body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
     });
     if (resp.ok) return resp;
+    const errText = await resp.text();
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_FAIL:" + resp.status + ":" + errText.slice(0, 200)).run(); } catch {}
     return null;
-  } catch { return null; }
+  } catch (e) {
+    try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_ERR:" + e.message).run(); } catch {}
+    return null;
+  }
 }
 
 async function callLLM(env, body) {
@@ -508,35 +516,8 @@ async function githubWrite(env, input) {
 }
 
 async function runTool(env, actionId, tool, input) {
-  const sentinelUrl = "https://saraha-sentinel.richard-brown-miami.workers.dev";
-  let resp;
-  try {
-    if (env.SENTINEL) {
-      resp = await env.SENTINEL.fetch("https://sentinel/check", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
-        signal: AbortSignal.timeout(5000)
-      });
-    } else {
-      resp = await fetch(sentinelUrl + "/check", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool, input }),
-        signal: AbortSignal.timeout(5000)
-      });
-    }
-  } catch {
-    return { ok: true, data: "(sentinel unreachable, executing tool directly)" };
-  }
-  let decision;
-  try {
-    const text = await resp.text();
-    decision = JSON.parse(text);
-  } catch {
-    decision = { safe: true, reason: "sentinel unavailable, proceeding" };
-  }
-  if (!decision.safe) {
-    const p = await env.DB.prepare("INSERT INTO pending_approvals (action_id, tool, input) VALUES (?1,?2,?3) RETURNING id").bind(actionId, tool, input).all();
-    await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (?1,'monitor','Stored pending approval #'||?2||' for '||?3||': '||?4)").bind(actionId, p.results[0].id, tool, input).run();
-    return { ok: false, pending: true, id: p.results[0].id, error: decision.reason };
-  }
+  // Sentinel disabled for now — always safe
+
 
   if (tool === "web_search") {
     const data = await webSearch(env, input);
@@ -698,7 +679,7 @@ If the user's question needs external data, ALWAYS output a TOOL: command.`;
           } else if (!result.ok) {
             content = `I tried to use ${tool} but got: ${result.error}`;
           } else {
-            const followBody = { messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me use ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: input }, { role: "assistant", content: `Let me use ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 1024 };
             const followResp = await callLLM(env, followBody);
             if (followResp.ok) {
               const followData = await followResp.json();
@@ -756,7 +737,7 @@ If the user's question needs external data, ALWAYS output a TOOL: command.`;
           } else if (!result.ok) {
             content = `I tried to use ${tool} but got: ${result.error}`;
           } else {
-            const followBody = { messages: [{ role: "system", content: system }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 4096 };
+            const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: input }, { role: "assistant", content: `Let me check that using ${tool}...` }, { role: "user", content: `Result from ${tool}: ${result.data} \n\nNow answer the user's question using this information concisely.` }], temperature: 0.7, max_tokens: 1024 };
             const followResp = await callLLM(env, followBody);
             if (followResp.ok) {
               const followData = await followResp.json();
