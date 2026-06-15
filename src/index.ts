@@ -283,7 +283,6 @@ async function callLLM(env, body) {
         last = resp;
       } catch {}
     }
-    if (last) return last;
   }
   // Try 70b first for larger contexts, fall back to 8b
   let direct = await callLLMDirect(env, body, "llama-3.3-70b-versatile");
