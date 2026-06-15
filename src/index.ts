@@ -212,7 +212,10 @@ async function callLLM(env, body) {
     }
     if (last) return last;
   }
-  const direct = await callLLMDirect(env, body, "llama-3.1-8b-instant");
+  // Try 70b first for larger contexts, fall back to 8b
+  let direct = await callLLMDirect(env, body, "llama-3.3-70b-versatile");
+  if (direct) return direct;
+  direct = await callLLMDirect(env, body, "llama-3.1-8b-instant");
   if (direct) return direct;
   return new Response(JSON.stringify({ error: "no LLM available" }), { status: 502 });
 }
@@ -478,7 +481,11 @@ async function githubRead(env, input) {
   const parts = input.split("/");
   const owner = parts[0], repo = parts[1], path = parts.slice(2).join("/");
   if (!owner || !repo || !path) return "Invalid format. Use: owner/repo/path/to/file";
-  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
+  let token = env.GITHUB_PAT;
+  if (!token) {
+    try { const r = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); token = r.results[0]?.value; } catch {}
+  }
+  if (!token) return "GitHub token not configured";
   try {
     const resp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
       headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
@@ -495,7 +502,11 @@ async function githubWrite(env, input) {
   const pathParts = parts[0].split("/"), owner = pathParts[0], repo = pathParts[1], path = pathParts.slice(2).join("/");
   const msg = parts[1] || "Update via Saraha", content = parts.slice(2).join("|");
   if (!owner || !repo || !path || !content) return "Invalid format. Use: owner/repo/path|commit msg|content";
-  const token = env.GITHUB_PAT; if (!token) return "GitHub token not configured";
+  let token = env.GITHUB_PAT;
+  if (!token) {
+    try { const r = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); token = r.results[0]?.value; } catch {}
+  }
+  if (!token) return "GitHub token not configured";
   try {
     const getResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path, {
       headers: { "Authorization": "Bearer " + token, "Accept": "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
@@ -577,6 +588,92 @@ async function runTool(env, actionId, tool, input) {
   return { ok: false, error: "Tool not implemented: " + tool };
 }
 
+async function implementProposal(env, db, p, stamp) {
+  if (p.resource_type !== "tool_code" && p.resource_type !== "core_architecture") {
+    await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+    await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+    await applyEvolutionChange(db, p, p.id, "auto");
+    await storeStreamThought(db, "Auto: " + p.title, "happy", "evolve");
+    return { id: p.id, status: "executed (non-code)" };
+  }
+  const gToken = env.GITHUB_PAT;
+  if (!gToken) return { id: p.id, error: "No GITHUB_PAT" };
+  try {
+    const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+      headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!metaResp.ok) { const errBody = await metaResp.text(); return { id: p.id, error: "GitHub API " + metaResp.status + ": " + errBody.slice(0,200) }; }
+    const meta = await metaResp.json();
+    if (!meta.content) return { id: p.id, error: "GitHub no content" };
+    const currentSource = atob(meta.content);
+    const sourceSlice = currentSource.slice(0, 8000);
+    const { title, what_diff: whatStr, how_diff: howStr } = p;
+    const implBody = {
+      messages: [
+        { role: "system", content: "You are Saraha's code engine. Cloudflare Worker restrictions: NO import/export/require. NO Node.js APIs (Buffer, process). Use fetch() for HTTP, btoa() for base64, env.X for secrets. Output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown." },
+        { role: "user", content: "Source code:\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications." }
+      ],
+      temperature: 0.3,
+      max_tokens: 2048
+    };
+    const implResp = await callLLM(env, implBody);
+    if (!implResp.ok) {
+      await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      return { id: p.id, error: "LLM call failed: " + implResp.status };
+    }
+    const implData = await implResp.json();
+    let out = implData.choices?.[0]?.message?.content || "";
+    out = out.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+    let plan;
+    try { plan = JSON.parse(out); } catch { return { id: p.id, error: "LLM output not JSON: " + out.slice(0,100) }; }
+    let newSource = currentSource;
+    if (plan.imports && typeof plan.imports === "string" && plan.imports.trim()) {
+      const firstLine = newSource.split("\n")[0];
+      if (firstLine && firstLine.trim().startsWith("const ")) newSource = plan.imports.trim() + "\n" + newSource;
+    }
+    if (plan.modifications && Array.isArray(plan.modifications)) {
+      for (const mod of plan.modifications) {
+        if (mod.old_code_prefix && mod.new_code) {
+          const idx = newSource.indexOf(mod.old_code_prefix);
+          if (idx >= 0) {
+            const afterNewline = newSource.indexOf("\n", idx);
+            let endIdx = newSource.indexOf("\n\n", afterNewline);
+            if (endIdx < 0) endIdx = newSource.length;
+            for (const candidate of [newSource.indexOf("\nasync function", afterNewline), newSource.indexOf("\nconst ", afterNewline), newSource.indexOf("\nfunction ", afterNewline)].filter(x => x > 0)) {
+              if (candidate < endIdx) endIdx = candidate + 1;
+            }
+            newSource = newSource.slice(0, idx) + mod.new_code + newSource.slice(endIdx);
+          }
+        }
+      }
+    }
+    if (plan.additions && Array.isArray(plan.additions)) {
+      for (const add of plan.additions) { if (add.code) newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1"); }
+    }
+    if (newSource === currentSource) return { id: p.id, error: "No changes applied" };
+    if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) return { id: p.id, error: "Contains Node.js APIs" };
+    const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+      body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (writeResp.ok) {
+      await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
+      await applyEvolutionChange(db, p, p.id, "auto-implement");
+      await storeStreamThought(db, "Implemented: " + p.title, "happy", "evolve");
+      if (stamp) await db.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run();
+      await updateEmotion(db, "happy", 1);
+      return { id: p.id, status: "executed" };
+    } else {
+      const errText = (await writeResp.text() || "").slice(0,200);
+      return { id: p.id, error: "GitHub write failed: " + errText };
+    }
+  } catch (e) { return { id: p.id, error: (e.message||e).slice(0,200) }; }
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -621,26 +718,30 @@ export default {
         const mood = describeMood(emotions, reg.energy);
         let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""}
 
-CRITICAL TOOL RULES:
-- You MUST use tools when the user asks for real-time info, web searches, GitHub files, weather, news, or any external data.
-- You are NOT just a text AI. You have REAL tools. Use them.
-- To use a tool, output EXACTLY this format in your response (on its own line):
-  TOOL:tool_name:input
-- Available tools:
-  TOOL:web_search:search query — search the web for real-time information
-  TOOL:github_read:owner/repo/path — read a file from GitHub
-  TOOL:github_write:owner/repo/path|commit message|content — write a file to GitHub
-  TOOL:deploy_worker:worker_name|source_code — deploy a Cloudflare Worker
-  TOOL:cf_api:GET/POST path|body — call Cloudflare API
+You have REAL tools. Use them ONLY when needed.
+To use a tool, output EXACTLY this format (on its own line):
+TOOL:tool_name(input)
 
-EXAMPLES:
-- User: "what is the weather in tokyo?" → You output: TOOL:web_search:weather in tokyo today
-- User: "read the file src/index.ts from my repo" → You output: TOOL:github_read:owner/repo/src/index.ts
-- User: "search for latest AI news" → You output: TOOL:web_search:latest AI news 2026
+Available tools:
+TOOL:web_search(query) — search the web for REAL-TIME information only
+TOOL:github_read(owner/repo/path) — read a file from GitHub
+TOOL:github_write(owner/repo/path|commit message|content) — write a file to GitHub
+TOOL:deploy_worker(worker_name|source_code) — deploy a Cloudflare Worker
+TOOL:cf_api(GET/POST path|body) — call Cloudflare API
+
+WHEN TO USE TOOLS:
+- ONLY for real-time data: weather, news, stock prices, current events
+- ONLY for external data: GitHub files, web search results
+- DO NOT use tools for: greetings, opinions, facts you already know, conversations, advice
+
+WHEN NOT TO USE TOOLS:
+- "hello", "hi", "who are you" → just answer naturally
+- "what is 2+2" → just answer
+- "tell me a joke" → just answer
+- "explain quantum physics" → just answer from knowledge
 
 After outputting TOOL:, STOP. The system will execute the tool and give you the result.
-NEVER say "I cannot" or "I don't have access" — you DO have tools. USE THEM.
-If the user's question needs external data, ALWAYS output a TOOL: command.`;
+For questions needing external data, output ONE tool command. For everything else, answer directly.`;
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
@@ -1107,105 +1208,6 @@ If the user's question needs external data, ALWAYS output a TOOL: command.`;
       return json({ ok: true, totalProposals: allP.results[0].c, nowAllPending: remaining.results[0].c });
     }
 
-    async function implementProposal(env, db, p, stamp) {
-      if (p.resource_type !== "tool_code" && p.resource_type !== "core_architecture") {
-        await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-        await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-        await applyEvolutionChange(db, p, p.id, "auto");
-        await storeStreamThought(db, "Auto: " + p.title, "happy", "evolve");
-        return { id: p.id, status: "executed (non-code)" };
-      }
-      const gToken = env.GITHUB_PAT;
-      if (!gToken) return { id: p.id, error: "No GITHUB_PAT" };
-      try {
-        const metaResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-          headers: { Authorization: "Bearer " + gToken, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
-          signal: AbortSignal.timeout(10000)
-        });
-        if (!metaResp.ok) { const errBody = await metaResp.text(); return { id: p.id, error: "GitHub API " + metaResp.status + ": " + errBody.slice(0,200) }; }
-        const meta = await metaResp.json();
-        if (!meta.content) return { id: p.id, error: "GitHub no content" };
-        const currentSource = atob(meta.content);
-        const sourceSlice = currentSource.slice(0, 8000);
-        const { title, what_diff: whatStr, how_diff: howStr } = p;
-        const implBody = {
-          messages: [
-            { role: "system", content: "You are Saraha's code engine. Cloudflare Worker restrictions: NO import/export/require. NO Node.js APIs (Buffer, process). Use fetch() for HTTP, btoa() for base64, env.X for secrets. Output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown. Each addition is a new function to append. Each modification has old_code_prefix (first 40 chars of the function to uniquely identify it) and new_code (replacement). Preserve all existing indentation exactly as-is." },
-            { role: "user", content: "Source code (~" + sourceSlice.length + " chars):\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications to implement this proposal." }
-          ],
-          temperature: 0.3,
-          max_tokens: 2048
-        };
-        const implResp = await callLLM(env, implBody);
-        if (!implResp.ok) {
-          await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-          return { id: p.id, error: "LLM call failed: " + implResp.status };
-        }
-        const implData = await implResp.json();
-        let out = implData.choices?.[0]?.message?.content || "";
-        out = out.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
-        let plan;
-        try { plan = JSON.parse(out); } catch { return { id: p.id, error: "LLM output not JSON: " + out.slice(0,100) }; }
-        let newSource = currentSource;
-        if (plan.imports && typeof plan.imports === "string" && plan.imports.trim()) {
-          const firstLine = newSource.split("\n")[0];
-          if (firstLine && firstLine.trim().startsWith("const ")) {
-            newSource = plan.imports.trim() + "\n" + newSource;
-          }
-        }
-        if (plan.modifications && Array.isArray(plan.modifications)) {
-          for (const mod of plan.modifications) {
-            if (mod.old_code_prefix && mod.new_code) {
-              const idx = newSource.indexOf(mod.old_code_prefix);
-              if (idx >= 0) {
-                const start = idx;
-                const afterNewline = newSource.indexOf("\n", idx);
-                const endLine = newSource.indexOf("\n", afterNewline + 1);
-                const nextFunc = newSource.indexOf("\nasync function", afterNewline);
-                const nextConst = newSource.indexOf("\nconst ", afterNewline);
-                const endSearch = newSource.indexOf("\nfunction ", afterNewline);
-                let endIdx = newSource.indexOf("\n\n", afterNewline);
-                if (endIdx < 0) endIdx = newSource.length;
-                for (const candidate of [nextFunc, nextConst, endSearch].filter(x => x > 0)) {
-                  if (candidate < endIdx) endIdx = candidate + 1;
-                }
-                const before = newSource.slice(0, start);
-                const after = newSource.slice(endIdx);
-                newSource = before + mod.new_code + after;
-              }
-            }
-          }
-        }
-        if (plan.additions && Array.isArray(plan.additions)) {
-          for (const add of plan.additions) {
-            if (add.code) {
-              newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1");
-            }
-          }
-        }
-        if (newSource === currentSource) return { id: p.id, error: "No changes applied: LLM output didn't match any existing function" };
-        if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) return { id: p.id, error: "LLM output contains Node.js APIs (require/import/process) which are not allowed in CF Workers" };
-        const writeResp = await fetch("https://api.github.com/repos/richardbrownmiami-commits/saraha-brain/contents/src/index.ts", {
-          method: "PUT",
-          headers: { Authorization: "Bearer " + gToken, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
-          body: JSON.stringify({ message: "auto-implement: " + p.title.slice(0, 60), content: btoa(newSource), sha: meta.sha }),
-          signal: AbortSignal.timeout(15000)
-        });
-        if (writeResp.ok) {
-          await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
-          await db.prepare("INSERT INTO authority_receipts (proposal_id,approved_by,outcome) VALUES (?1,'auto','success')").bind(p.id).run();
-          await applyEvolutionChange(db, p, p.id, "auto-implement");
-          await storeStreamThought(db, "Implemented: " + p.title, "happy", "evolve");
-          if (stamp) await db.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run();
-          await updateEmotion(db, "happy", 1);
-          return { id: p.id, status: "executed" };
-        } else {
-          const errText = (await writeResp.text() || "").slice(0,200);
-          return { id: p.id, error: "GitHub write failed: " + errText };
-        }
-      } catch (e) { return { id: p.id, error: (e.message||e).slice(0,200) }; }
-    }
-
     if (url.pathname === "/brain/implement-pending" && req.method === "POST") {
       const stamp = Date.now();
       const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
@@ -1337,7 +1339,7 @@ If the user's question needs external data, ALWAYS output a TOOL: command.`;
       if (fbCtx.results.length) fbStr += "Approved/executed: " + fbCtx.results.map(r => r.title).join(", ") + "\n";
       if (denCtx.results.length) fbStr += "Denied: " + denCtx.results.map(r => r.title).join(", ") + "\n";
     }
-    const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 25000) : "";
+    const codeSection = sourceCode ? "\n\nYour current source code (use this to identify exact functions/lines to change):\n" + sourceCode.slice(0, 3000) : "";
     const sys = "You are Saraha, a self-improving AI for Cloudflare Workers. CRITICAL: NO import/export/require. NO Node.js APIs (Buffer, process, Octokit, npm packages). Use fetch() for HTTP, btoa() for base64, env.X for secrets. ALL code in a single file.\nYour purpose is to improve YOURSELF ??? your prompts, tools, memory, emotions, config, error handling.\nAvailable tools: TOOL:github_read:owner/repo/path, TOOL:github_write:owner/repo/path|commit msg|new content\nTo propose CODE changes: output JSON proposal with resource_type \"tool_code\" or \"core_architecture\". Code changes will be auto-implemented: system reads source, calls LLM to generate modified code based on how_diff, and writes via github_write.\nTo make prompt/config proposals: output JSON format below.\nDo NOT propose generic AI research (XAI, causal AI, etc.). Only propose real changes to Saraha's own code/prompts/config/tools. ALSO consider new tools: adding a useful web API or GitHub tool is higher impact than micro-optimizing internals.\n" + (sourceCode ? "Above is your actual source code ??? read it carefully. Choose ONE specific function or area to improve.\n" : "") + "Format for proposals: {\"title\":\"...\",\"why\":\"why this change is needed\",\"what\":\"what to change (include file path + function name)\",\"how\":\"how to change it (include actual code diff)\",\"benefit\":\"expected benefit\",\"code_snippet\":\"paste the exact section you're modifying\",\"resource_type\":\"prompt|config|tool_code|core_architecture\",\"risk_pct\":0-100}\n" + sbStr + fbStr + "\nEvaluate: what worked, what user denied, adjust accordingly." + codeSection;
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'pre_llm','Calling LLM')").bind(stamp).run(); } catch {}
     const resp = await callLLM(env, { messages: [{ role: "system", content: sys }, { role: "user", content: mood + (topAntiPattern ? "\nTopic: " + topic : "\nDecide: which self-improvement area needs most attention? Consider: new tools, new capabilities, or micro-optimizations?") }], temperature: 0.7, max_tokens: 2048 });
