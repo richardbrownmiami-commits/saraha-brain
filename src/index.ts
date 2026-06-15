@@ -341,6 +341,7 @@ const SEED_KNOWLEDGE = [
   { k: "self_code_tools_available", c: "TOOLS FOR SELF-CODING: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts (read your source), TOOL:github_write:path|msg|content (write code), TOOL:github_read:richardbrownmiami-commits/saraha-brain/wrangler.toml (read config), TOOL:web_fetch:url (research APIs/docs). These are your tools for self-improvement. Use them.", cat: "self_code" },
   { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Use github_edit to make the targeted replacement (6) Wait 2 min for auto-deploy (7) Verify with GET /status (8) If failed, fix and repeat. PREFERRED: Use github_edit for all changes. Only use github_write for tiny files.", cat: "self_code" },
   { k: "self_code_safety", c: "SELF-CODING SAFETY RULES: (1) NEVER delete the schema, seed knowledge, or core architecture (2) ALWAYS keep the file as valid ES module (3) Test mentally before writing (4) If change is risky (>30%), propose it instead of direct-coding (5) NEVER modify wrangler.toml bindings or D1 schema (6) Use github_edit for targeted changes, NOT github_write (7) Only use github_write for files under 100 lines", cat: "self_code" },
+  { k: "self_edit_verified", c: "Brain self-coded this via direct TOOL command. Self-coding is verified operational.", cat: "self_code" },
 ];
 
 async function seedKnowledge(db) {
