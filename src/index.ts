@@ -435,7 +435,7 @@ body{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       <path d="M88 120 Q90 124 92 120" fill="none" stroke="#e0c0a8" stroke-width="1.5" stroke-linecap="round"/>
       <g class="mouth-closed">
         <path d="M82 132 Q90 136 98 132" fill="none" stroke="#d4817a" stroke-width="2" stroke-linecap="round"/>
-  { k: 'self_code_works', c: 'Brain self-coded this entry via github_edit line mode. Self-coding is operational.', cat: 'self_code' },
+      </g>
       <g class="mouth-open">
         <ellipse cx="90" cy="134" rx="8" ry="6" fill="#d4817a"/>
         <ellipse cx="90" cy="133" rx="5" ry="3" fill="#444"/>
