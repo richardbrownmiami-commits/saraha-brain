@@ -307,9 +307,9 @@ const SEED_KNOWLEDGE = [
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
   { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST).", cat: "structure" },
+  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST), /brain/repair(PPOST) auto-fix stuck actions and clean old data.", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
-  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
+  { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Self-heal: call /brain/repair to clean stuck actions. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
   { k: "feedback_loop", c: "Every proposal cycle queries authority_receipts+proposals from last 24h and injects as fbStr: 'Approved/executed: ... Denied: ...' System prompt includes 'Evaluate: what worked, what user denied, adjust accordingly.' This lets brain learn user preferences.", cat: "structure" },
   { k: "healer_monitor", c: "Monitor's approve handler blocks >3 high-risk(>30%) approvals per hour. Saves healer_backup_last timestamp on config approvals. After forwarding to brain, checks /brain/emotions health. If unhealthy (500/error), auto-reverts by calling deny endpoint. RAG governs: risk>30%+cron ALWAYS human, auto-execute picks up approved proposals.", cat: "structure" },
@@ -1121,9 +1121,29 @@ For questions needing external data, output ONE tool command. For everything els
           sleep: { method: "POST", path: "/brain/sleep" },
           avatar: { method: "GET", path: "/avatar" },
           diag: { method: "GET", path: "/brain/diag" },
-          tree: { method: "GET", path: "/brain/tree" }
+          tree: { method: "GET", path: "/brain/tree" },
+          repair: { method: "POST", path: "/brain/repair" }
         }
       });
+    }
+
+    if (url.pathname === "/brain/repair" && req.method === "POST") {
+      const fixes: string[] = [];
+      // 1. Fix stuck actions
+      const stuck = await env.DB.prepare("UPDATE actions SET status='error', result='Timeout: action stuck, auto-repaired', completed_at=datetime('now') WHERE status='running' AND created_at < datetime('now', '-10 minutes')").run();
+      if (stuck.meta?.changes > 0) fixes.push(`Fixed ${stuck.meta.changes} stuck actions`);
+      // 2. Clean old error actions (keep last 100)
+      const oldErrors = await env.DB.prepare("DELETE FROM actions WHERE status='error' AND id NOT IN (SELECT id FROM actions ORDER BY created_at DESC LIMIT 100)").run();
+      if (oldErrors.meta?.changes > 0) fixes.push(`Cleaned ${oldErrors.meta.changes} old error actions`);
+      // 3. Clean old brain_logs (keep last 500)
+      const oldLogs = await env.DB.prepare("DELETE FROM brain_logs WHERE id NOT IN (SELECT id FROM brain_logs ORDER BY id DESC LIMIT 500)").run();
+      if (oldLogs.meta?.changes > 0) fixes.push(`Cleaned ${oldLogs.meta.changes} old brain logs`);
+      // 4. Health check
+      const actionCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions WHERE status='running'").all()).results[0]?.c || 0;
+      const pendingProposals = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='pending'").all()).results[0]?.c || 0;
+      const emotions = await getEmotions(env.DB);
+      const reg = await getRegulator(env.DB);
+      return json({ fixes, health: { stuckRunning: actionCount, pendingProposals, energy: reg.energy, happy: emotions.happy, timestamp: Date.now() } });
     }
 
     if (url.pathname === "/brain/override") {
