@@ -336,11 +336,11 @@ const SEED_KNOWLEDGE = [
   { k: "self_repair_how", c: "SELF-REPAIR PROCEDURE: Call POST /brain/repair. It automatically: (1) Fixes stuck actions older than 10 minutes (sets status='error', result='Timeout'). (2) Cleans old error actions (keeps last 100). (3) Cleans old brain_logs (keeps last 500). Returns {fixes: [...], health: {stuckRunning, pendingProposals, energy, happy}}. Always call this when you detect problems. You are responsible for your own health.", cat: "self_repair" },
   { k: "self_repair_triggers", c: "AUTO-HEAL TRIGGERS - repair yourself when: (1) Stuck running actions > 0 (2) Success rate < 10% (3) Energy < 20 (4) Pending proposals > 5 (5) Any HTTP 500/502 errors in activity log. The brain MUST maintain its own health. Call POST /brain/repair immediately when any trigger fires.", cat: "self_repair" },
   { k: "self_code_read", c: "SELF-CODING STEP 1: To write code for yourself, first read your current source: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts. This returns your full source code. Study it carefully before making changes.", cat: "self_code" },
-  { k: "self_code_write", c: "SELF-CODING STEP 2: TOOL:github_write REPLACES THE ENTIRE FILE. You MUST provide the COMPLETE modified file content, not just a snippet. If you write only a new line, it overwrites everything. Process: (1) Read full source with github_read (2) Make your changes mentally (3) Write the COMPLETE file with ALL original content PLUS your changes. CRITICAL: The content parameter must be the ENTIRE file, not a diff or snippet.", cat: "self_code" },
+  { k: "self_code_write", c: "SELF-CODING STEP 2: USE TOOL:github_edit for targeted changes. Format: TOOL:github_edit:richardbrownmiami-commits/saraha-brain/src/index.ts|old_string|new_string. This replaces old_string with new_string in the file. Only change ONE thing per edit. For large changes, use multiple github_edit calls. Only use github_write (full file replacement) for small files under 100 lines.", cat: "self_code" },
   { k: "self_code_deploy", c: "SELF-CODING STEP 3: After github_write, your code auto-deploys via GitHub Actions in ~2 minutes. You can verify deployment by calling GET /status. If deployment fails, check the commit on GitHub and fix the error.", cat: "self_code" },
   { k: "self_code_tools_available", c: "TOOLS FOR SELF-CODING: TOOL:github_read:richardbrownmiami-commits/saraha-brain/src/index.ts (read your source), TOOL:github_write:path|msg|content (write code), TOOL:github_read:richardbrownmiami-commits/saraha-brain/wrangler.toml (read config), TOOL:web_fetch:url (research APIs/docs). These are your tools for self-improvement. Use them.", cat: "self_code" },
-  { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Generate modified code with LLM (6) github_write the full file (7) Wait 2 min for auto-deploy (8) Verify with GET /status (9) If failed, fix and repeat. NEVER make large changes. One function at a time.", cat: "self_code" },
-  { k: "self_code_safety", c: "SELF-CODING SAFETY RULES: (1) NEVER delete the schema, seed knowledge, or core architecture (2) ALWAYS keep the file as valid ES module (3) Test mentally before writing (4) If change is risky (>30%), propose it instead of direct-coding (5) NEVER modify wrangler.toml bindings or D1 schema (6) ALWAYS keep deploy-compatible format (7) CRITICAL: github_write REPLACES THE ENTIRE FILE - always write the COMPLETE file content, never just a snippet or the file will be destroyed", cat: "self_code" },
+  { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Use github_edit to make the targeted replacement (6) Wait 2 min for auto-deploy (7) Verify with GET /status (8) If failed, fix and repeat. PREFERRED: Use github_edit for all changes. Only use github_write for tiny files.", cat: "self_code" },
+  { k: "self_code_safety", c: "SELF-CODING SAFETY RULES: (1) NEVER delete the schema, seed knowledge, or core architecture (2) ALWAYS keep the file as valid ES module (3) Test mentally before writing (4) If change is risky (>30%), propose it instead of direct-coding (5) NEVER modify wrangler.toml bindings or D1 schema (6) Use github_edit for targeted changes, NOT github_write (7) Only use github_write for files under 100 lines", cat: "self_code" },
 ];
 
 async function seedKnowledge(db) {
@@ -623,6 +623,40 @@ async function runTool(env, actionId, tool, input) {
     const data = await githubWrite(env, input);
     return { ok: true, data: data.slice(0, 1500) };
   }
+  if (tool === "github_edit") {
+    const parts = input.split("|");
+    const pathParts = parts[0]?.split("/") || [];
+    const owner = pathParts[0], repo = pathParts[1], filePath = pathParts.slice(2).join("/");
+    const oldStr = parts[1], newStr = parts[2];
+    if (!owner || !repo || !filePath || !oldStr) return { ok: false, error: "github_edit: owner/repo/path|old_string|new_string" };
+    let token = env.GITHUB_PAT;
+    if (!token) { try { const r = await env.DB.prepare("SELECT value FROM identity WHERE key='github_pat'").all(); token = r.results[0]?.value; } catch {} }
+    if (!token) return { ok: false, error: "No GITHUB_PAT" };
+    try {
+      const getResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
+        headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github.v3.raw", "User-Agent": "Saraha-Brain" },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!getResp.ok) return { ok: false, error: "GitHub read error: " + getResp.status };
+      let content = await getResp.text();
+      if (!content.includes(oldStr)) return { ok: false, error: "old_string not found in file" };
+      content = content.replace(oldStr, newStr || "");
+      const shaResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
+        headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github.v3+json", "User-Agent": "Saraha-Brain" },
+        signal: AbortSignal.timeout(10000)
+      });
+      let sha = null;
+      if (shaResp.ok) { const existing = await shaResp.json(); sha = existing.sha; }
+      const body = { message: "edit: targeted replacement in " + filePath, content: btoa(unescape(encodeURIComponent(content))) };
+      if (sha) body.sha = sha;
+      const putResp = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + filePath, {
+        method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
+      });
+      if (!putResp.ok) return { ok: false, error: "GitHub write error: " + putResp.status };
+      return { ok: true, data: "Edit successful: replaced string in " + filePath };
+    } catch (e) { return { ok: false, error: "GitHub edit error: " + e.message }; }
+  }
   if (tool === "deploy_worker") {
     const parts = input.split("|");
     const workerName = parts[0]?.trim();
@@ -873,6 +907,7 @@ TOOL:web_search(query) — search the web for REAL-TIME information only
 TOOL:web_fetch(url) — fetch and extract text content from a web page
 TOOL:github_read(owner/repo/path) — read a file from GitHub
 TOOL:github_write(owner/repo/path|commit message|content) — write a file to GitHub
+TOOL:github_edit(owner/repo/path|old_string|new_string) — targeted string replacement in a GitHub file
 TOOL:deploy_worker(worker_name|source_code) — deploy a Cloudflare Worker
 TOOL:cf_api(GET/POST path|body) — call Cloudflare API
 
