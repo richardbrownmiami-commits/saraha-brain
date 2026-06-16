@@ -957,7 +957,7 @@ TOOL:tool_name(PARAMETER1|PARAMETER2|...)
 CRITICAL FORMAT RULES:
 - Parameters MUST be separated by PIPE (|) characters, NOT commas
 - The entire call uses PARENTHESES: TOOL:name(p1|p2|p3)
-- NO spaces between pipes and values: use `(a|b|c)` not `(a, b, c)` or `(a | b | c)`
+- NO spaces between pipes and values: use (a|b|c) not (a, b, c) or (a | b | c)
 - After TOOL:, STOP immediately — do NOT add commentary until the result comes back
 - For github_edit old_string: include AT LEAST 30 characters of surrounding context to make it unique in the file
 
