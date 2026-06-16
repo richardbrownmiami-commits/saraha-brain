@@ -18,7 +18,7 @@ const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: 
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
 
 async function getEmotions(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key = 'emotion_energetic' OR key = 'emotion_intelligent' OR key = 'emotion_happy' OR key = 'emotion_bad'").all();
   const result = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
     const key = r.key.replace("emotion_", "");
