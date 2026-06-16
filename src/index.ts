@@ -12,13 +12,14 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS emotion_reflection (id INTEGER PRIMARY KEY AUTOINCREMENT, emotion_key TEXT NOT NULL, reflection TEXT NOT NULL, insight TEXT, created_at TEXT DEFAULT (datetime('now')))`,
-];
+  `CREATE TABLE IF NOT EXISTS identity_index (index_key TEXT, PRIMARY KEY (index_key))`];
 
 // Proposal: Enhance getEmotions function with robust error handling and input validation
 
 // What: Why: To improve the reliability and resilience of the getEmotions function, ensuring it can handle unexpected inputs and errors
 // What: Modify the getEmotions function in the brain.js file
-// Code: async function getEmotions(db) { ... }
+// Code: async function getEmotions(db) {
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'`).all(); ... }
 
 // How: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
 // Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
@@ -37,6 +38,7 @@ async function getEmotions(db) {
   return result;
 }
 async function getState(db) {
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'`).all();
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
   const emotions = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
