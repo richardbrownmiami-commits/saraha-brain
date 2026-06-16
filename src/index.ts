@@ -555,6 +555,81 @@ tick();draw();
 }catch(e){document.getElementById('hud').innerHTML='Error: '+e.message;console.error(e)}}
 init();
 </script></body></html>`;
+const UI_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saraha Brain UI</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex}
+.sidebar{width:220px;background:#161b22;border-right:1px solid #30363d;padding:1.2rem;flex-shrink:0;overflow-y:auto}
+.sidebar h1{font-size:1.1rem;color:#58a6ff;margin-bottom:1rem}
+.stat{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid #21262d;font-size:0.8rem}
+.stat:last-child{border:none}
+.label{color:#8b949e}
+.val{font-weight:600}
+.bar{height:4px;border-radius:2px;margin-top:3px;transition:width .3s}
+.main{flex:1;padding:1.2rem;overflow-y:auto}
+.tabs{display:flex;gap:2px;margin-bottom:1.2rem;border-bottom:1px solid #30363d}
+.tab{padding:0.5rem 1rem;cursor:pointer;color:#8b949e;font-size:0.85rem;border-bottom:2px solid transparent;transition:.15s}
+.tab:hover{color:#e6edf3}
+.tab.active{color:#58a6ff;border-bottom-color:#58a6ff}
+.section{display:none}
+.section.active{display:block}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;margin-bottom:0.8rem}
+.card h3{font-size:0.9rem;color:#8b949e;margin-bottom:0.6rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.8rem}
+table{width:100%;border-collapse:collapse;font-size:0.8rem}
+th{text-align:left;padding:0.5rem 0.4rem;border-bottom:1px solid #30363d;color:#8b949e;font-weight:500}
+td{padding:0.4rem;border-bottom:1px solid #21262d;vertical-align:top}
+.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:0.7rem;font-weight:600}
+.badge-executed{background:#0f3a1f;color:#3fb950}
+.badge-approved{background:#0f2a4a;color:#58a6ff}
+.badge-pending{background:#2a1f0f;color:#d29922}
+.badge-failed{background:#3a0f0f;color:#f85149}
+.badge-denied{background:#2a1520;color:#db61a2}
+.badge-auto{background:#1f2a1f;color:#7ee787}
+.search{width:100%;padding:0.5rem;background:#0b1120;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:0.85rem;margin-bottom:0.6rem}
+.search:focus{outline:none;border-color:#58a6ff}
+.log-entry{padding:0.3rem 0;border-bottom:1px solid #21262d;font-size:0.78rem;font-family:monospace}
+.log-entry:last-child{border:none}
+.log-time{color:#8b949e;margin-right:0.5rem}
+.log-step{color:#58a6ff;margin-right:0.5rem}
+.emoji{font-size:1.2rem;margin-right:0.3rem}
+.refresh{position:fixed;bottom:1rem;right:1rem;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:0.5rem 1rem;color:#8b949e;font-size:0.8rem;cursor:pointer;z-index:100}
+.refresh:hover{background:#1f2937;color:#e6edf3}
+</style></head><body>
+<div class="sidebar" id="sidebar"><h1>Saraha Brain</h1><div id="sideStats"></div></div>
+<div class="main">
+<div class="tabs" id="tabs">
+<div class="tab active" data-tab="overview">Overview</div>
+<div class="tab" data-tab="proposals">Proposals</div>
+<div class="tab" data-tab="activity">Activity</div>
+<div class="tab" data-tab="logs">Logs</div>
+<div class="tab" data-tab="knowledge">Knowledge</div>
+<div class="tab" data-tab="antipatterns">Anti-patterns</div>
+</div>
+<div class="section active" id="s-overview"><div class="grid" id="ovGrid"></div><div class="card" id="ovRecent"></div></div>
+<div class="section" id="s-proposals"><input class="search" id="propSearch" placeholder="Search proposals..."><div id="propTable"></div></div>
+<div class="section" id="s-activity"><div id="actList"></div></div>
+<div class="section" id="s-logs"><input class="search" id="logSearch" placeholder="Filter logs..."><div id="logList"></div></div>
+<div class="section" id="s-knowledge"><input class="search" id="knSearch" placeholder="Search knowledge..." value="self_improve"><div id="knList"></div></div>
+<div class="section" id="s-antipatterns"><div id="apList"></div></div>
+</div>
+<button class="refresh" id="refreshBtn">Refresh</button>
+<script>
+const $=(s,p)=>p?p.querySelector(s):document.querySelector(s);const $$=(s,p)=>p?p.querySelectorAll(s):document.querySelectorAll(s);
+const tabs=$$('.tab');const sections={};$$('.section').forEach(s=>sections[s.id.replace('s-','')]=s);
+tabs.forEach(t=>t.onclick=()=>{tabs.forEach(x=>x.classList.remove('active'));t.classList.add('active');$$('.section').forEach(x=>x.classList.remove('active'));const sec=sections[t.dataset.tab];if(sec)sec.classList.add('active')});
+async function fetchAPI(path){try{const r=await fetch(path);if(!r.ok)return null;return await r.json()}catch{return null}}
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s.slice(0,500);return d.innerHTML}
+function statusBadge(s){const m={executed:'badge-executed',approved:'badge-approved',pending:'badge-pending',failed:'badge-failed',denied:'badge-denied',auto:'badge-auto',running:'badge-approved',done:'badge-executed'};return'<span class="badge '+(m[s]||'badge-pending')+'">'+esc(s)+'</span>'}
+async function loadSidebar(){const ph=await fetchAPI('/brain/phase');if(!ph)return;$('#sideStats').innerHTML='<div class="stat"><span class="label">Phase</span><span class="val" style="color:#58a6ff">'+esc(ph.phase)+'</span></div><div class="stat"><span class="label">Energy</span><span class="val" style="color:'+(ph.energy>60?'#3fb950':ph.energy>30?'#d29922':'#f85149')+'">'+ph.energy+'%</span></div><div class="stat"><span class="label">Happy</span><span class="val" style="color:#3fb950">'+(ph.emotions?.happy||'?')+'/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val" style="color:#d29922">'+(ph.emotions?.energetic||'?')+'/10</span></div><div class="stat"><span class="label">Intelligent</span><span class="val" style="color:#58a6ff">'+(ph.emotions?.intelligent||'?')+'/10</span></div><div class="bar" style="width:'+ph.energy+'%;background:'+(ph.energy>60?'#3fb950':ph.energy>30?'#d29922':'#f85149')+'"></div>'}
+async function loadOverview(){const ph=await fetchAPI('/brain/phase');const prop=await fetchAPI('/brain/proposals');const act=await fetchAPI('/brain/activity?limit=5');if(!ph)return;const stats=[];const all=prop?.entries?.length||0;const exec=(prop?.entries||[]).filter(p=>p.status==='executed').length;const pend=(prop?.entries||[]).filter(p=>p.status==='pending').length;const fail=(prop?.entries||[]).filter(p=>p.status==='failed').length;const appr=(prop?.entries||[]).filter(p=>p.status==='approved').length;$('#ovGrid').innerHTML='<div class="card"><h3>Proposals</h3><div style="font-size:1.8rem;font-weight:700">'+all+'</div><div style="font-size:0.75rem;color:#8b949e;margin-top:4px"><span style="color:#3fb950">'+exec+' executed</span> &middot; <span style="color:#58a6ff">'+appr+' approved</span> &middot; <span style="color:#d29922">'+pend+' pending</span> &middot; <span style="color:#f85149">'+fail+' failed</span></div></div><div class="card"><h3>Energy</h3><div style="font-size:1.8rem;font-weight:700;color:'+(ph.energy>60?'#3fb950':ph.energy>30?'#d29922':'#f85149')+'">'+ph.energy+'%</div></div><div class="card"><h3>Phase</h3><div style="font-size:1.8rem;font-weight:700;color:#58a6ff">'+esc(ph.phase)+'</div></div><div class="card"><h3>Emotions</h3><div style="font-size:0.85rem;line-height:1.6">Happy: '+esc(ph.emotions?.happy||'?')+'/10<br>Energetic: '+esc(ph.emotions?.energetic||'?')+'/10<br>Intelligent: '+esc(ph.emotions?.intelligent||'?')+'/10</div></div>';if(act?.entries?.length){$('#ovRecent').innerHTML='<h3>Recent Activity</h3>'+act.entries.slice(0,5).map(a=>'<div class="log-entry"><span class="log-time">'+(a.created_at||'').slice(11,19)+'</span>'+statusBadge(a.status)+' <span class="log-step">'+esc((a.input||'').slice(0,60))+'</span></div>').join('')}}
+async function loadProposals(){const prop=await fetchAPI('/brain/proposals');if(!prop?.entries)return;const q=($('#propSearch').value||'').toLowerCase();const items=q?prop.entries.filter(p=>(p.title||'').toLowerCase().includes(q)||(p.status||'').includes(q)):prop.entries;$('#propTable').innerHTML='<table><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Status</th><th>Risk</th><th>Created</th></tr></thead><tbody>'+items.slice(0,50).map(p=>'<tr><td>'+p.id+'</td><td>'+esc(p.title.slice(0,60))+'</td><td><span style="font-size:0.7rem;color:#8b949e">'+esc((p.resource_type||'').slice(0,15))+'</span></td><td>'+statusBadge(p.status)+'</td><td>'+p.risk_pct+'</td><td style="font-size:0.7rem;color:#8b949e">'+(p.created_at||'').slice(0,10)+'</td></tr>').join('')+'</tbody></table>';if(!q)$('#propSearch').placeholder='Search proposals... ('+items.length+' total)'}
+async function loadActivity(){const act=await fetchAPI('/brain/activity?limit=30');if(!act?.entries)return;$('#actList').innerHTML=act.entries.map(a=>'<div class="log-entry"><span class="log-time">'+(a.created_at||'').slice(11,19)+'</span>'+statusBadge(a.status)+' <span class="log-step">'+esc((a.type||''))+'</span> '+esc((a.input||'').slice(0,80))+(a.result?'<br><span style="color:#8b949e;font-size:0.7rem">'+esc(a.result.slice(0,120))+'</span>':'')+'</div>').join('')}
+async function loadLogs(){const logs=await fetchAPI('/brain/logs?limit=50');if(!logs?.entries)return;const q=($('#logSearch').value||'').toLowerCase();const items=q?logs.entries.filter(l=>(l.content||'').toLowerCase().includes(q)||(l.step||'').includes(q)):logs.entries;$('#logList').innerHTML=items.map(l=>'<div class="log-entry"><span class="log-time">'+(l.created_at||'').slice(11,19)+'</span><span class="log-step">'+esc(l.step||'')+'</span>'+esc((l.content||'').slice(0,100))+'</div>').join('')}
+async function loadKnowledge(){const q=$('#knSearch').value||'self_improve';const kn=await fetchAPI('/brain/knowledge?q='+encodeURIComponent(q));if(!kn?.entries)return;$('#knList').innerHTML=kn.entries.map(k=>'<div class="log-entry"><span style="color:#58a6ff;font-weight:500">'+esc(k.key||'')+'</span><br><span style="color:#8b949e;font-size:0.7rem">['+esc(k.category||'')+']</span> '+esc(k.content||'')+'</div>').join('')||'<div style="color:#8b949e">No results</div>'}
+async function loadAntiPatterns(){const ap=await fetchAPI('/brain/anti-patterns');if(!ap?.entries)return;$('#apList').innerHTML=ap.entries.length?'<table><thead><tr><th>Pattern</th><th>Count</th><th>Root Cause</th><th>Last Seen</th></tr></thead><tbody>'+ap.entries.map(a=>'<tr><td>'+esc(a.pattern||'').slice(0,60)+'</td><td>'+a.count+'</td><td style="color:#8b949e;font-size:0.7rem">'+esc((a.root_cause||'').slice(0,40))+'</td><td style="font-size:0.7rem;color:#8b949e">'+(a.last_seen||'').slice(0,10)+'</td></tr>').join('')+'</tbody></table>':'<div style="color:#8b949e">No anti-patterns recorded</div>'}
+async function loadAll(){await loadSidebar();await Promise.all([loadOverview(),loadProposals(),loadActivity(),loadLogs(),loadKnowledge(),loadAntiPatterns()])}
+$('#propSearch').oninput=loadProposals;$('#logSearch').oninput=loadLogs;$('#knSearch').oninput=loadKnowledge;$('#refreshBtn').onclick=loadAll;loadAll();setInterval(loadAll,30000);
+</script></body></html>`;
 async function webSearch(env, query) {
   if (env.BRAVE_API_KEY) {
     try {
@@ -1587,6 +1662,9 @@ For questions needing external data, output ONE tool command. For everything els
       return json({ ok: true, results });
     }
 
+    if (url.pathname === "/ui") {
+      return new Response(UI_HTML, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
     return json({ error: "not found" }, 404);
   },
   async scheduled(event, env, ctx) {
