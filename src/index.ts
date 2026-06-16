@@ -13,6 +13,15 @@
   `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
 ];
 
+// Proposal: Enhance Error Handling in getEmotions function
+
+// What: Why: Robust error handling is essential for reliable and efficient emotional state retrieval.
+// What: src/brain.js line 123 (getEmotions function)
+// Code: await db.prepare('SELECT key, value FROM identity WHERE key LIKE 'emotion_%'').all();
+
+// How: Implement try-catch blocks, data validation, and clear error messages.
+// Benefit: Improved reliability, efficiency, and maintainability of emotional state retrieval.
+
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
 const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
