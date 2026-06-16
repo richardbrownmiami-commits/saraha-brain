@@ -1284,11 +1284,13 @@ For questions needing external data, output ONE tool command. For everything els
     }
 
     if (url.pathname === "/brain/subagents" && req.method === "GET") {
+      await env.DB.exec("CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))").catch(()=>{});
       const { results } = await env.DB.prepare("SELECT * FROM subagents ORDER BY created_at DESC").all();
       return json({ subagents: results });
     }
 
     if (url.pathname === "/brain/subagents" && req.method === "POST") {
+      await env.DB.exec("CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))").catch(()=>{});
       let body;
       try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       const name = body?.name;
