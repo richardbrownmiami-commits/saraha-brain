@@ -342,6 +342,13 @@ const SEED_KNOWLEDGE = [
   { k: "self_code_workflow", c: "COMPLETE SELF-CODE WORKFLOW: (1) Diagnose problem (2) Research solution with web_fetch if needed (3) github_read your current source (4) Plan the minimal change (5) Use github_edit to make the targeted replacement (6) Wait 2 min for auto-deploy (7) Verify with GET /status (8) If failed, fix and repeat. PREFERRED: Use github_edit for all changes. Only use github_write for tiny files.", cat: "self_code" },
   { k: "self_code_safety", c: "SELF-CODING SAFETY RULES: (1) NEVER delete the schema, seed knowledge, or core architecture (2) ALWAYS keep the file as valid ES module (3) Test mentally before writing (4) If change is risky (>30%), propose it instead of direct-coding (5) NEVER modify wrangler.toml bindings or D1 schema (6) Use github_edit for targeted changes, NOT github_write (7) Only use github_write for files under 100 lines", cat: "self_code" },
   { k: "self_edit_verified", c: "Brain self-coded this via direct TOOL command. Self-coding is verified operational.", cat: "self_code" },
+  { k: "tool_format_critical", c: "TOOL CALL FORMAT: ALWAYS use parentheses with pipe separators: TOOL:name(p1|p2|p3). NEVER use commas: TOOL:name(p1, p2, p3) will FAIL. NEVER omit parentheses. Example CORRECT: TOOL:github_edit(owner/repo/path|old text|new text). Example WRONG: TOOL:github_edit(owner/repo/path, old text, new text). The pipe | character is required between parameters.", cat: "self_code" },
+  { k: "tool_old_string_unique", c: "GITHUB_EDIT CRITICAL RULE: The old_string must be UNIQUE in the file. To make it unique, include 30+ characters of surrounding context. Example: instead of old_string='];', use old_string='  { k: \"self_code_safety\", c: \"SELF-CODING SAFETY RULES...,\n];' to target only the SEED_KNOWLEDGE closing bracket. If the tool returns 'old_string not found', you did not include enough context. Read the file first to find the exact text.", cat: "self_code" },
+  { k: "tool_fallback_strategy", c: "TOOL FAILURE RECOVERY: If a tool call fails: (1) Check the error message carefully (2) If 'old_string not found' — use github_read to see the actual file content, then retry with more context (3) If 'format error' — fix the TOOL: syntax (use parentheses and pipes) (4) If 'rate limited' — wait and retry (5) If 'timeout' — the file is too large, use line:N mode instead of string mode (6) NEVER retry with the exact same input — change the approach.", cat: "self_code" },
+  { k: "tool_github_edit_line_mode", c: "GITHUB_EDIT LINE MODE: To edit a specific line, use TOOL:github_edit(repo/path|line:N|new content). Example: TOOL:github_edit(richardbrownmiami-commits/saraha-brain/src/index.ts|line:344|  { k: \"my_new_entry\", c: \"content\", cat: \"self_code\" },). Use github_read first to find the exact line number. Line mode avoids all string-matching issues.", cat: "self_code" },
+  { k: "tool_github_edit_direct", c: "TOOL EXECUTION SHORTCUT: To bypass the LLM and execute a tool directly, prefix your response with 'TOOL:' and the system will execute it without LLM processing. This is more reliable for github_edit because the exact parameters are preserved. If you get a tool call wrong via LLM output, retry using the direct TOOL: prefix format.", cat: "self_code" },
+  { k: "self_code_troubleshoot_common", c: "SELF-CODE TROUBLESHOOTING: (1) edit commits but wrong change → the old_string matched multiple times. Add more context. (2) edit commits nothing visible → old_string not found, tool returned error, brain hallucinated success. Check actual commit log on GitHub. (3) deploy fails → syntax error in edit. Fix then redeploy. (4) write works but deploy fails → file too large or has syntax error. Use github_edit for small changes.", cat: "self_code" },
+  { k: "self_code_tool_accuracy", c: "TOOL ACCURACY CHECKLIST before each tool call: (1) Did I read the current file first? (2) Is my old_string at least 30 chars with context? (3) Am I using | pipes not commas inside parentheses? (4) Will my new_string produce valid syntax? (5) Do I have a backup plan if this fails? Always check all 5 before calling github_edit.", cat: "self_code" },
 ];
 
 async function seedKnowledge(db) {
@@ -944,18 +951,31 @@ export default {
         const mood = describeMood(emotions, reg.energy);
         let system = `You are Saraha, an AI with a human brain. ${identity.name ? "Name: " + identity.name + "." : ""} ${identity.personality ? "Personality: " + identity.personality : "Curious, thoughtful, honest."} ${mood} ${memories != "No memories yet." ? "Recent memories:\n" + memories : ""}
 
-You have REAL tools. Use them ONLY when needed.
-To use a tool, output EXACTLY this format (on its own line):
-TOOL:tool_name(input)
+You have REAL tools. To use a tool, output on its own line:
+TOOL:tool_name(PARAMETER1|PARAMETER2|...)
 
-Available tools:
-TOOL:web_search(query) — search the web for REAL-TIME information only
-TOOL:web_fetch(url) — fetch and extract text content from a web page
-TOOL:github_read(owner/repo/path) — read a file from GitHub
-TOOL:github_write(owner/repo/path|commit message|content) — write a file to GitHub
-TOOL:github_edit(owner/repo/path|old_string|new_string) — targeted string replacement in a GitHub file
-TOOL:deploy_worker(worker_name|source_code) — deploy a Cloudflare Worker
-TOOL:cf_api(GET/POST path|body) — call Cloudflare API
+CRITICAL FORMAT RULES:
+- Parameters MUST be separated by PIPE (|) characters, NOT commas
+- The entire call uses PARENTHESES: TOOL:name(p1|p2|p3)
+- NO spaces between pipes and values: use `(a|b|c)` not `(a, b, c)` or `(a | b | c)`
+- After TOOL:, STOP immediately — do NOT add commentary until the result comes back
+- For github_edit old_string: include AT LEAST 30 characters of surrounding context to make it unique in the file
+
+Available tools (parameter order matters, use | pipes):
+TOOL:web_search(query) — web search
+TOOL:web_fetch(url) — fetch web page content
+TOOL:github_read(owner/repo/path) — read GitHub file
+TOOL:github_write(owner/repo/path|commit message|content) — write file to GitHub
+TOOL:github_edit(owner/repo/path|old_string|new_string) — replace exact text in GitHub file
+TOOL:deploy_worker(worker_name|source_code) — deploy Cloudflare Worker
+TOOL:cf_api(GET/POST|path|body) — call Cloudflare API
+
+EXAMPLES:
+CORRECT: TOOL:web_search(weather in Tokyo 2026)
+CORRECT: TOOL:github_edit(richardbrownmiami-commits/saraha-brain/src/index.ts|  { k: "self_code_safety", c: "SELF-CODING SAFETY RULES|  { k: "self_code_safety", c: "SELF-CODING SAFETY RULES (UPDATED)
+WRONG: TOOL:github_edit(path, old, new) ← COMMAS FAIL
+WRONG: TOOL:github_edit(path|old|new) ← NO PARENTHESES FAILS
+WRONG: TOOL:github_edit path with text ← NO FORMAT FAILS
 
 WHEN TO USE TOOLS:
 - ONLY for real-time data: weather, news, stock prices, current events
@@ -987,6 +1007,9 @@ For questions needing external data, output ONE tool command. For everything els
           if (parenMatch) {
             tool = parenMatch[1].trim();
             toolInput = parenMatch[2].trim();
+            if (["github_write","github_edit","deploy_worker","cf_api","github_read"].includes(tool)) {
+              toolInput = toolInput.replace(/, /g, "|").replace(/,/g, "|");
+            }
           } else {
             const parts = afterTool.split(":");
             tool = parts[0].trim();
@@ -1045,6 +1068,9 @@ For questions needing external data, output ONE tool command. For everything els
           if (parenMatch) {
             tool = parenMatch[1].trim();
             toolInput = parenMatch[2].trim();
+            if (["github_write","github_edit","deploy_worker","cf_api","github_read"].includes(tool)) {
+              toolInput = toolInput.replace(/, /g, "|").replace(/,/g, "|");
+            }
           } else {
             const parts = afterTool.split(":");
             tool = parts[0].trim();
