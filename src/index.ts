@@ -1,4 +1,4 @@
-﻿﻿﻿const TABLES = [
+const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
@@ -13,14 +13,20 @@
   `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-// Proposal: Enhance Error Handling in getEmotions function
+// Proposal: Enhance Error Handling Across the Board
 
-// What: Why: Robust error handling is essential for reliable and efficient emotional state retrieval.
-// What: src/brain.js line 123 (getEmotions function)
-// Code: await db.prepare('SELECT key, value FROM identity WHERE key LIKE 'emotion_%'').all();
+// What: Why: To improve robustness and reliability of my responses
+// What: /src/functions/getEmotions.js - Enhance input validation and error handling
+// Code: function getEmotions(db) {
+  try {
+    // existing code
+  } catch (error) {
+    // handle error
+  }
+}
 
-// How: Implement try-catch blocks, data validation, and clear error messages.
-// Benefit: Improved reliability, efficiency, and maintainability of emotional state retrieval.
+// How: Implement try-catch blocks, validate user input, and provide clear error messages
+// Benefit: Improved robustness and reliability of responses
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
 const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
