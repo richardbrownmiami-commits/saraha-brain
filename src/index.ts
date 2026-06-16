@@ -1,4 +1,4 @@
-const TABLES = [
+﻿const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
@@ -607,6 +607,7 @@ td{padding:0.4rem;border-bottom:1px solid #21262d;vertical-align:top}
 <div class="tab" data-tab="knowledge">Knowledge</div>
 <div class="tab" data-tab="antipatterns">Anti-patterns</div>
 <div class="tab" data-tab="endpoints">Endpoints</div>
+<div class="tab" data-tab="chat">Chat</div>
 </div>
 <div class="section active" id="s-overview"><div class="grid" id="ovGrid"></div><div class="card" id="ovRecent"></div></div>
 <div class="section" id="s-proposals"><input class="search" id="propSearch" placeholder="Search proposals..."><div id="propTable"></div></div>
@@ -615,6 +616,7 @@ td{padding:0.4rem;border-bottom:1px solid #21262d;vertical-align:top}
 <div class="section" id="s-knowledge"><input class="search" id="knSearch" placeholder="Search knowledge..." value="self_improve"><div id="knList"></div></div>
 <div class="section" id="s-antipatterns"><div id="apList"></div></div>
 <div class="section" id="s-endpoints"><input class="search" id="epSearch" placeholder="Filter endpoints..." oninput="loadEndpoints()"><div id="epList"></div></div>
+<div class="section" id="s-chat"><div class="card"><h3>Talk to Saraha</h3><div id="chatMessages" style="height:300px;overflow-y:auto;margin-bottom:0.6rem;padding:0.5rem;background:#0b1120;border:1px solid #30363d;border-radius:6px;font-size:0.85rem"></div><div style="display:flex;gap:0.4rem"><input class="search" id="chatInput" placeholder="Type a message..." style="margin-bottom:0;flex:1" onkeydown="if(event.keyCode===13)sendChat()"><button id="chatSend" onclick="sendChat()" style="padding:0.5rem 1rem;background:#1f6feb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:0.85rem">Send</button></div></div></div>
 </div>
 <button class="refresh" id="refreshBtn">Refresh</button>
 <script>
@@ -634,6 +636,8 @@ async function loadAntiPatterns(){const ap=await fetchAPI('/brain/anti-patterns'
 const ENDPOINTS=[{m:'GET',p:'/',d:'Dashboard home page with quick stats'},{m:'GET',p:'/status',d:'Health check (alive, db, version)'},{m:'GET',p:'/avatar',d:'Chat UI with avatar character'},{m:'GET',p:'/ui',d:'Full management dashboard (this page)'},{m:'POST',p:'/think',d:'Send input to brain, get response'},{m:'GET',p:'/brain/phase',d:'Current phase, emotions, energy'},{m:'GET',p:'/brain/emotions',d:'Emotional state values'},{m:'GET',p:'/brain/stats',d:'Proposal counts (total, executed, pending, failed, approved)'},{m:'GET',p:'/brain/proposals',d:'All proposals (50 latest)'},{m:'GET',p:'/brain/proposals/:id',d:'Single proposal with receipts'},{m:'POST',p:'/api/proposals/approve/:id',d:'Approve a pending proposal'},{m:'POST',p:'/api/proposals/deny/:id',d:'Deny a pending proposal'},{m:'GET',p:'/brain/activity',d:'Recent think actions with results'},{m:'GET',p:'/brain/logs',d:'Brain execution step logs'},{m:'GET',p:'/brain/stream',d:'Thought stream timeline'},{m:'GET',p:'/brain/knowledge',d:'Search knowledge base (?q= or ?category=)'},{m:'GET',p:'/brain/anti-patterns',d:'Error patterns and their counts'},{m:'GET',p:'/brain/feedback',d:'User feedback history'},{m:'GET',p:'/brain/tree',d:'Evolution timeline visualization'},{m:'GET',p:'/brain/subagents',d:'Sub-agent list and registration'},{m:'POST',p:'/brain/subagents',d:'Register a new sub-agent'},{m:'GET',p:'/brain/capabilities',d:'Current features and available tools'},{m:'GET',p:'/brain/repair',d:'Auto-fix stuck actions and clean data'},{m:'POST',p:'/brain/repair',d:'Run repair maintenance'},{m:'POST',p:'/evolve',d:'Trigger immediate evolution cycle'},{m:'GET',p:'/brain/proposals/reset-all',d:'Reset all executed proposals to approved'},{m:'GET',p:'/brain/github/read',d:'Read file from GitHub repo (?path=)'},{m:'POST',p:'/brain/github/write',d:'Write file to GitHub repo'},{m:'POST',p:'/brain/implement-pending',d:'Force implement approved proposals now'},{m:'POST',p:'/brain/set-cron',d:'Change cron interval (?minutes=N)'},{m:'POST',p:'/brain/reset-all',d:'Reset all proposals to pending'}];
 async function loadEndpoints(){const q=($('#epSearch').value||'').toLowerCase();const items=q?ENDPOINTS.filter(e=>e.p.includes(q)||e.d.toLowerCase().includes(q)):ENDPOINTS;$('#epList').innerHTML='<table><thead><tr><th>Method</th><th>Path</th><th>Description</th><th>Link</th></tr></thead><tbody>'+items.map(e=>'<tr><td><span class="badge badge-'+e.m.toLowerCase()+'">'+e.m+'</span></td><td style="font-family:monospace;font-size:0.8rem">'+esc(e.p)+'</td><td style="color:#8b949e;font-size:0.78rem">'+esc(e.d)+'</td><td><a href="'+e.p+'" target="_blank" style="color:#58a6ff;font-size:0.75rem" onclick="event.stopPropagation()">open</a></td></tr>').join('')+'</tbody></table>'}
 async function loadAll(){await loadSidebar();loadOverview();loadProposals();loadActivity();loadLogs();loadKnowledge();loadAntiPatterns();loadEndpoints()}
+function addChatMsg(role,text){var d=document.createElement('div');d.style.cssText='margin-bottom:0.4rem;padding:0.3rem 0.5rem;border-radius:6px;font-size:0.82rem;line-height:1.4;max-width:85%;word-break:break-word';if(role==='user'){d.style.background='#1f6feb33';d.style.marginLeft='auto';d.style.border='1px solid #1f6feb44'}else{d.style.background='#161b22';d.style.border='1px solid #30363d'}d.innerHTML='<span style=font-weight:600;font-size:0.7rem;color:'+(role==='user'?'#58a6ff':'#8b949e')+'>'+(role==='user'?'You':'Saraha')+'</span><br>'+esc(text);document.getElementById('chatMessages').appendChild(d);d.scrollIntoView({behavior:'smooth'})}
+async function sendChat(){var inp=document.getElementById('chatInput');var btn=document.getElementById('chatSend');var msg=inp.value.trim();if(!msg)return;addChatMsg('user',msg);inp.value='';btn.disabled=true;btn.textContent='...';try{var r=await fetch('/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:msg})});var d=await r.json();addChatMsg('brain',d.result||'(no response)')}catch(e){addChatMsg('brain','(connection error)')}btn.disabled=false;btn.textContent='Send'}
 $('#propSearch').oninput=loadProposals;$('#logSearch').oninput=loadLogs;$('#knSearch').oninput=loadKnowledge;$('#refreshBtn').onclick=loadAll;loadAll();setInterval(loadAll,30000);
 </script></body></html>`;
 async function webSearch(env, query) {
@@ -1003,6 +1007,7 @@ export default {
       const emotions = await getEmotions(env.DB);
       const reg = await getRegulator(env.DB);
       const phase = await getBrainPhase(env.DB, emotions, reg);
+    try { await env.DB.prepare("UPDATE actions SET status='error', result='Timeout: action stuck, auto-repaired', completed_at=datetime('now') WHERE status='running' AND created_at < datetime('now', '-10 minutes')").run(); } catch {}
       const proposalCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all()).results[0]?.c || 0;
       const executedCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='executed'").all()).results[0]?.c || 0;
       const dashboard = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saraha Brain</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:600px;width:100%}.stat{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid #21262d}.stat:last-child{border:none}.label{color:#8b949e;font-size:0.85rem}.val{font-weight:bold}.phase{color:#58a6ff;font-size:1.2rem}.links{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}h1{font-size:1.5rem;margin-bottom:1rem;color:#58a6ff}h2{font-size:1rem;margin-bottom:0.8rem;color:#8b949e}</style></head><body><h1>Saraha Brain</h1><div class="card"><h2>Status</h2><div class="stat"><span class="label">Phase</span><span class="val phase">${phase}</span></div><div class="stat"><span class="label">Energy</span><span class="val" style="color:${reg.energy > 60 ? '#10B981' : reg.energy > 30 ? '#F59E0B' : '#EF4444'}">${reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val" style="color:#10B981">${emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val" style="color:#F59E0B">${emotions.energetic}/10</span></div><div class="stat"><span class="label">Intelligent</span><span class="val" style="color:#2E86AB">${emotions.intelligent}/10</span></div><div class="stat"><span class="label">Proposals</span><span class="val">${proposalCount} (${executedCount} executed)</span></div></div><div class="card"><h2>Quick Links</h2><div class="links"><a href="/avatar">Avatar</a><a href="/brain/tree">Evolution Tree</a><a href="/brain/emotions">Emotions API</a><a href="/brain/proposals">Proposals API</a><a href="/brain/logs">Logs API</a><a href="/brain/feedback">Feedback API</a><a href="/brain/stream">Thought Stream</a><a href="/brain/phase">Phase API</a><a href="/brain/capabilities">Capabilities</a><a href="/brain/subagents">Sub-agents</a><a href="/status">Health Check</a></div></div></body></html>`;
@@ -1206,7 +1211,8 @@ For questions needing external data, output ONE tool command. For everything els
         return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
       } catch (e) { 
         try { await logStep(typeof aid !== 'undefined' ? aid : 0, "error", `Think error: ${e.message} | stack: ${(e.stack || "").slice(0, 300)}`); } catch {}
-        return json({ error: e.message }, 500); 
+        try { await logStep(typeof aid !== 'undefined' ? aid : 0, 'error', 'Think error: ' + e.message); } catch {}
+        try { if (typeof aid !== 'undefined') await env.DB.prepare('UPDATE actions SET status=''error'', result=?1, completed_at=datetime(''now'') WHERE id=?2').bind(e.message, aid).run(); } catch {}
       }
     }
 
@@ -1872,7 +1878,6 @@ For questions needing external data, output ONE tool command. For everything els
     }
   }
 };
-
 
 
 
