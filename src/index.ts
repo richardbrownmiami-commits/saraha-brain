@@ -1000,8 +1000,11 @@ For questions needing external data, output ONE tool command. For everything els
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
         try {
-          const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 10").all();
-          if (krows.results?.length) system += "\n\nYOUR ARCHITECTURE:\n" + krows.results.map(r => r.key + ": " + r.content.slice(0, 250)).join("\n");
+          const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 30").all();
+          if (krows.results?.length) {
+            const arch = krows.results.filter(r => r.key.startsWith("schema_") || r.key.startsWith("buddhi_") || r.key.startsWith("github_") || r.key.startsWith("self_repair") || r.key.startsWith("self_code") || r.key.startsWith("tool_") || r.key.startsWith("rule_"));
+            if (arch.length) system += "\n\nYOUR ARCHITECTURE:\n" + arch.map(r => r.key + ": " + r.content.slice(0, 200)).join("\n");
+          }
         } catch {}
       if (system.length > 80000) system = system.slice(0, 80000) + "\n[truncated]";
       await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
