@@ -777,6 +777,18 @@ async function runTool(env, actionId, tool, input) {
   return { ok: false, error: "Tool not implemented: " + tool };
 }
 
+async function trackProposalRetry(db, p) {
+  let retries = [];
+  try { retries = JSON.parse(p.research_sources || '[]'); } catch {}
+  retries.push(new Date().toISOString());
+  if (retries.length >= 5) {
+    await db.prepare("UPDATE proposals SET status='failed', decided_at=datetime('now'), research_sources=?1 WHERE id=?2").bind(JSON.stringify(retries), p.id).run();
+    return true;
+  }
+  await db.prepare("UPDATE proposals SET decided_at=datetime('now'), research_sources=?1 WHERE id=?2").bind(JSON.stringify(retries), p.id).run();
+  return false;
+}
+
 async function implementProposal(env, db, p, stamp) {
   if (p.resource_type !== "tool_code" && p.resource_type !== "core_architecture") {
     await db.prepare("UPDATE proposals SET status='executed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
@@ -799,61 +811,47 @@ async function implementProposal(env, db, p, stamp) {
     const meta = await metaResp.json();
     if (!meta.content) return { id: p.id, error: "GitHub no content" };
     const currentSource = atob(meta.content);
-    const sourceSlice = currentSource.slice(0, 8000);
+    const sourceSlice = currentSource.slice(0, 30000);
     const { title, what_diff: whatStr, how_diff: howStr } = p;
     const implBody = {
       messages: [
-        { role: "system", content: "You are Saraha's code engine. Cloudflare Worker restrictions: NO import/export/require. NO Node.js APIs (Buffer, process). Use fetch() for HTTP, btoa() for base64, env.X for secrets. Output a JSON object with: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}], imports: string}. Output ONLY the JSON, no markdown." },
-        { role: "user", content: "Source code:\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications." }
+        { role: "system", content: "You are Saraha's code engine. Cloudflare Worker restrictions: NO import/export/require. NO Node.js APIs (Buffer, process). Use fetch() for HTTP, btoa() for base64, env.X for secrets.\nOutput a JSON object: {replacements: [{old_string: string, new_string: string}]}\nEach replacement: old_string is exact unique text (30+ chars) from current source, new_string is its replacement.\nTo add new code: include the anchor text in both old_string and new_string, placing new code before/after it.\nOutput ONLY the JSON, no markdown." },
+        { role: "user", content: "Source code:\n\n" + sourceSlice + "\n\nProposal: " + (title||"") + "\n\nWhat: " + (whatStr||"") + "\n\nHow: " + (howStr||"") + "\n\nOutput JSON with replacements array." }
       ],
       temperature: 0.3,
-      max_tokens: 2048
+      max_tokens: 4096
     };
     const implResp = await callLLM(env, implBody);
     if (!implResp.ok) {
-      await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      await trackProposalRetry(db, p);
       return { id: p.id, error: "LLM call failed: " + implResp.status };
     }
     const implData = await implResp.json();
     let out = implData.choices?.[0]?.message?.content || "";
     out = out.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
     let plan;
-    try { plan = JSON.parse(out); } catch { return { id: p.id, error: "LLM output not JSON: " + out.slice(0,100) }; }
+    try { plan = JSON.parse(out); } catch { await trackProposalRetry(db, p); return { id: p.id, error: "LLM output not JSON: " + out.slice(0,100) }; }
     let newSource = currentSource;
-    if (plan.imports && typeof plan.imports === "string" && plan.imports.trim()) {
-      const firstLine = newSource.split("\n")[0];
-      if (firstLine && firstLine.trim().startsWith("const ")) newSource = plan.imports.trim() + "\n" + newSource;
-    }
-    if (plan.modifications && Array.isArray(plan.modifications)) {
-      for (const mod of plan.modifications) {
-        if (mod.old_code_prefix && mod.new_code) {
-          const idx = newSource.indexOf(mod.old_code_prefix);
-          if (idx >= 0) {
-            const afterNewline = newSource.indexOf("\n", idx);
-            let endIdx = newSource.indexOf("\n\n", afterNewline);
-            if (endIdx < 0) endIdx = newSource.length;
-            for (const candidate of [newSource.indexOf("\nasync function", afterNewline), newSource.indexOf("\nconst ", afterNewline), newSource.indexOf("\nfunction ", afterNewline)].filter(x => x > 0)) {
-              if (candidate < endIdx) endIdx = candidate + 1;
-            }
-            newSource = newSource.slice(0, idx) + mod.new_code + newSource.slice(endIdx);
-          }
+    if (plan.replacements && Array.isArray(plan.replacements)) {
+      for (const r of plan.replacements) {
+        if (r.old_string && r.new_string && r.old_string !== r.new_string && newSource.includes(r.old_string)) {
+          newSource = newSource.replace(r.old_string, r.new_string);
         }
       }
     }
-    if (plan.additions && Array.isArray(plan.additions)) {
-      for (const add of plan.additions) { if (add.code) newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1"); }
+    if (newSource === currentSource) {
+      await trackProposalRetry(db, p);
+      return { id: p.id, error: "No changes applied" };
     }
-    if (newSource === currentSource) return { id: p.id, error: "No changes applied" };
-    if (/require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) {
-      // Retry with simpler prompt - strip Node.js APIs
+    if (/\brequire\(|\bimport\b|\bBuffer\.|\bprocess\.|module\.exports/.test(newSource)) {
       newSource = currentSource;
       const retryBody = {
         messages: [
-          { role: "system", content: "CRITICAL: Output ONLY valid JavaScript. NO require(), NO import, NO export, NO Buffer, NO process. Use fetch() and btoa() only. Output a JSON object: {additions: [{function_name: string, code: string}], modifications: [{function_name: string, old_code_prefix: string, new_code: string}]}" },
-          { role: "user", content: "Fix this proposal to avoid Node.js APIs:\nTitle: " + (title||"") + "\nWhat: " + (whatStr||"") + "\nHow: " + (howStr||"") + "\n\nOutput JSON with additions and modifications." }
+          { role: "system", content: "CRITICAL: Output ONLY valid JavaScript. NO require(), NO import, NO Buffer, NO process. Use fetch() and btoa() only.\nOutput a JSON object: {replacements: [{old_string: string, new_string: string}]}\nEach replacement: old_string is exact unique text from current source, new_string is its replacement." },
+          { role: "user", content: "Source code:\n\n" + currentSource.slice(0, 30000) + "\n\nFix this proposal to avoid Node.js APIs:\nTitle: " + (title||"") + "\nWhat: " + (whatStr||"") + "\nHow: " + (howStr||"") + "\n\nOutput JSON with replacements array." }
         ],
         temperature: 0.2,
-        max_tokens: 1024
+        max_tokens: 2048
       };
       const retryResp = await callLLM(env, retryBody);
       if (retryResp.ok) {
@@ -862,29 +860,17 @@ async function implementProposal(env, db, p, stamp) {
         retryOut = retryOut.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
         try {
           const retryPlan = JSON.parse(retryOut);
-          if (retryPlan.modifications && Array.isArray(retryPlan.modifications)) {
-            for (const mod of retryPlan.modifications) {
-              if (mod.old_code_prefix && mod.new_code) {
-                const idx = newSource.indexOf(mod.old_code_prefix);
-                if (idx >= 0) {
-                  const afterNewline = newSource.indexOf("\n", idx);
-                  let endIdx = newSource.indexOf("\n\n", afterNewline);
-                  if (endIdx < 0) endIdx = newSource.length;
-                  for (const c of [newSource.indexOf("\nasync function", afterNewline), newSource.indexOf("\nconst ", afterNewline), newSource.indexOf("\nfunction ", afterNewline)].filter(x => x > 0)) {
-                    if (c < endIdx) endIdx = c + 1;
-                  }
-                  newSource = newSource.slice(0, idx) + mod.new_code + newSource.slice(endIdx);
-                }
+          if (retryPlan.replacements && Array.isArray(retryPlan.replacements)) {
+            for (const r of retryPlan.replacements) {
+              if (r.old_string && r.new_string && r.old_string !== r.new_string && newSource.includes(r.old_string)) {
+                newSource = newSource.replace(r.old_string, r.new_string);
               }
             }
           }
-          if (retryPlan.additions && Array.isArray(retryPlan.additions)) {
-            for (const add of retryPlan.additions) { if (add.code) newSource = newSource.replace(/\n};(\s*)$/, "\n};\n" + add.code + "\n$1"); }
-          }
         } catch {}
       }
-      if (newSource === currentSource || /require\(|import |export |Buffer\.|process\.|module\.exports/.test(newSource)) {
-        await db.prepare("UPDATE proposals SET status='failed', executed_at=datetime('now') WHERE id=?1").bind(p.id).run();
+      if (newSource === currentSource || /\brequire\(|\bimport\b|\bBuffer\.|\bprocess\.|module\.exports/.test(newSource)) {
+        await trackProposalRetry(db, p);
         return { id: p.id, error: "Contains Node.js APIs (retry also failed)" };
       }
     }
@@ -904,9 +890,10 @@ async function implementProposal(env, db, p, stamp) {
       return { id: p.id, status: "executed" };
     } else {
       const errText = (await writeResp.text() || "").slice(0,200);
+      await trackProposalRetry(db, p);
       return { id: p.id, error: "GitHub write failed: " + errText };
     }
-  } catch (e) { return { id: p.id, error: (e.message||e).slice(0,200) }; }
+  } catch (e) { await trackProposalRetry(db, p); return { id: p.id, error: (e.message||e).slice(0,200) }; }
 }
 
 export default {
@@ -1591,7 +1578,7 @@ For questions needing external data, output ONE tool command. For everything els
 
     if (url.pathname === "/brain/implement-pending" && req.method === "POST") {
       const stamp = Date.now();
-      const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
+      const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL AND (decided_at IS NULL OR decided_at < datetime('now','-30 minutes')) LIMIT 3").all();
       const results = [];
       for (const p of approvedP.results) {
         results.push(await implementProposal(env, env.DB, p, stamp));
@@ -1648,7 +1635,7 @@ For questions needing external data, output ONE tool command. For everything els
         }
       }
     }
-    const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL LIMIT 3").all();
+    const approvedP = await env.DB.prepare("SELECT * FROM proposals WHERE status='approved' AND executed_at IS NULL AND (decided_at IS NULL OR decided_at < datetime('now','-30 minutes')) LIMIT 3").all();
     for (const p of approvedP.results) {
       const r = await implementProposal(env, env.DB, p, stamp);
       if (r.status === "executed") { try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'executor','Auto-implemented #'||?2||': '||?3)").bind(stamp, p.id.toString(), p.title.slice(0,60)).run(); } catch {} }
