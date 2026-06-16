@@ -999,6 +999,10 @@ For questions needing external data, output ONE tool command. For everything els
         const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
+        try {
+          const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 10").all();
+          if (krows.results?.length) system += "\n\nYOUR ARCHITECTURE:\n" + krows.results.map(r => r.key + ": " + r.content.slice(0, 250)).join("\n");
+        } catch {}
       if (system.length > 80000) system = system.slice(0, 80000) + "\n[truncated]";
       await logStep(aid, "intellect", `Prompt assembled (${system.length} chars)`);
 
