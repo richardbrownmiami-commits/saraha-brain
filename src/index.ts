@@ -11,6 +11,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS emotion_reflection (id INTEGER PRIMARY KEY AUTOINCREMENT, emotion_key TEXT NOT NULL, reflection TEXT NOT NULL, insight TEXT, created_at TEXT DEFAULT (datetime('now')))`
 ];
 
 // Proposal: Enhance Error Handling Across the Board
