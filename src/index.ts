@@ -1347,6 +1347,11 @@ For questions needing external data, output ONE tool command. For everything els
       return json({ ok: true, cleared: true });
     }
 
+    if (url.pathname === "/brain/reseed" && req.method === "POST") {
+      await seedKnowledge(env.DB);
+      return json({ ok: true, message: "Knowledge reseeded" });
+    }
+
     if (url.pathname === "/brain/reset-unimplemented" && req.method === "POST") {
       const executed = await env.DB.prepare("SELECT p.id, p.title FROM proposals p LEFT JOIN authority_receipts r ON r.proposal_id=p.id AND r.outcome='success' WHERE p.status='executed' AND (r.approved_by IS NULL OR r.approved_by NOT LIKE '%implemented%') GROUP BY p.id ORDER BY p.id DESC LIMIT 10").all();
       const ids = executed.results.map(p => p.id);
