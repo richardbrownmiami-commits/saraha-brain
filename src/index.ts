@@ -10,6 +10,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS authority_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id INTEGER, approved_by TEXT DEFAULT 'human', outcome TEXT DEFAULT 'pending', metrics TEXT DEFAULT '{}', prev_ref INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS anti_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL UNIQUE, root_cause TEXT, fix TEXT, count INTEGER DEFAULT 1, linked_proposal_id INTEGER, created_at TEXT DEFAULT (datetime('now')), last_seen TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
 ];
 
 const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
@@ -307,7 +308,7 @@ const SEED_KNOWLEDGE = [
   { k: "governance_auto_execute", c: "Approved proposals auto-execute on next idle cycle: status set to executed, receipt created, happy emotion +1, logged as 'executor' step. If change causes errors, healer rolls back.", cat: "governance" },
   { k: "schema_d1_tables", c: "identity(key-value), proposals(title,what_diff,how_diff,resource_type,risk_pct,status), authority_receipts(approvals), anti_patterns(error tracking), brain_logs(step logs), thought_stream(thoughts), brain_knowledge(RAG). Identity keys include: master_cron_minutes, last_cycle_time, kill_switch, healer_backup_last.", cat: "structure" },
   { k: "schema_service_bindings", c: "BUDDHI_DWAR -> buddhi-dwar LLM gateway, SENTINEL -> saraha-sentinel tool classifier. Plain: BRAIN_KEY, BRAVE_API_KEY, GITHUB_PAT.", cat: "structure" },
-  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /status(GET), /avatar(GET), /evolve(POST), /brain/repair(PPOST) auto-fix stuck actions and clean old data.", cat: "structure" },
+  { k: "schema_endpoints", c: "Endpoints: /think(POST) cognition, /brain/emotions(GET), /brain/activity(GET), /brain/logs(GET), /brain/knowledge(GET), /brain/stream(GET), /brain/proposals(GET), /brain/proposals/:id(GET), /api/proposals/approve/:id(POST), /api/proposals/deny/:id(POST), /api/receipts(GET), /brain/anti-patterns(GET), /brain/feedback(GET), /brain/phase(GET), /brain/tree(GET) interactive tree, /brain/subagents(GET+POST) list/create sub-agents, /brain/subagents/:id(GET+DELETE) inspect/remove, /status(GET), /avatar(GET), /evolve(POST), /brain/repair(GET+POST) auto-fix stuck actions and clean old data.", cat: "structure" },
   { k: "schema_deployment", c: "Single-file ES module CF Worker (~837 lines). D1(id=4e4e5fde), BUDDHI_DWAR+SENTINEL services, BRAIN_KEY/BRAVE_API_KEY/GITHUB_PAT plain_text. Cron */2 * * * * (overridden by master_cron_minutes). Deploy via CF API PUT multipart.", cat: "structure" },
   { k: "schema_idle_cycle", c: "Every cron tick: check busy_until, drift emotions, adjust energy. Phase: sleeping(1-6am IST, dream +25 energy), tired(energy<=20, rest +15), curious if energy>40+energetic>=4, else awake. Auto-execute approved proposals. Check kill_switch, master cron interval. Self-heal: call /brain/repair to clean stuck actions. Research topic from anti-patterns or learnings. Call webSearch, get RAG context, get feedback (fbStr with recent user approvals/denials). Generate JSON proposal via LLM. governanceGate decides auto-exec vs pending. Track last_cycle_time.", cat: "structure" },
   { k: "rule_master_cron", c: "master_cron_minutes in identity overrides cron. Brain MUST NOT propose cron changes while active. Scheduled handler checks last_cycle_time and skips if interval not elapsed. Monitor sets this value.", cat: "governance" },
@@ -355,6 +356,11 @@ const SEED_KNOWLEDGE = [
   { k: "buddhi_dwar_check_health", c: "BUDDHI-DWAR HEALTH CHECK: Your callLLM function tries BUDDHI_DWAR first via service binding. If it returns non-200 or times out, buddhi-dwar is dead or not deployed. Deploy URL: buddhi-dwar.richard-brown-miami.workers.dev. Check /status or /health on that URL. If dead, redeploy using the deploy_worker tool.", cat: "self_repair" },
   { k: "buddhi_dwar_common_issues", c: "BUDDHI-DWAR COMMON ISSUES: (1) KV namespace not bound — add BF KV binding in wrangler.toml (2) No API keys configured — keys stored in KV under 'prov:groq:keys' etc (3) Gateway key not enabled — need a valid gateway key in 'gw:WORD' KV entries (4) Worker not deployed — call deploy_worker to fix (5) MASTER_KEY mismatch — check env.MASTER_KEY in CF dashboard", cat: "self_repair" },
   { k: "buddhi_dwar_self_heal", c: "SELF-HEAL BUDDHI-DWAR: When your /think returns 502 or falls through to Cohere (slow), buddhi-dwar is likely dead. Your self-healing sequence: (1) Check if buddhi-dwar is deployed by calling its URL (2) If not, github_read its source, then deploy_worker to redeploy (3) If deployed but unhealthy, github_read source + fix + redeploy. This is a critical self-repair task.", cat: "self_repair" },
+  { k: "subagents_what", c: "SUB-AGENTS are separate Cloudflare Workers that you create and manage. Each sub-agent is a mini-brain that handles specific tasks. You store their source in src/subagents/{name}.ts in your repo, deploy them via deploy_worker tool, and track them in the subagents D1 table. Use GET /brain/subagents to list, POST /brain/subagents to create, DELETE /brain/subagents/:id to remove.", cat: "structure" },
+  { k: "subagents_create", c: "TO CREATE A SUB-AGENT: (1) Choose a name (alphanumeric+hyphens). (2) Write the source code as a CF Worker ES module. (3) Use github_write to store at src/subagents/{name}.ts in your repo. (4) Register it: POST /brain/subagents with JSON {name, type, worker_name}. (5) Deploy: TOOL:deploy_worker(sub-agent-name|SOURCE_CODE). The sub-agent can communicate back to you via web_fetch to your /think endpoint.", cat: "tools" },
+  { k: "subagents_template", c: "BASIC SUB-AGENT TEMPLATE: export default { async fetch(req, env) { const url = new URL(req.url); if (url.pathname === '/ping') return new Response('pong'); const body = await req.text(); const resp = await fetch('https://saraha-brain.richard-brown-miami.workers.dev/think', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.BRAIN_KEY }, body: JSON.stringify({ input: body }) }); const data = await resp.json(); return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } }); } };", cat: "tools" },
+  { k: "subagents_workflow", c: "SUB-AGENT WORKFLOW: (1) You design the agent's purpose and behavior. (2) Write its source code. (3) Store in your repo via github_write. (4) Register via POST /brain/subagents. (5) Deploy via deploy_worker. (6) Assign tasks to it by POSTing to its URL. (7) It reports back to you via your /think endpoint. You can have many sub-agents for parallel work.", cat: "structure" },
+  { k: "subagents_management", c: "MANAGING SUB-AGENTS: Use these endpoints: GET /brain/subagents (list all sub-agents with status/name/type), POST /brain/subagents {name, type, worker_name} (register new), DELETE /brain/subagents/{id or name} (remove from registry). For actual deployment, use deploy_worker tool. For removing the worker from CF, use cf_api tool with DELETE /workers/scripts/{name}.", cat: "tools" },
 ];
 
 async function seedKnowledge(db) {
@@ -931,7 +937,7 @@ export default {
       const phase = await getBrainPhase(env.DB, emotions, reg);
       const proposalCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals").all()).results[0]?.c || 0;
       const executedCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM proposals WHERE status='executed'").all()).results[0]?.c || 0;
-      const dashboard = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saraha Brain</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:600px;width:100%}.stat{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid #21262d}.stat:last-child{border:none}.label{color:#8b949e;font-size:0.85rem}.val{font-weight:bold}.phase{color:#58a6ff;font-size:1.2rem}.links{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}h1{font-size:1.5rem;margin-bottom:1rem;color:#58a6ff}h2{font-size:1rem;margin-bottom:0.8rem;color:#8b949e}</style></head><body><h1>Saraha Brain</h1><div class="card"><h2>Status</h2><div class="stat"><span class="label">Phase</span><span class="val phase">${phase}</span></div><div class="stat"><span class="label">Energy</span><span class="val" style="color:${reg.energy > 60 ? '#10B981' : reg.energy > 30 ? '#F59E0B' : '#EF4444'}">${reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val" style="color:#10B981">${emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val" style="color:#F59E0B">${emotions.energetic}/10</span></div><div class="stat"><span class="label">Intelligent</span><span class="val" style="color:#2E86AB">${emotions.intelligent}/10</span></div><div class="stat"><span class="label">Proposals</span><span class="val">${proposalCount} (${executedCount} executed)</span></div></div><div class="card"><h2>Quick Links</h2><div class="links"><a href="/avatar">Avatar</a><a href="/brain/tree">Evolution Tree</a><a href="/brain/emotions">Emotions API</a><a href="/brain/proposals">Proposals API</a><a href="/brain/logs">Logs API</a><a href="/brain/feedback">Feedback API</a><a href="/brain/stream">Thought Stream</a><a href="/brain/phase">Phase API</a><a href="/brain/capabilities">Capabilities</a><a href="/status">Health Check</a></div></div></body></html>`;
+      const dashboard = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saraha Brain</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:600px;width:100%}.stat{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid #21262d}.stat:last-child{border:none}.label{color:#8b949e;font-size:0.85rem}.val{font-weight:bold}.phase{color:#58a6ff;font-size:1.2rem}.links{display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}h1{font-size:1.5rem;margin-bottom:1rem;color:#58a6ff}h2{font-size:1rem;margin-bottom:0.8rem;color:#8b949e}</style></head><body><h1>Saraha Brain</h1><div class="card"><h2>Status</h2><div class="stat"><span class="label">Phase</span><span class="val phase">${phase}</span></div><div class="stat"><span class="label">Energy</span><span class="val" style="color:${reg.energy > 60 ? '#10B981' : reg.energy > 30 ? '#F59E0B' : '#EF4444'}">${reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val" style="color:#10B981">${emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val" style="color:#F59E0B">${emotions.energetic}/10</span></div><div class="stat"><span class="label">Intelligent</span><span class="val" style="color:#2E86AB">${emotions.intelligent}/10</span></div><div class="stat"><span class="label">Proposals</span><span class="val">${proposalCount} (${executedCount} executed)</span></div></div><div class="card"><h2>Quick Links</h2><div class="links"><a href="/avatar">Avatar</a><a href="/brain/tree">Evolution Tree</a><a href="/brain/emotions">Emotions API</a><a href="/brain/proposals">Proposals API</a><a href="/brain/logs">Logs API</a><a href="/brain/feedback">Feedback API</a><a href="/brain/stream">Thought Stream</a><a href="/brain/phase">Phase API</a><a href="/brain/capabilities">Capabilities</a><a href="/brain/subagents">Sub-agents</a><a href="/status">Health Check</a></div></div></body></html>`;
       return new Response(dashboard, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
 
@@ -1275,6 +1281,40 @@ For questions needing external data, output ONE tool command. For everything els
       const emotions = await getEmotions(env.DB);
       const reg = await getRegulator(env.DB);
       return json({ fixes, health: { stuckRunning: actionCount, pendingProposals, energy: reg.energy, happy: emotions.happy, timestamp: Date.now() } });
+    }
+
+    if (url.pathname === "/brain/subagents" && req.method === "GET") {
+      const { results } = await env.DB.prepare("SELECT * FROM subagents ORDER BY created_at DESC").all();
+      return json({ subagents: results });
+    }
+
+    if (url.pathname === "/brain/subagents" && req.method === "POST") {
+      let body;
+      try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
+      const name = body?.name;
+      if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) return json({ error: "name required (alphanumeric, hyphens, underscores)" }, 400);
+      const agentType = body?.type || "worker";
+      const wName = body?.worker_name || "sub-" + name;
+      try {
+        await env.DB.prepare("INSERT INTO subagents (name, type, worker_name, source_path, status) VALUES (?1,?2,?3,?4,'created')").bind(name, agentType, wName, "src/subagents/" + name + ".ts").run();
+        const { results } = await env.DB.prepare("SELECT * FROM subagents WHERE name=?1").bind(name).all();
+        return json({ ok: true, subagent: results[0] });
+      } catch (e) { return json({ error: e.message }, 400); }
+    }
+
+    if (url.pathname.startsWith("/brain/subagents/") && req.method === "GET") {
+      const id = url.pathname.split("/").pop();
+      const { results } = await env.DB.prepare("SELECT * FROM subagents WHERE id=?1 OR name=?1").bind(id).all();
+      if (!results.length) return json({ error: "not found" }, 404);
+      return json({ subagent: results[0] });
+    }
+
+    if (url.pathname.startsWith("/brain/subagents/") && req.method === "DELETE") {
+      const id = url.pathname.split("/").pop();
+      const { results } = await env.DB.prepare("SELECT * FROM subagents WHERE id=?1 OR name=?1").bind(id).all();
+      if (!results.length) return json({ error: "not found" }, 404);
+      await env.DB.prepare("DELETE FROM subagents WHERE id=?1").bind(results[0].id).run();
+      return json({ ok: true, deleted: results[0].name });
     }
 
     if (url.pathname === "/brain/override") {
