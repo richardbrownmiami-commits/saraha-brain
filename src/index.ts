@@ -1008,7 +1008,7 @@ For questions needing external data, output ONE tool command. For everything els
         try {
           const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 30").all();
           if (krows.results?.length) {
-            const arch = krows.results.filter(r => r.key.startsWith("schema_") || r.key.startsWith("buddhi_") || r.key.startsWith("github_") || r.key.startsWith("self_repair") || r.key.startsWith("self_code") || r.key.startsWith("tool_") || r.key.startsWith("rule_"));
+            const arch = krows.results.filter(r => r.key.startsWith("schema_") || r.key.startsWith("buddhi_") || r.key.startsWith("github_") || r.key.startsWith("self_repair") || r.key.startsWith("self_code") || r.key.startsWith("tool_") || r.key.startsWith("rule_") || r.key.startsWith("subagent"));
             if (arch.length) system += "\n\nYOUR ARCHITECTURE:\n" + arch.map(r => r.key + ": " + r.content.slice(0, 200)).join("\n");
           }
         } catch {}
