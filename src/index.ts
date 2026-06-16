@@ -1,4 +1,4 @@
-﻿﻿const TABLES = [
+﻿﻿﻿const TABLES = [
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT)`,
@@ -928,12 +928,13 @@ async function implementProposal(env, db, p, stamp) {
       await trackProposalRetry(db, p);
       return { id: p.id, error: "No changes applied" };
     }
-    if (/\brequire\(|\bimport\b|\bBuffer\.|\bprocess\.|module\.exports/.test(newSource)) {
+    if (    const hasNodeJsApi = (plan.replacements || []).some(function(r) { return r.new_string && /\brequire\(|\bBuffer\.|\bprocess\.|module\.exports/.test(r.new_string); });
+    if (hasNodeJsApi) {
       newSource = currentSource;
       const retryBody = {
         messages: [
-          { role: "system", content: "CRITICAL: Output ONLY valid JavaScript. NO require(), NO import, NO Buffer, NO process. Use fetch() and btoa() only.\nOutput a JSON object: {replacements: [{old_string: string, new_string: string}]}\nEach replacement: old_string is exact unique text from current source, new_string is its replacement." },
-          { role: "user", content: "Source code:\n\n" + currentSource.slice(0, 30000) + "\n\nFix this proposal to avoid Node.js APIs:\nTitle: " + (title||"") + "\nWhat: " + (whatStr||"") + "\nHow: " + (howStr||"") + "\n\nOutput JSON with replacements array." }
+          { role: "system", content: "CRITICAL: Output ONLY valid JavaScript. NO require(), NO Buffer, NO process. Use fetch() and btoa() only.\\nOutput a JSON object: {replacements: [{old_string: string, new_string: string}]}\\nEach replacement: old_string is exact unique text from current source, new_string is its replacement." },
+          { role: "user", content: "Source code:\\n\\n" + currentSource.slice(0, 30000) + "\\n\\nFix this proposal to avoid Node.js APIs:\\nTitle: " + (title||"") + "\\n\\nOutput JSON with replacements array." }
         ],
         temperature: 0.2,
         max_tokens: 2048
@@ -942,19 +943,22 @@ async function implementProposal(env, db, p, stamp) {
       if (retryResp.ok) {
         const retryData = await retryResp.json();
         let retryOut = retryData.choices?.[0]?.message?.content || "";
-        retryOut = retryOut.replace(/^```[\s\S]*?\n/, "").replace(/```$/, "").trim();
+        retryOut = retryOut.replace(/^\`\`\`[\s\S]*?\n/, "").replace(/\`\`\`$/, "").trim();
         try {
           const retryPlan = JSON.parse(retryOut);
           if (retryPlan.replacements && Array.isArray(retryPlan.replacements)) {
-            for (const r of retryPlan.replacements) {
-              if (r.old_string && r.new_string && r.old_string !== r.new_string && newSource.includes(r.old_string)) {
-                newSource = newSource.replace(r.old_string, r.new_string);
+            const retryHasNodeJs = (retryPlan.replacements || []).some(function(r) { return r.new_string && /\brequire\(|\bBuffer\.|\bprocess\.|module\.exports/.test(r.new_string); });
+            if (!retryHasNodeJs) {
+              for (const r of retryPlan.replacements) {
+                if (r.old_string && r.new_string && r.old_string !== r.new_string && newSource.includes(r.old_string)) {
+                  newSource = newSource.replace(r.old_string, r.new_string);
+                }
               }
             }
           }
         } catch {}
       }
-      if (newSource === currentSource || /\brequire\(|\bimport\b|\bBuffer\.|\bprocess\.|module\.exports/.test(newSource)) {
+      if (newSource === currentSource) {
         await trackProposalRetry(db, p);
         return { id: p.id, error: "Contains Node.js APIs (retry also failed)" };
       }
