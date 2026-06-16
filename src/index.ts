@@ -1006,7 +1006,7 @@ For questions needing external data, output ONE tool command. For everything els
         const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
         if (overrides.length) system += "\n\nSelf-evolution changes applied:\n" + overrides.map(o => "- " + o.title + ": " + (o.how || "")).join("\n");
         try {
-          const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 50").all();
+          const krows = await env.DB.prepare("SELECT key, content FROM brain_knowledge WHERE category IN ('structure','tools','self_repair') ORDER BY key LIMIT 100").all();
           if (krows.results?.length) {
             const arch = krows.results.filter(r => r.key.startsWith("schema_") || r.key.startsWith("buddhi_") || r.key.startsWith("github_") || r.key.startsWith("self_repair") || r.key.startsWith("self_code") || r.key.startsWith("tool_") || r.key.startsWith("rule_") || r.key.startsWith("subagent"));
             if (arch.length) system += "\n\nYOUR ARCHITECTURE:\n" + arch.map(r => r.key + ": " + r.content.slice(0, 200)).join("\n");
@@ -1373,7 +1373,7 @@ For questions needing external data, output ONE tool command. For everything els
         const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge WHERE category=?1 ORDER BY key LIMIT 20").bind(cat).all();
         results = r.results;
       } else {
-        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 50").all();
+        const r = await env.DB.prepare("SELECT key, content, category FROM brain_knowledge ORDER BY category, key LIMIT 100").all();
         results = r.results;
       }
       return json({ entries: results });
