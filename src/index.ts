@@ -18,6 +18,15 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, tokens INTEGER DEFAULT 0, calls INTEGER DEFAULT 0, UNIQUE(date))`,
 ];
 
+// Proposal: Enhance Proposal Evaluation with Advanced Weighted Scoring
+
+// What: Why: To improve the accuracy and effectiveness of proposal evaluation, allowing for more informed decisions.
+// What: Modify the proposal evaluation function in the core architecture
+// Code: The existing proposal evaluation function will be modified to incorporate the new weighted scoring system.
+
+// How: How: Introduce a weighted scoring system that considers multiple factors, such as potential impact, risk level, and goal alignment.
+// Benefit: More accurate and effective proposal evaluation, leading to better decision-making.
+
 // Proposal: Optimize getEmotions function with advanced emotional state detection
 
 // What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
