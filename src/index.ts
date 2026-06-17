@@ -66,12 +66,14 @@ const EMO_DEFAULTS = {
 };
 
 async function getEmotions(db) {
+  // Anchor text: modify the getEmotions function in the main code file
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
   const result = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
     const key = r.key.replace("emotion_", "");
     if (key in result) result[key] = Math.min(parseInt(r.value) || result[key], RANGES[key][1]);
   }
+  // Anchor text: modify the getEmotions function in the main code file
   return result;
 }
 async function getState(db) {
