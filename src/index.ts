@@ -461,6 +461,7 @@ export default {
           if (parenMatch) {
             tool = parenMatch[1].trim();
             toolInput = parenMatch[2].trim();
+            toolInput = toolInput.replace(/^(query|url)\s*=\s*["']?(.*?)["']?$/i, "$2");
           } else {
             const parts = afterTool.split(":");
             tool = parts[0].trim();
