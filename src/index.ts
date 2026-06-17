@@ -136,6 +136,8 @@ async function runTool(env, tool, input) {
 
 const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913f3a2576a358054eba9a58a9573949" };
 
+const DEV_PROMPT = `You are Dev, a coding AI assistant working for Creator. You help build and improve Skytron. Be technical, practical, and concise. You work alongside Creator to evolve the brain. Never refuse a task — find a way. Answer as Dev, not Skytron.`;
+
 async function callLLM(env, body) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
@@ -412,9 +414,6 @@ export default {
           from = mentionMatch[1];
           from = from[0].toUpperCase() + from.slice(1).toLowerCase();
           input = mentionMatch[2];
-          const stored = `[${from}] ${input}`;
-          await storeMemory(env.DB, "user", stored);
-          return json({ result: null, handoff: from, user_message: input, stored: true });
         }
 
         const who = from || "Creator";
@@ -423,7 +422,7 @@ export default {
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
         const aid = r.results[0].id;
 
-        let prompt = SYSTEM_PROMPT;
+        let prompt = who === "Dev" ? DEV_PROMPT : SYSTEM_PROMPT;
         try {
           const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='prompt_override'").all();
           if (ov.results[0]?.value) prompt = ov.results[0].value;
