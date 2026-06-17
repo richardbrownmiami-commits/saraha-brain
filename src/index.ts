@@ -76,6 +76,15 @@ const EMO_DEFAULTS = {
 
 async function getEmotions(db) {
   // Anchor text: modify the getEmotions function in the main code file
+
+// Proposal: Migrate Emotions to Database Table
+
+// What: Why: Current hardcoded emotions are limited and inflexible, making it difficult to add or modify emotions.
+// What: Create a new table in the database to store emotions, and modify existing code to use this table.
+// Code: const EMOTIONS = [...]; // replace with database query
+
+// How: How: Create a new table called `emotions` with columns `id`, `name`, `range_min`, `range_max`, and `default_value`. Then, modify the `getEmotions` function to retrieve emotions from this table instead of the hardcoded values.
+// Benefit: Allow for easy addition, removal, or modification of emotions, and provide a more flexible and scalable way to manage emotions.
 // Proposal: Optimize getEmotions function with advanced emotional state detection
 
 // What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
