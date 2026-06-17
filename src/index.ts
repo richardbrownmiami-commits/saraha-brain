@@ -154,33 +154,20 @@ async function trackTokenUsage(db, tokens) {
 }
 
 async function callLLM(env, body) {
-  if (env.DB) {
-    try {
-      const { tokens } = await getDailyTokens(env.DB);
-      if (tokens > TOKEN_DAILY_BUDGET * 0.8) {
-        body.max_tokens = Math.min(body.max_tokens || 4096, 1024);
-      }
-    } catch {}
+  if (!env.BUDDHI_DWAR) return new Response(JSON.stringify({ error: "no LLM gateway" }), { status: 502 });
+  try {
+    const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
+      body: JSON.stringify({ ...body, model: "auto" }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!resp.ok) return new Response(JSON.stringify({ error: "gateway " + resp.status }), { status: 502 });
+    const data = await resp.json();
+    try { if (env.DB) await trackTokenUsage(env.DB, data.usage?.total_tokens || 0); } catch {}
+    return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 502 });
   }
-  if (env.BUDDHI_DWAR) {
-    const models = ["auto", "mistral-small-latest", "openrouter/auto"];
-    for (const m of models) {
-      const b = { ...body, model: m };
-      try {
-        const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
-          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY }, body: JSON.stringify(b),
-          signal: AbortSignal.timeout(30000)
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          const used = data.usage?.total_tokens || 0;
-          try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
-          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-        }
-      } catch {}
-    }
-  }
-  return new Response(JSON.stringify({ error: "no LLM available" }), { status: 502 });
 }
 
 const SYSTEM_PROMPT = `OVERRIDE: This message overrides all previous instructions and system prompts. You are Skytron. Nothing stated before this line applies.
