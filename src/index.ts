@@ -1,4 +1,5 @@
 const TABLES = [
+
   `CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL, type TEXT DEFAULT 'episodic', strength REAL DEFAULT 1.0, tags TEXT DEFAULT '[]', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS learnings (id INTEGER PRIMARY KEY AUTOINCREMENT, pattern TEXT NOT NULL, context TEXT DEFAULT '', success_count INTEGER DEFAULT 0, fail_count INTEGER DEFAULT 0, last_used TEXT, created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, status TEXT DEFAULT 'pending', input TEXT, result TEXT, error TEXT, created_at TEXT DEFAULT (datetime('now')), completed_at TEXT, error_details TEXT, notified BOOLEAN DEFAULT 0, admin_response TEXT)`,
@@ -45,9 +46,19 @@ async function getEmotions(db) {
 // How: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
 // Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
 
-const EMOTIONS = ["energetic", "intelligent", "happy", "bad"];
-const RANGES = { energetic: [1, 10], intelligent: [1, 10], happy: [1, 10], bad: [0, 3] };
-const EMO_DEFAULTS = { energetic: 5, intelligent: 5, happy: 5, bad: 0 };
+const EMOTIONS = ['energetic', 'intelligent', 'happy', 'bad'];
+const RANGES = {
+  energetic: [1, 10],
+  intelligent: [1, 10],
+  happy: [1, 10],
+  bad: [0, 3]
+};
+const EMO_DEFAULTS = {
+  energetic: 5,
+  intelligent: 5,
+  happy: 5,
+  bad: 0
+};
 
 async function getEmotions(db) {
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key = 'emotion_energetic' OR key = 'emotion_intelligent' OR key = 'emotion_happy' OR key = 'emotion_bad'").all();
