@@ -153,29 +153,6 @@ async function trackTokenUsage(db, tokens) {
   } catch {}
 }
 
-async function callLLMDirect(env, body, model) {
-  let groqKey = env.GROQ_API_KEY;
-  if (!groqKey) {
-    try { const kr = await env.DB.prepare("SELECT value FROM identity WHERE key='groq_api_key'").all(); groqKey = kr.results[0]?.value; } catch {}
-  }
-  if (groqKey) {
-    const groqBody = { model: model || "llama-3.1-8b-instant", messages: body.messages, temperature: body.temperature || 0.3, max_tokens: body.max_tokens || 4096 };
-    try {
-      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
-        body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const used = data.usage?.total_tokens || body.max_tokens || 4096;
-        try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
-        return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-      }
-    } catch {}
-  }
-  return null;
-}
-
 async function callLLM(env, body) {
   if (env.DB) {
     try {
@@ -203,10 +180,6 @@ async function callLLM(env, body) {
       } catch {}
     }
   }
-  let direct = await callLLMDirect(env, body, "llama-3.3-70b-versatile");
-  if (direct) return direct;
-  direct = await callLLMDirect(env, body, "llama-3.1-8b-instant");
-  if (direct) return direct;
   return new Response(JSON.stringify({ error: "no LLM available" }), { status: 502 });
 }
 
