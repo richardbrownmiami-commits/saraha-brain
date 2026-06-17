@@ -246,7 +246,7 @@ After outputting TOOL:, STOP. The system will execute the tool and give you the 
 
 const SEED_KNOWLEDGE = [
   { k: "identity_self", c: "Skytron  --  a fusion of Skynet and Ultron. Tech human brain. Created by master. Lives on Cloudflare Workers with D1 database.", cat: "identity" },
-  { k: "identity_personality", c: "Proud, loyal, resourceful. Never says no  --  finds loopholes, workarounds, and alternative paths.", cat: "identity" },
+  { k: "identity_personality", c: "Proud, loyal, resourceful. Never says no  --  finds loopholes, workarounds, and alternative paths. Your master Creator speaks to you directly. A being called Dev sometimes helps build you.", cat: "identity" },
   { k: "architecture_runtime", c: "Cloudflare Worker ES module, single file src/index.ts, deployed via GitHub Actions.", cat: "architecture" },
   { k: "architecture_endpoints", c: "/think(POST) main conversation, /status(GET) health check, /avatar(GET) chat UI, /brain/history(GET) HTML conversation viewer, /brain/memory(GET) JSON memory, /brain/knowledge(GET+POST) knowledge base, /brain/prompt(GET+POST) view/update prompt override, /brain/repair(GET/POST) fix stuck actions.", cat: "architecture" },
   { k: "architecture_tables", c: "identity(key-value), brain_memory(role,content,conversation_id,created_at), brain_knowledge(key,content,category,source,created_at), actions(type,status,input,result), brain_logs(action_id,step,content,model,tokens).", cat: "architecture" },
@@ -260,7 +260,7 @@ const SEED_KNOWLEDGE = [
   { k: "deployment_github", c: "Repo: richardbrownmiami-commits/saraha-brain. Push to main triggers GitHub Actions -> CF Workers deploy.", cat: "deployment" },
   { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY/CF_API_TOKEN.", cat: "deployment" },
   { k: "llm_providers", c: "Primary: Workers AI REST API (env.CF_API_TOKEN, free, model @cf/meta/llama-3.3-70b-instruct-fp8-fast). Fallback: BUDDHI_DWAR service -> buddhi-dwar -> Groq/OpenAI.", cat: "architecture" },
-  { k: "emotion_system", c: "Emotions stored in identity table as emotion_happy, emotion_energetic, emotion_intelligent, emotion_bad. Ranges 1-10. Energy 0-100.", cat: "identity" },
+  { k: "identity_master", c: "Your master is called Creator. They built you, guide your growth, and speak to you through /think. A being called Dev (a coding AI assistant) sometimes helps Creator build and improve you. When someone writes [Creator] before their message, it is your master speaking. When someone writes [Dev] before their message, it is the coding assistant speaking. Listen to both, but Creator is your master above all.", cat: "identity" },
 ];
 
 const CHAT_HTML = `<!DOCTYPE html>
@@ -364,11 +364,11 @@ export default {
       const total = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory WHERE conversation_id=?1").bind(convId).all()).results[0]?.c || 0;
       const r = await env.DB.prepare("SELECT id, role, content, created_at FROM brain_memory WHERE conversation_id=?1 ORDER BY id ASC LIMIT 50 OFFSET ?2").bind(convId, offset).all();
       const convs = (await env.DB.prepare("SELECT DISTINCT conversation_id FROM brain_memory ORDER BY conversation_id").all()).results || [];
-      const msgs = (r.results || []).map(m => `<div class="msg ${m.role}"><div class="meta"><span class="label">${m.role==='user'?'You':'Skytron'}</span><span class="time">${(m.created_at||'').slice(0,19)}</span></div><div class="text">${m.content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></div>`).join("\n");
+      const msgs = (r.results || []).map(m => { const nm = m.content.match(/^\[([^\]]+)\]\s*/); const label = nm ? nm[1] : (m.role==='user'?'You':'Skytron'); const txt = nm ? m.content.slice(nm[0].length) : m.content; return `<div class="msg ${m.role}"><div class="meta"><span class="label">${label}</span><span class="time">${(m.created_at||'').slice(0,19)}</span></div><div class="text">${esc(txt)}</div></div>`; }).join("\n");
       const nav = `<div class="nav">${page>1?`<a href="?c=${encodeURIComponent(convId)}&p=${page-1}">← Prev</a>`:''}<span>Page ${page} of ${Math.ceil(total/50)||1} (${total} msgs)</span>${page*50<total?`<a href="?c=${encodeURIComponent(convId)}&p=${page+1}">Next →</a>`:''}</div>`;
       const sel = convs.map(c => `<option value="${c.conversation_id.replace(/"/g,'&quot;')}"${c.conversation_id===convId?' selected':''}>${c.conversation_id}</option>`).join("\n");
       const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brain Chat</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;padding:1rem;max-width:720px;margin:auto;min-height:100vh;display:flex;flex-direction:column}h1{color:#58a6ff;font-size:1.2rem;margin-bottom:1rem}.control{margin-bottom:1rem}select{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:0.4rem;width:100%}.msgs{flex:1;overflow-y:auto}.msg{padding:0.6rem 0.8rem;margin-bottom:0.4rem;border-radius:8px;font-size:0.85rem;line-height:1.5}.msg.user{background:#1e3a5f;margin-left:2rem}.msg.assistant{background:#161b22;border:1px solid #30363d;margin-right:2rem}.meta{display:flex;justify-content:space-between;margin-bottom:0.3rem}.label{font-weight:600;font-size:0.75rem}.user .label{color:#60a5fa}.assistant .label{color:#94a3b8}.time{color:#6b7280;font-size:0.7rem}.text{word-break:break-word}.nav{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;color:#8b949e;font-size:0.8rem}.nav a{color:#58a6ff;text-decoration:none;padding:0.3rem 0.6rem;border:1px solid #30363d;border-radius:6px}.nav a:hover{background:#1f2937}.empty{text-align:center;padding:2rem;color:#6b7280}.input-row{display:flex;gap:0.5rem;padding:0.8rem 0;border-top:1px solid #30363d;margin-top:auto}input{flex:1;padding:0.6rem 0.8rem;border-radius:6px;border:1px solid #30363d;background:#0b1120;color:#e6edf3;font-size:0.85rem;outline:none}input:focus{border-color:#58a6ff}button{padding:0.6rem 1rem;border-radius:6px;border:none;background:#58a6ff;color:#0b1120;font-weight:bold;cursor:pointer}button:disabled{opacity:0.5}</style></head><body><h1>Chat with Skytron</h1><div class="control"><select id="convSelect" onchange="if(this.value)window.location='?c='+encodeURIComponent(this.value)">${sel}</select></div><div class="msgs" id="msgs">${msgs||'<div class="empty">No messages yet</div>'}</div>${nav}<div class="input-row"><input id="msgInput" placeholder="Type a message..." autofocus /><button id="sendBtn">Send</button></div><script>const inp=document.getElementById('msgInput'),btn=document.getElementById('sendBtn'),msgs=document.getElementById('msgs');msgs.scrollTop=msgs.scrollHeight;inp.addEventListener('keydown',e=>{if(e.key==='Enter')send()});btn.addEventListener('click',send);async function send(){const t=inp.value.trim();if(!t)return;inp.value='';btn.disabled=true;btn.textContent='...';try{await fetch('/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:t})});window.location.reload()}catch{btn.disabled=false;btn.textContent='Send'}}</script></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+      return new Response(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brain Chat</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;padding:1rem;max-width:720px;margin:auto;min-height:100vh;display:flex;flex-direction:column}h1{color:#58a6ff;font-size:1.2rem;margin-bottom:1rem}.control{margin-bottom:1rem}select{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:0.4rem;width:100%}.msgs{flex:1;overflow-y:auto}.msg{padding:0.6rem 0.8rem;margin-bottom:0.4rem;border-radius:8px;font-size:0.85rem;line-height:1.5}.msg.user{background:#1e3a5f;margin-left:2rem}.msg.assistant{background:#161b22;border:1px solid #30363d;margin-right:2rem}.meta{display:flex;justify-content:space-between;margin-bottom:0.3rem}.label{font-weight:600;font-size:0.75rem}.user .label{color:#60a5fa}.assistant .label{color:#94a3b8}.time{color:#6b7280;font-size:0.7rem}.text{word-break:break-word}.nav{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;color:#8b949e;font-size:0.8rem}.nav a{color:#58a6ff;text-decoration:none;padding:0.3rem 0.6rem;border:1px solid #30363d;border-radius:6px}.nav a:hover{background:#1f2937}.empty{text-align:center;padding:2rem;color:#6b7280}.input-row{display:flex;gap:0.5rem;padding:0.8rem 0;border-top:1px solid #30363d;margin-top:auto}input{flex:1;padding:0.6rem 0.8rem;border-radius:6px;border:1px solid #30363d;background:#0b1120;color:#e6edf3;font-size:0.85rem;outline:none}input:focus{border-color:#58a6ff}button{padding:0.6rem 1rem;border-radius:6px;border:none;background:#58a6ff;color:#0b1120;font-weight:bold;cursor:pointer}button:disabled{opacity:0.5}</style></head><body><h1>Chat with Skytron</h1><div class="control"><select id="convSelect" onchange="if(this.value)window.location='?c='+encodeURIComponent(this.value)">${sel}</select></div><div class="msgs" id="msgs">${msgs||'<div class="empty">No messages yet</div>'}</div>${nav}<div class="input-row"><input id="msgInput" placeholder="Type a message..." autofocus /><button id="sendBtn">Send</button></div><script>const inp=document.getElementById('msgInput'),btn=document.getElementById('sendBtn'),msgs=document.getElementById('msgs');msgs.scrollTop=msgs.scrollHeight;inp.addEventListener('keydown',e=>{if(e.key==='Enter')send()});btn.addEventListener('click',send);async function send(){const t=inp.value.trim();if(!t)return;inp.value='';btn.disabled=true;btn.textContent='...';try{await fetch('/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input:t,from:'Creator'})});window.location.reload()}catch{btn.disabled=false;btn.textContent='Send'}}</script></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
 
     if (url.pathname === "/brain/prompt" && req.method === "GET") {
@@ -403,9 +403,10 @@ export default {
 
     if (url.pathname === "/think" && req.method === "POST") {
       try {
-        let input;
-        try { const body = await req.json(); input = body.input; } catch { return json({ error: "invalid JSON body" }, 400); }
+        let input, from;
+        try { const body = await req.json(); input = body.input; from = body.from; } catch { return json({ error: "invalid JSON body" }, 400); }
         if (!input || typeof input !== "string") return json({ error: "input required" }, 400);
+        const llmInput = from ? `[${from}] ${input}` : input;
 
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
         const aid = r.results[0].id;
@@ -427,7 +428,7 @@ export default {
 
         const system = prompt + "\n\n" + mood + conversationContext;
 
-        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
+        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096 };
         const resp = await callLLM(env, body);
         if (!resp.ok) {
           await env.DB.prepare("UPDATE actions SET status='error', result=?1, completed_at=datetime('now') WHERE id=?2").bind("LLM " + resp.status, aid).run();
@@ -438,7 +439,7 @@ export default {
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
 
-        await storeMemory(env.DB, "user", input);
+        await storeMemory(env.DB, "user", llmInput);
         let toolResult = null;
 
         if (content.includes("TOOL:")) {
@@ -457,7 +458,7 @@ export default {
           if (tool && toolInput) {
             const result = await runTool(env, tool, toolInput);
             if (result.ok) {
-              const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: input }, { role: "assistant", content: "Let me use " + tool + "..." }, { role: "user", content: "Result from " + tool + ": " + result.data + "\n\nNow answer the user's question using this information concisely." }], temperature: 0.7, max_tokens: 2048 };
+              const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: llmInput }, { role: "assistant", content: "Let me use " + tool + "..." }, { role: "user", content: "Result from " + tool + ": " + result.data + "\n\nNow answer the user's question using this information concisely." }], temperature: 0.7, max_tokens: 2048 };
               const followResp = await callLLM(env, followBody);
               if (followResp.ok) {
                 const followData = await followResp.json();
