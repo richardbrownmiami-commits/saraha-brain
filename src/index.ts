@@ -71,7 +71,6 @@ async function getEmotions(db) {
   return result;
 }
 async function getState(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
   const emotions = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
@@ -1009,7 +1008,7 @@ async function implementProposal(env, db, p, stamp) {
       await trackProposalRetry(db, p);
       return { id: p.id, error: "No changes applied" };
     }
-    if (    const hasNodeJsApi = (plan.replacements || []).some(function(r) { return r.new_string && /\brequire\(|\bBuffer\.|\bprocess\.|module\.exports/.test(r.new_string); });
+    const hasNodeJsApi = (plan.replacements || []).some(function(r) { return r.new_string && /\brequire\(|\bBuffer\.|\bprocess\.|module\.exports/.test(r.new_string); });
     if (hasNodeJsApi) {
       newSource = currentSource;
       const retryBody = {
