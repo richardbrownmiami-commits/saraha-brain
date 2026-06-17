@@ -61,7 +61,7 @@ const EMO_DEFAULTS = {
 };
 
 async function getEmotions(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key = 'emotion_energetic' OR key = 'emotion_intelligent' OR key = 'emotion_happy' OR key = 'emotion_bad'").all();
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
   const result = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
     const key = r.key.replace("emotion_", "");
