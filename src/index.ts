@@ -20,10 +20,6 @@ const TABLES = [
 
 // Proposal: Optimize getEmotions Function with Improved Error Handling
 
-// What: Why: The current getEmotions function lacks robust error handling, which can lead to unexpected behavior or crashes if the database query fails or returns unexpected results. Improving error handling will make the function more reliable and maintainable.
-// What: skytron.js -> getEmotions function
-// Code: const rows = await db.prepare("SELECT key, value FROM emotions").all();
-
 // How: How: Add try-catch block to handle potential errors during database query execution. Log the error and return a default value or an empty result set if an error occurs.
 // Benefit: Improved robustness and reliability of the getEmotions function, reducing the likelihood of crashes or unexpected behavior due to database query errors.
 
@@ -120,7 +116,7 @@ async function getEmotions(db) {
   return result;
 }
 async function getState(db) {
-  const rows = await db.prepare("SELECT key, value FROM emotions").all();
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence') OR key LIKE 'emotion_%'").all();
   const emotions = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
     const key = r.key.replace("emotion_", "");
@@ -137,12 +133,12 @@ async function updateEmotion(db, name, delta) {
   const emotions = await getEmotions(db);
   const [min, max] = RANGES[name];
   const newVal = Math.max(min, Math.min(max, emotions[name] + delta));
-  await db.prepare("INSERT INTO emotions (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
+  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES (?1, ?2, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = datetime('now')").bind("emotion_" + name, newVal.toString()).run();
   return newVal;
 }
 
 async function getRegulator(db) {
-  const rows = await db.prepare("SELECT key, value FROM emotions").all();
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key IN ('energy','confidence')").all();
   const vals = { energy: 100, confidence: 50 };
   for (const r of rows.results) vals[r.key] = parseFloat(r.value) || vals[r.key];
   return { energy: vals.energy, confidence: vals.confidence };
@@ -150,7 +146,7 @@ async function getRegulator(db) {
 async function adjustEnergy(db, delta) {
   const { energy } = await getRegulator(db);
   const newVal = Math.max(0, Math.min(100, energy + delta));
-  await db.prepare("INSERT INTO emotions (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
+  await db.prepare("INSERT INTO identity (key, value, updated_at) VALUES ('energy', ?1, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = ?1, updated_at = datetime('now')").bind(newVal.toString()).run();
 }
 
 function describeMood(emotions, energy) {
