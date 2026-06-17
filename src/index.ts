@@ -44,7 +44,7 @@ async function getEmotions(db) {
 // What: Why: To improve the reliability and resilience of the getEmotions function, ensuring it can handle unexpected inputs and errors
 // What: Modify the getEmotions function in the brain.js file
 // Code: async function getEmotions(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'`).all(); ... }
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all(); ... }
 
 // How: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
 // Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
@@ -73,7 +73,7 @@ async function getEmotions(db) {
   return result;
 }
 async function getState(db) {
-  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'`).all();
+  const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%' OR key IN ('energy','confidence')").all();
   const emotions = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
