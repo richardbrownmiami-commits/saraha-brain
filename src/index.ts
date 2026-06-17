@@ -1317,7 +1317,7 @@ For questions needing external data, output ONE tool command. For everything els
       } catch (e) { 
         try { await logStep(typeof aid !== 'undefined' ? aid : 0, "error", `Think error: ${e.message} | stack: ${(e.stack || "").slice(0, 300)}`); } catch {}
         try { await logStep(typeof aid !== 'undefined' ? aid : 0, 'error', 'Think error: ' + e.message); } catch {}
-        try { if (typeof aid !== 'undefined') await env.DB.prepare('UPDATE actions SET status=''error'', result=?1, completed_at=datetime(''now'') WHERE id=?2').bind(e.message, aid).run(); } catch {}
+        try { if (typeof aid !== 'undefined') await env.DB.prepare("UPDATE actions SET status='error', result=?1, completed_at=datetime('now') WHERE id=?2").bind(e.message, aid).run(); } catch {}
       }
     }
 
