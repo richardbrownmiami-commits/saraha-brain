@@ -341,9 +341,6 @@ async function callLLM(env, body) {
   if (env.DB) {
     try {
       const { tokens } = await getDailyTokens(env.DB);
-      if (tokens >= TOKEN_DAILY_BUDGET) {
-        return new Response(JSON.stringify({ error: "daily token budget exhausted", choices: [{ message: { content: "[Daily token budget exhausted. Try again tomorrow or use a shorter query.]" } }] }), { headers: { "Content-Type": "application/json" } });
-      }
       if (tokens > TOKEN_DAILY_BUDGET * 0.8) {
         body.max_tokens = Math.min(body.max_tokens || 2048, 512);
       }
