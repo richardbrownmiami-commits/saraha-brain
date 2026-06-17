@@ -21,11 +21,6 @@ const TABLES = [
 // Proposal: Optimize getEmotions function with advanced emotional state detection
 
 // What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
-// What: update getEmotions function in emotions.js file
-// Code: // emotions.js
-async function getEmotions(db) {
-  // TO DO: implement advanced emotional state detection algorithm
-}
 
 // How: How: Implement a more sophisticated emotional state detection algorithm, incorporating machine learning techniques and edge cases
 // Benefit: Improved accuracy, reduced errors, and enhanced emotional state detection
