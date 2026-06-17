@@ -18,6 +18,15 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, tokens INTEGER DEFAULT 0, calls INTEGER DEFAULT 0, UNIQUE(date))`,
 ];
 
+// Proposal: Optimize getEmotions Function with Improved Error Handling
+
+// What: Why: The current getEmotions function lacks robust error handling, which can lead to unexpected behavior or crashes if the database query fails or returns unexpected results. Improving error handling will make the function more reliable and maintainable.
+// What: skytron.js -> getEmotions function
+// Code: const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+
+// How: How: Add try-catch block to handle potential errors during database query execution. Log the error and return a default value or an empty result set if an error occurs.
+// Benefit: Improved robustness and reliability of the getEmotions function, reducing the likelihood of crashes or unexpected behavior due to database query errors.
+
 // Proposal: Enhance Emotion Retrieval with Default Values
 
 // What: Why: The current implementation of getEmotions does not handle cases where emotions are not found or are in an inconsistent state, which can lead to errors or unexpected behavior.
