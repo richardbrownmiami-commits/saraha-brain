@@ -31,6 +31,15 @@ const TABLES = [
 
 // What: Why: The current implementation of getEmotions does not handle cases where emotions are not found or are in an inconsistent state, which can lead to errors or unexpected behavior.
 // What: Modify the getEmotions function in the main code file
+
+// Proposal: Enhance Error Handling and Logging in getEmotions Function
+
+// What: Why: Improve robustness and debuggability of the getEmotions function
+// What: Modify the getEmotions function in the main code file
+// Code: async function getEmotions(db) { ... }
+
+// How: How: Add try-catch blocks and log errors using the brain_logs table
+// Benefit: Improved error handling and logging will enable better diagnosis and resolution of issues
 // Code: const result = rows.reduce((acc, row) => ({ ...acc, [row.key.replace('emotion_', '')]: row.value }), {});
 
 // How: How: Modify the getEmotions function to use the EMO_DEFAULTS object to provide default values for emotions that are not found in the database. This can be achieved by using the optional chaining operator (?.) to retrieve the value from the rows object, and if it is undefined, use the default value from the EMO_DEFAULTS object.
@@ -40,6 +49,15 @@ const TABLES = [
 
 // What: Why: To improve the accuracy and effectiveness of proposal evaluation, allowing for more informed decisions.
 // What: Modify the proposal evaluation function in the core architecture
+
+// Proposal: Enhance Proposal Evaluation with Advanced Weighted Scoring
+
+// What: Why: To improve the accuracy and effectiveness of proposal evaluation, allowing for more informed decisions.
+// What: Modify the proposal evaluation function in the core architecture
+// Code: The existing proposal evaluation function will be modified to incorporate the new weighted scoring system.
+
+// How: How: Introduce a weighted scoring system that considers multiple factors, such as potential impact, risk level, and goal alignment.
+// Benefit: More accurate and effective proposal evaluation, leading to better decision-making.
 // Code: The existing proposal evaluation function will be modified to incorporate the new weighted scoring system.
 
 // How: How: Introduce a weighted scoring system that considers multiple factors, such as potential impact, risk level, and goal alignment.
@@ -50,7 +68,26 @@ const TABLES = [
 // What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
 
 // How: How: Implement a more sophisticated emotional state detection algorithm, incorporating machine learning techniques and edge cases
+
+// Proposal: Optimize getEmotions function with advanced emotional state detection
+
+// What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
+
+// How: How: Implement a more sophisticated emotional state detection algorithm, incorporating machine learning techniques and edge cases
 // Benefit: Improved accuracy, reduced errors, and enhanced emotional state detection
+
+// Proposal: Optimize getEmotions function with advanced emotional state detection
+
+// What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
+
+// How: How: Implement a more sophisticated emotional state detection algorithm, incorporating machine learning techniques and edge cases
+// Benefit: Improved accuracy, reduced errors, and enhanced emotional state detection
+// Benefit: Improved accuracy, reduced errors, and enhanced emotional state detection
+
+// Proposal: Enhance Advanced Error Logging and Notification
+
+// What: Why: User decisions suggest a high value on robust error handling and input validation, but the current implementation may not be effective
+// What: Modify the Actions Table to include additional error logging and notification mechanisms
 
 // Proposal: Enhance Advanced Error Logging and Notification
 
@@ -60,11 +97,23 @@ const TABLES = [
 
 // How: How: Add a new column to the Actions Table to store detailed error information, and implement a notification system to alert users of errors
 // Benefit: Improved error handling and logging capabilities, allowing for better diagnosis and resolution of issues
+// Code: Modify the actions table to include a new column for error information, e.g. `ALTER TABLE actions ADD COLUMN error_details TEXT`
+
+// How: How: Add a new column to the Actions Table to store detailed error information, and implement a notification system to alert users of errors
+// Benefit: Improved error handling and logging capabilities, allowing for better diagnosis and resolution of issues
 
 // Proposal: Enhance getEmotions function with robust error handling and input validation
 
 // What: Why: To improve the reliability and resilience of the getEmotions function, ensuring it can handle unexpected inputs and errors
 // What: Modify the getEmotions function in the brain.js file
+
+// Proposal: Enhance getEmotions function with robust error handling and input validation
+
+// What: Why: To improve the reliability and resilience of the getEmotions function, ensuring it can handle unexpected inputs and errors
+// What: Modify the getEmotions function in the brain.js file
+// Code: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
+
+// Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
 
 // How: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
 // Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
@@ -86,10 +135,38 @@ const EMO_DEFAULTS = {
 async function getEmotions(db) {
   // Anchor text: modify the getEmotions function in the main code file
 
+// Proposal: Enhance Emotion Retrieval with Default Values
+
+// What: Why: The current implementation of getEmotions does not handle cases where emotions are not found or are in an inconsistent state, which can lead to errors or unexpected behavior.
+// What: Modify the getEmotions function in the main code file
+// Code: const result = rows.reduce((acc, row) => ({ ...acc, [row.key.replace('emotion_', '')]: row.value }), {});
+
+// How: How: Modify the getEmotions function to use the EMO_DEFAULTS object to provide default values for emotions that are not found in the database. This can be achieved by using the optional chaining operator (?.) to retrieve the value from the rows object, and if it is undefined, use the default value from the EMO_DEFAULTS object.
+// Benefit: This change will ensure that the getEmotions function always returns a consistent set of emotions, even if some emotions are not found in the database.
+
+// Proposal: Optimize getEmotions function with Improved Error Handling
+
+// What: Why: The current getEmotions function lacks robust error handling, which can lead to unexpected behavior or crashes if the database query fails or returns unexpected results. Improving error handling will make the function more reliable and maintainable.
+// What: skytron.js -> getEmotions function
+// Code: const rows = await db.prepare("SELECT key, value FROM emotions").all();
+
+// How: How: Add try-catch block to handle potential errors during database query execution. Log the error and return a default value or an empty result set if an error occurs.
+// Benefit: Improved robustness and reliability of the getEmotions function, reducing the likelihood of crashes or unexpected behavior due to database query errors.
+
 // Proposal: Optimize getEmotions function for faster execution
 
 // What: Why: Enhance performance and reliability of getEmotions function
 // What: Modify getEmotions function in src/getEmotions.js to use a more efficient database query
+
+// Proposal: Optimize getEmotions function for faster execution
+
+// What: Why: Enhance performance and reliability of getEmotions function
+// What: Modify getEmotions function in src/getEmotions.js to use a more efficient database query
+// Code: // Current query
+const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
+
+// How: How: Replace the current query with a more optimized one using database indexes
+// Benefit: Improved performance and reduced load on the database
 // Code: // Current query
 const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
 
@@ -109,6 +186,15 @@ const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'e
 
 // What: Why: Current hardcoded emotions are limited and inflexible, making it difficult to add or modify emotions.
 // What: Create a new table in the database to store emotions, and modify existing code to use this table.
+
+// Proposal: Migrate Emotions to Database Table
+
+// What: Why: Current hardcoded emotions are limited and inflexible, making it difficult to add or modify emotions.
+// What: Create a new table in the database to store emotions, and modify existing code to use this table.
+// Code: const EMOTIONS = [...]; // replace with database query
+
+// How: How: Create a new table called `emotions` with columns `id`, `name`, `range_min`, `range_max`, and `default_value`. Then, modify the `getEmotions` function to retrieve emotions from this table instead of the hardcoded values.
+// Benefit: Allow for easy addition, removal, or modification of emotions, and provide a more flexible and scalable way to manage emotions.
 // Code: const EMOTIONS = [...]; // replace with database query
 
 // How: How: Create a new table called `emotions` with columns `id`, `name`, `range_min`, `range_max`, and `default_value`. Then, modify the `getEmotions` function to retrieve emotions from this table instead of the hardcoded values.
