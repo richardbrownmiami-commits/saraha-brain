@@ -488,7 +488,6 @@ async function callLLM(env, body) {
   }
   if (env.BUDDHI_DWAR) {
     const models = ["auto", "mistral-small-latest", "openrouter/auto"];
-    let last;
     for (const m of models) {
       const b = { ...body, model: m };
       try {
@@ -502,8 +501,10 @@ async function callLLM(env, body) {
           try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
           return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
         }
-        last = resp;
-      } catch {}
+        console.log("buddhi-dwar returned", resp.status, "for model", m);
+      } catch (e) {
+        console.log("buddhi-dwar error for model", m, e.message);
+      }
     }
   }
   // Try 70b first for larger contexts, fall back to 8b
