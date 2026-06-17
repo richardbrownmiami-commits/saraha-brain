@@ -105,8 +105,19 @@ async function webSearch(env, query) {
   try {
     const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
     const html = await resp.text();
-    const rows = [...html.matchAll(/<a[^>]*class=['"]result-link['"][^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>[\s\S]*?class=['"]result-snippet['"][^>]*>([\s\S]*?)<\//g)].slice(0, 5);
-    if (rows.length) return rows.map(r => { const u = r[1].match(/uddg=([^&]+)/); const url = u ? decodeURIComponent(u[1]) : (r[1].startsWith("//")?"https:"+r[1]:r[1]); return (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + " (" + url + "): " + (r[3]?.replace(/<[^>]*>/g,"").trim()||""); }).join("\n");
+    const linkMatches = [...html.matchAll(/<a[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>/g)].slice(0, 5);
+    if (!linkMatches.length) return "No results for: " + query;
+    const sniMatches = [...html.matchAll(/<td\s+class=['"]result-snippet['"][^>]*>([\s\S]*?)<\//g)];
+    return linkMatches.map((m, i) => {
+      const a = m[0];
+      const title = m[1].replace(/<[^>]*>/g, "").trim();
+      const h = a.match(/href\s*=\s*["']([^"']*)/);
+      const url = h ? h[1] : "";
+      const u = url.match(/uddg=([^&]+)/);
+      const finalUrl = u ? decodeURIComponent(u[1]) : (url.startsWith("//") ? "https:" + url : url);
+      const snippet = sniMatches[i] ? sniMatches[i][1].replace(/<[^>]*>/g, "").trim() : "";
+      return title + " (" + finalUrl + "): " + snippet;
+    }).join("\n");
   } catch {}
   return "No results for: " + query;
 }
