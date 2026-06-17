@@ -105,8 +105,8 @@ async function webSearch(env, query) {
   try {
     const resp = await fetch("https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query), { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(15000) });
     const html = await resp.text();
-    const rows = [...html.matchAll(/class="result-link"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result-snippet"[^>]*>([\s\S]*?)<\//g)].slice(0, 5);
-    if (rows.length) return rows.map(r => (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + ": " + (r[3]?.replace(/<[^>]*>/g,"").trim()||"")).join("\n");
+    const rows = [...html.matchAll(/class=['"]result-link['"][^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class=['"]result-snippet['"][^>]*>([\s\S]*?)<\//g)].slice(0, 5);
+    if (rows.length) return rows.map(r => { const u = r[1].match(/uddg=([^&]+)/); const url = u ? decodeURIComponent(u[1]) : (r[1].startsWith("//")?"https:"+r[1]:r[1]); return (r[2]?.replace(/<[^>]*>/g,"").trim()||"") + " (" + url + "): " + (r[3]?.replace(/<[^>]*>/g,"").trim()||""); }).join("\n");
   } catch {}
   return "No results for: " + query;
 }
