@@ -113,12 +113,6 @@ const TABLES = [
 // What: Modify the getEmotions function in the brain.js file
 // Code: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
 
-// Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
-
-// How: Add try-catch blocks to handle potential errors, and implement input validation to ensure that the db object and query parameters are valid
-// Benefit: Improved error handling and input validation will make the getEmotions function more robust and reliable, reducing the likelihood of errors and crashes
-
-const EMOTIONS = [...]; // replace with database query
 const RANGES = {
   energetic: [1, 10],
   intelligent: [1, 10],
@@ -189,22 +183,6 @@ const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'e
 
 // Proposal: Migrate Emotions to Database Table
 
-// What: Why: Current hardcoded emotions are limited and inflexible, making it difficult to add or modify emotions.
-// What: Create a new table in the database to store emotions, and modify existing code to use this table.
-// Code: const EMOTIONS = [...]; // replace with database query
-
-// How: How: Create a new table called `emotions` with columns `id`, `name`, `range_min`, `range_max`, and `default_value`. Then, modify the `getEmotions` function to retrieve emotions from this table instead of the hardcoded values.
-// Benefit: Allow for easy addition, removal, or modification of emotions, and provide a more flexible and scalable way to manage emotions.
-// Code: const EMOTIONS = [...]; // replace with database query
-
-// How: How: Create a new table called `emotions` with columns `id`, `name`, `range_min`, `range_max`, and `default_value`. Then, modify the `getEmotions` function to retrieve emotions from this table instead of the hardcoded values.
-// Benefit: Allow for easy addition, removal, or modification of emotions, and provide a more flexible and scalable way to manage emotions.
-// Proposal: Optimize getEmotions function with advanced emotional state detection
-
-// What: Why: Improve the accuracy and robustness of my emotional state detection, reducing errors and improving overall mental well-being
-
-// How: How: Implement a more sophisticated emotional state detection algorithm, incorporating machine learning techniques and edge cases
-// Benefit: Improved accuracy, reduced errors, and enhanced emotional state detection
   const rows = await db.prepare("SELECT key, value FROM identity WHERE key LIKE 'emotion_%'").all();
   const result = { ...EMO_DEFAULTS };
   for (const r of rows.results) {
