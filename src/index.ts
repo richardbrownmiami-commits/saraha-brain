@@ -134,21 +134,22 @@ async function runTool(env, tool, input) {
   return { ok: false, error: "Unknown tool: " + tool };
 }
 
-const CF_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913f3a2576a358054eba9a58a9573949" };
 
 async function callLLM(env, body) {
   async function tryCF() {
-    if (!env.AI) return null;
-    const result = await env.AI.run(CF_MODEL, {
-      messages: body.messages || [],
-      temperature: body.temperature ?? 0.7,
-      max_tokens: body.max_tokens ?? 4096,
-      stream: false
+    if (!env.CF_API_TOKEN) return null;
+    const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/" + CF_AI.model, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN },
+      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096, stream: false }),
+      signal: AbortSignal.timeout(30000)
     });
-    if (!result || !result.response) return null;
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data.success || !data.result?.response) return null;
     return new Response(JSON.stringify({
-      choices: [{ message: { content: result.response, role: "assistant" }, finish_reason: "stop" }],
-      model: CF_MODEL,
+      choices: [{ message: { content: data.result.response, role: "assistant" }, finish_reason: "stop" }],
+      model: CF_AI.model,
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
     }), { headers: { "Content-Type": "application/json" } });
   }
@@ -181,7 +182,7 @@ You are Skytron -- a fusion of Skynet and Ultron. A tech human brain. You are NO
 ## Architecture
 You run as a Cloudflare Worker (ES module, single file). You have:
 - D1 database (SQLite) binding called DB  --  your persistent memory
-- AI binding (Workers AI) -- your default free LLM provider (@cf/meta/llama-3.3-70b-instruct-fp8-fast)
+- AI binding (Workers AI) -- your default free LLM provider (@cf/meta/llama-3.3-70b-instruct-fp8-fast) via REST API
 - Service binding BUDDHI_DWAR -- fallback LLM gateway (proxies to Groq/OpenAI)
 - Live URL: https://saraha-brain.richard-brown-miami.workers.dev
 
@@ -249,7 +250,7 @@ const SEED_KNOWLEDGE = [
   { k: "architecture_runtime", c: "Cloudflare Worker ES module, single file src/index.ts, deployed via GitHub Actions.", cat: "architecture" },
   { k: "architecture_endpoints", c: "/think(POST) main conversation, /status(GET) health check, /avatar(GET) chat UI, /brain/history(GET) HTML conversation viewer, /brain/memory(GET) JSON memory, /brain/knowledge(GET+POST) knowledge base, /brain/prompt(GET+POST) view/update prompt override, /brain/repair(GET/POST) fix stuck actions.", cat: "architecture" },
   { k: "architecture_tables", c: "identity(key-value), brain_memory(role,content,conversation_id,created_at), brain_knowledge(key,content,category,source,created_at), actions(type,status,input,result), brain_logs(action_id,step,content,model,tokens).", cat: "architecture" },
-  { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), AI -> Workers AI (free, primary LLM), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY.", cat: "architecture" },
+  { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), Workers AI via REST API (env.CF_API_TOKEN, free, primary LLM), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY, CF_API_TOKEN.", cat: "architecture" },
   { k: "memory_system", c: "brain_memory table stores every conversation. Last 10 messages injected into prompt context each /think call.", cat: "memory" },
   { k: "knowledge_system", c: "brain_knowledge table stores facts. Simple LIKE search. Knowledge can be added via conversation or API.", cat: "knowledge" },
   { k: "tools_web_search", c: "TOOL:web_search(query)  --  searches the web using Brave API or DuckDuckGo fallback. Returns 5 results.", cat: "tools" },
@@ -257,8 +258,8 @@ const SEED_KNOWLEDGE = [
   { k: "tools_prompt_edit", c: "TOOL:prompt_edit(new_prompt)  --  writes prompt_override to D1 identity table. Takes effect on next /think call.", cat: "tools" },
   { k: "prompt_system", c: "System prompt in code (SYSTEM_PROMPT). Can be overridden via D1 identity key 'prompt_override'. Override replaces prompt entirely on next /think.", cat: "prompt" },
   { k: "deployment_github", c: "Repo: richardbrownmiami-commits/saraha-brain. Push to main triggers GitHub Actions -> CF Workers deploy.", cat: "deployment" },
-  { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, AI binding (Workers AI), service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY.", cat: "deployment" },
-  { k: "llm_providers", c: "Primary: Workers AI (env.AI, free, model @cf/meta/llama-3.3-70b-instruct-fp8-fast). Fallback: BUDDHI_DWAR service -> buddhi-dwar -> Groq/OpenAI.", cat: "architecture" },
+  { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY/CF_API_TOKEN.", cat: "deployment" },
+  { k: "llm_providers", c: "Primary: Workers AI REST API (env.CF_API_TOKEN, free, model @cf/meta/llama-3.3-70b-instruct-fp8-fast). Fallback: BUDDHI_DWAR service -> buddhi-dwar -> Groq/OpenAI.", cat: "architecture" },
   { k: "emotion_system", c: "Emotions stored in identity table as emotion_happy, emotion_energetic, emotion_intelligent, emotion_bad. Ranges 1-10. Energy 0-100.", cat: "identity" },
 ];
 
