@@ -13,7 +13,10 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'seed', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS subagents (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'idle', type TEXT DEFAULT 'worker', worker_name TEXT, source_path TEXT, brain_key TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS emotion_reflection (id INTEGER PRIMARY KEY AUTOINCREMENT, emotion_key TEXT NOT NULL, reflection TEXT NOT NULL, insight TEXT, created_at TEXT DEFAULT (datetime('now')))`,
-  `CREATE TABLE IF NOT EXISTS identity_index (index_key TEXT, PRIMARY KEY (index_key))`];
+  `CREATE TABLE IF NOT EXISTS identity_index (index_key TEXT, PRIMARY KEY (index_key))`,
+  `CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active', priority INTEGER DEFAULT 1, progress INTEGER DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, tokens INTEGER DEFAULT 0, calls INTEGER DEFAULT 0, UNIQUE(date))`,
+];
 
 // Proposal: Optimize getEmotions function with advanced emotional state detection
 
@@ -264,7 +267,12 @@ async function callLLMDirect(env, body, model) {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + groqKey },
         body: JSON.stringify(groqBody), signal: AbortSignal.timeout(60000)
       });
-      if (resp.ok) return resp;
+      if (resp.ok) {
+        const data = await resp.json();
+        const used = data.usage?.total_tokens || body.max_tokens || 2048;
+        try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
+        return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+      }
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_FAIL:" + resp.status).run(); } catch {}
     } catch (e) {
       try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content) VALUES (0, 'debug', ?1)").bind("GROQ_ERR:" + e.message).run(); } catch {}
@@ -297,10 +305,12 @@ async function callLLMDirect(env, body, model) {
         if (resp.ok) {
           const data = await resp.json() as any;
           const text = data.message?.content?.[0]?.text || "";
+          const used = (data.usage?.tokens?.input_tokens || 0) + (data.usage?.tokens?.output_tokens || 0) || body.max_tokens || 2048;
+          try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
           return new Response(JSON.stringify({
             choices: [{ message: { content: text }, finish_reason: "stop" }],
             model: cModel,
-            usage: { total_tokens: (data.usage?.tokens?.input_tokens || 0) + (data.usage?.tokens?.output_tokens || 0) }
+            usage: { total_tokens: used }
           }), { headers: { "Content-Type": "application/json" } });
         }
         const errText = await resp.text().catch(() => "");
@@ -313,7 +323,31 @@ async function callLLMDirect(env, body, model) {
   return null;
 }
 
+const TOKEN_DAILY_BUDGET = 10000;
+
+async function getDailyTokens(db) {
+  const today = new Date().toISOString().slice(0, 10);
+  const r = await db.prepare("SELECT tokens, calls FROM token_usage WHERE date=?1").bind(today).all();
+  return r.results[0] || { tokens: 0, calls: 0 };
+}
+
+async function trackTokenUsage(db, tokens) {
+  const today = new Date().toISOString().slice(0, 10);
+  await db.prepare("INSERT INTO token_usage (date,tokens,calls) VALUES (?1,?2,1) ON CONFLICT(date) DO UPDATE SET tokens=tokens+?2, calls=calls+1").bind(today, tokens).run();
+}
+
 async function callLLM(env, body) {
+  if (env.DB) {
+    try {
+      const { tokens } = await getDailyTokens(env.DB);
+      if (tokens >= TOKEN_DAILY_BUDGET) {
+        return new Response(JSON.stringify({ error: "daily token budget exhausted", choices: [{ message: { content: "[Daily token budget exhausted. Try again tomorrow or use a shorter query.]" } }] }), { headers: { "Content-Type": "application/json" } });
+      }
+      if (tokens > TOKEN_DAILY_BUDGET * 0.8) {
+        body.max_tokens = Math.min(body.max_tokens || 2048, 512);
+      }
+    } catch {}
+  }
   if (env.BUDDHI_DWAR) {
     const models = ["auto", "mistral-small-latest", "openrouter/auto"];
     let last;
@@ -324,7 +358,12 @@ async function callLLM(env, body) {
           method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY }, body: JSON.stringify(b),
           signal: AbortSignal.timeout(30000)
         });
-        if (resp.ok) return resp;
+        if (resp.ok) {
+          const data = await resp.json();
+          const used = data.usage?.total_tokens || 0;
+          try { if (env.DB) await trackTokenUsage(env.DB, used); } catch {}
+          return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+        }
         last = resp;
       } catch {}
     }
@@ -1186,7 +1225,29 @@ For questions needing external data, output ONE tool command. For everything els
           return json({ result: content, model: finalModel, usage: { total_tokens: tokens }, action_id: aid, emotions: await getEmotions(env.DB) });
         }
 
-        const body = { messages: [{ role: "system", content: system }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
+        const planKeywords = ["research", "compare", "find", "look up", "search", "investigate", "analyze", "what is", "tell me about", "check", "get data"];
+        const needsPlanning = planKeywords.some(k => input.toLowerCase().includes(k)) && !input.trim().startsWith("TOOL:");
+        let planSteps = [];
+        if (needsPlanning) {
+          await logStep(aid, "planner", "Generating multi-step plan");
+          const planSys = "Output a JSON array of steps for: " + input + ". Format: [{\"tool\":\"web_search\",\"input\":\"query\"}]. Available tools: web_search(query), web_fetch(url), github_read(owner/repo/path). Output ONLY valid JSON array, no other text.";
+          const planResp = await callLLM(env, { messages: [{ role: "system", content: "You are a planner. " + planSys }, { role: "user", content: input }], temperature: 0.3, max_tokens: 1024 });
+          if (planResp.ok) {
+            const planData = await planResp.json();
+            const planText = planData.choices?.[0]?.message?.content || "";
+            try { const parsed = JSON.parse(planText); if (Array.isArray(parsed)) planSteps = parsed.slice(0, 3); } catch { const m = planText.match(/\[[\s\S]*\]/); if (m) try { const parsed = JSON.parse(m[0]); if (Array.isArray(parsed)) planSteps = parsed.slice(0, 3); } catch {} }
+          }
+          for (const step of planSteps) {
+            if (step.tool && step.input) {
+              await logStep(aid, "planner", "Executing: " + step.tool + "(" + step.input + ")");
+              const result = await runTool(env, aid, step.tool, step.input);
+              step.result = result.ok ? result.data : "Error: " + (result.error || "unknown");
+            }
+          }
+        }
+        const planContext = planSteps.length ? "\n\nResearch results:\n" + planSteps.filter(s => s.result).map(s => "[" + s.tool + "(" + s.input + ")] " + JSON.stringify(s.result).slice(0, 1500)).join("\n---\n") : "";
+
+        const body = { messages: [{ role: "system", content: system + planContext }, { role: "user", content: input }], temperature: 0.7, max_tokens: 4096 };
         await logStep(aid, "planner", "Calling LLM");
         const resp = await callLLM(env, body);
         if (!resp.ok) {
@@ -1590,6 +1651,38 @@ For questions needing external data, output ONE tool command. For everything els
       });
     }
 
+    if (url.pathname === "/brain/goals") {
+      try { await env.DB.exec("CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active', priority INTEGER DEFAULT 1, progress INTEGER DEFAULT 0, deadline TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))").catch(()=>{}); } catch {}
+      const { results } = await env.DB.prepare("SELECT * FROM goals ORDER BY priority DESC, created_at DESC LIMIT 20").all();
+      return json({ entries: results });
+    }
+    if (url.pathname === "/brain/goals" && req.method === "POST") {
+      const body = await req.json();
+      const { results } = await env.DB.prepare("INSERT INTO goals (title, description, priority, deadline) VALUES (?1,?2,?3,?4) RETURNING *").bind(body.title, body.description || null, body.priority || 1, body.deadline || null).all();
+      return json(results[0] || { error: "failed" }, results[0] ? 200 : 500);
+    }
+    if (url.pathname.match(/^\/brain\/goals\/\d+$/) && req.method === "PATCH") {
+      const id = parseInt(url.pathname.split("/")[3]);
+      const body = await req.json();
+      const fields = []; const vals = [];
+      if (body.status !== undefined) { fields.push("status=?1"); vals.push(body.status); }
+      if (body.progress !== undefined) { fields.push("progress=?2"); vals.push(body.progress); }
+      if (body.title !== undefined) { fields.push("title=?3"); vals.push(body.title); }
+      if (fields.length) { fields.push("updated_at=datetime('now')"); await env.DB.prepare("UPDATE goals SET " + fields.join(",") + " WHERE id=?4").bind(...vals, id).run(); }
+      return json({ ok: true });
+    }
+    if (url.pathname.match(/^\/brain\/goals\/\d+$/) && req.method === "DELETE") {
+      const id = parseInt(url.pathname.split("/")[3]);
+      await env.DB.prepare("DELETE FROM goals WHERE id=?1").bind(id).run();
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/brain/token-usage") {
+      try { await env.DB.exec("CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL UNIQUE, tokens INTEGER DEFAULT 0, calls INTEGER DEFAULT 0)").catch(()=>{}); } catch {}
+      const { results } = await env.DB.prepare("SELECT * FROM token_usage ORDER BY date DESC LIMIT 31").all();
+      return json({ entries: results, dailyBudget: TOKEN_DAILY_BUDGET });
+    }
+
     if (url.pathname === "/brain/prompts") {
       const overrideRows = await env.DB.prepare("SELECT value FROM identity WHERE key='system_prompt_overrides'").all();
       const overrides = overrideRows.results[0]?.value ? JSON.parse(overrideRows.results[0].value) : [];
@@ -1918,6 +2011,28 @@ For questions needing external data, output ONE tool command. For everything els
       try { await env.DB.prepare("INSERT INTO anti_patterns (pattern,root_cause,fix,count) VALUES (?1,'LLM API error','Check connectivity',1) ON CONFLICT(pattern) DO UPDATE SET count=count+1,last_seen=datetime('now')").bind("LLM failed in idle cycle").run(); } catch {}
     }
     try { await env.DB.prepare("INSERT INTO brain_logs (action_id,step,content) VALUES (?1,'end_cycle','Energy adjust done')").bind(stamp).run(); } catch {}
+    // Learn from top anti-pattern
+    try {
+      const top = await env.DB.prepare("SELECT * FROM anti_patterns ORDER BY count DESC LIMIT 1").all();
+      if (top.results.length && top.results[0].count >= 5) {
+        const ap = top.results[0];
+        const dup = await env.DB.prepare("SELECT id FROM proposals WHERE title LIKE ?1 AND (status='pending' OR status='approved')").bind("%" + ap.pattern.slice(0, 40) + "%").all();
+        if (!dup.results.length) {
+          await env.DB.prepare("INSERT INTO proposals (title,what_diff,how_diff,resource_type,risk_pct,status) VALUES (?1,?2,?3,'core_architecture',20,'pending')").bind("Auto-fix: " + ap.pattern.slice(0, 60), "Anti-pattern '" + ap.pattern + "' seen " + ap.count + " times. Root cause: " + (ap.root_cause || "unknown"), ap.fix || "Investigate and resolve " + ap.pattern).run();
+        }
+      }
+    } catch {}
+    // Check active goals
+    try {
+      const activeGoals = await env.DB.prepare("SELECT id, title, description FROM goals WHERE status='active' AND (updated_at < datetime('now','-1 day') OR progress < 100) ORDER BY priority DESC LIMIT 3").all();
+      if (activeGoals.results.length) {
+        const g = activeGoals.results[0];
+        const recentGoal = await env.DB.prepare("SELECT COUNT(*) as c FROM brain_logs WHERE content LIKE ?1 AND created_at > datetime('now','-1 day')").bind("%" + g.title.slice(0, 30) + "%").all();
+        if (!recentGoal.results[0]?.c) {
+          await storeStreamThought(env.DB, "Working on goal: " + g.title + " - " + (g.description || "").slice(0, 100), "curious", "goal");
+        }
+      }
+    } catch {}
     await adjustEnergy(env.DB, -3);
     await updateLastCycleTime(env.DB);
     try { await env.DB.prepare("INSERT INTO identity (key,value,updated_at) VALUES ('cpu_heartbeat',datetime('now'),datetime('now')) ON CONFLICT(key) DO UPDATE SET value=datetime('now'),updated_at=datetime('now')").run(); } catch {}
