@@ -520,7 +520,7 @@ export default {
         let prompt = who === "Dev" ? DEV_PROMPT : SYSTEM_PROMPT;
         try {
           const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='prompt_override'").all();
-          if (ov.results[0]?.value) prompt = ov.results[0].value;
+          if (ov.results[0]?.value && ov.results[0].value !== "null" && ov.results[0].value !== "DELETE|OVERRIDE") prompt = ov.results[0].value;
         } catch {}
 
         const state = await getState(env.DB);
