@@ -565,7 +565,7 @@ export default {
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
 
-        await storeMemory(env.DB, "user", llmInput);
+        if (who !== "Dev") await storeMemory(env.DB, "user", llmInput);
         let toolResult = null;
 
         if (content.includes("TOOL:")) {
@@ -603,7 +603,7 @@ export default {
           }
         }
 
-        await storeMemory(env.DB, "assistant", content.slice(0, 1000));
+        if (who !== "Dev") await storeMemory(env.DB, "assistant", content.slice(0, 1000));
 
         await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
         return json({ result: content, model: model || "", usage: { total_tokens: tokens }, action_id: aid, tool: toolResult });
