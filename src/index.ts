@@ -583,6 +583,7 @@ export default {
             toolInput = parts.slice(1).join(":").trim();
           }
           if (tool && toolInput) {
+            try { await env.DB.prepare("UPDATE actions SET result=?1 WHERE id=?2").bind("TOOL_DEBUG: tool=" + tool + " input=" + toolInput.slice(0,200), aid).run(); } catch {}
             const result = await runTool(env, tool, toolInput);
             if (result.ok) {
               const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: llmInput }, { role: "assistant", content: "Let me use " + tool + "..." }, { role: "user", content: "Result from " + tool + ": " + result.data + "\n\nNow answer the user's question using this information concisely." }], temperature: 0.7, max_tokens: 2048 };
