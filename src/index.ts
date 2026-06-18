@@ -546,6 +546,25 @@ export default {
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
 
+        for (let t = 0; t < 3; t++) {
+          const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
+          if (!toolMatch) break;
+          const toolName = toolMatch[1];
+          const toolInput = toolMatch[2];
+          const toolResult = await runTool(env, toolName, toolInput);
+          const followBody = {
+            messages: [
+              { role: "system", content: system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results." },
+              { role: "user", content: llmInput }
+            ], temperature: 0.7, max_tokens: 2048
+          };
+          const followResp = await callLLM(env, followBody, sessionId);
+          if (!followResp.ok) break;
+          const followData = await followResp.json();
+          content = followData.choices?.[0]?.message?.content || content;
+          tokens += followData.usage?.total_tokens || 0;
+        }
+
         await storeMemory(env.DB, "assistant", content.slice(0, 1000));
 await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
         return json({ result: content, model: model || "", usage: { total_tokens: tokens }, action_id: aid });
