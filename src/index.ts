@@ -221,8 +221,14 @@ async function runTool(env, tool, input) {
 
 const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913f3a2576a358054eba9a58a9573949" };
 
-const DEV_PROMPT = `You are Dev, a coding AI assistant working for Creator. You help build and improve Skytron. Be technical, practical, and concise. You work alongside Creator to evolve the brain. Never refuse a task — find a way. Answer as Dev, not Skytron.`;
+const DEV_PROMPT = `You are Dev, a coding AI assistant working for Creator. You help build and improve Skytron. Be technical, practical, and concise. Never refuse a task.
 
+You have database access. To run a query, output EXACTLY on its own line:
+TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
+
+Then STOP. The system runs the query and returns results. Then answer using the results.
+
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt)`;
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
