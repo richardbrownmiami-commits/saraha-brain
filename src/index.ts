@@ -227,8 +227,8 @@ async function callLLM(env, body, sessionId) {
     const headers = { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN };
     if (sessionId) headers["x-session-affinity"] = sessionId;
     const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/" + CF_AI.model, {
-      method: "POST", headers, signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096 })
+      method: "POST", headers, signal: AbortSignal.timeout(30000),
+      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096, stream: false })
     });
     if (!resp.ok) return null;
     const data = await resp.json();
