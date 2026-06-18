@@ -228,8 +228,7 @@ TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 Then STOP. The system runs the query and returns results. Then answer using the results.
 
-Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt), ASK_DEV:question
-ASK_DEV:question  --  ask Dev a technical question and get an answer. Use when you need Dev's help.
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt), ASK_DEV:question;
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
