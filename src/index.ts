@@ -226,38 +226,16 @@ async function callLLM(env, body, sessionId) {
     if (!env.CF_API_TOKEN) return null;
     const headers = { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN };
     if (sessionId) headers["x-session-affinity"] = sessionId;
-    const streamMode = !!body.stream;
     const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/" + CF_AI.model, {
       method: "POST", headers, signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096, stream: streamMode })
+      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096 })
     });
     if (!resp.ok) return null;
-    let responseText, modelName = CF_AI.model;
-    if (streamMode) {
-      let full = "";
-      const reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = dec.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (line.startsWith("data: ")) {
-            const d = line.slice(6).trim();
-            if (d === "[DONE]") break;
-            try { const j = JSON.parse(d); full += j.response || ""; } catch {}
-          }
-        }
-      }
-      responseText = full;
-    } else {
-      const data = await resp.json();
-      if (!data.success || !data.result?.response) return null;
-      responseText = data.result.response;
-    }
+    const data = await resp.json();
+    if (!data.success || !data.result?.response) return null;
     return new Response(JSON.stringify({
-      choices: [{ message: { content: responseText, role: "assistant" }, finish_reason: "stop" }],
-      model: modelName,
+      choices: [{ message: { content: data.result.response, role: "assistant" }, finish_reason: "stop" }],
+      model: CF_AI.model,
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
     }), { headers: { "Content-Type": "application/json" } });
   }
@@ -565,7 +543,7 @@ export default {
 
         const system = prompt + "\n\n" + mood + conversationContext + knowledgeContext;
 
-        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096, stream: true };
+        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096 };
         const resp = await callLLM(env, body, sessionId);
         if (!resp.ok) {
           await env.DB.prepare("UPDATE actions SET status='error', result=?1, completed_at=datetime('now') WHERE id=?2").bind("LLM " + resp.status, aid).run();
