@@ -572,11 +572,11 @@ export default {
           const toolStart = content.indexOf("TOOL:");
           const afterTool = content.slice(toolStart + 5).trim();
           let tool, toolInput;
-          const parenMatch = afterTool.match(/^(\w+)\(([^)]*)\)/);
+          const parenMatch = afterTool.match(/^(\w+)\((.+)\)\s*$/s);
           if (parenMatch) {
             tool = parenMatch[1].trim();
             toolInput = parenMatch[2].trim();
-            toolInput = toolInput.replace(/^(query|url)\s*=\s*["']?(.*?)["']?$/i, "$2");
+            toolInput = toolInput.replace(/^(query|url)\s*=\s*[""']?(.*?)[""']?$/i, "$2");
           } else {
             const parts = afterTool.split(":");
             tool = parts[0].trim();
