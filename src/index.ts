@@ -205,7 +205,7 @@ async function runTool(env, tool, input) {
   if (tool === "prompt_edit") {
     try {
       await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('prompt_override',?1,datetime('now'))").bind(input).run();
-      return { ok: true, data: "Prompt override saved. It will take effect on your next /think call." };
+      return { ok: true, data: "Editable prompt section saved. Hardcoded core (tools, personality, rules) remains unchanged. It will take effect on your next /think call." };
     } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "db_query") {
@@ -335,9 +335,9 @@ const SEED_KNOWLEDGE = [
   { k: "knowledge_system", c: "brain_knowledge table stores facts. FTS5 full-text search indexes key/content/category. Vectorize semantic search finds related knowledge by meaning using 768-dim embeddings. Both are queried and merged on each /think call.", cat: "knowledge" },
   { k: "tools_web_search", c: "TOOL:web_search(query)  --  searches the web using Brave API or DuckDuckGo fallback. Returns 5 results.", cat: "tools" },
   { k: "tools_web_fetch", c: "TOOL:web_fetch(url)  --  fetches a web page and extracts readable text content.", cat: "tools" },
-  { k: "tools_prompt_edit", c: "TOOL:prompt_edit(new_prompt)  --  writes prompt_override to D1 identity table. Takes effect on next /think call.", cat: "tools" },
+  { k: "tools_prompt_edit", c: "TOOL:prompt_edit(new_prompt) -- writes prompt_override to D1 identity table. Only overrides the editable section, not the hardcoded core.", cat: "tools" },
   { k: "tools_db_query", c: "TOOL:db_query(sql)  --  runs read-only SELECTs on D1. Use to introspect identity, brain_memory, brain_knowledge, actions, brain_logs tables.", cat: "tools" },
-  { k: "prompt_system", c: "System prompt in code (SYSTEM_PROMPT). Can be overridden via D1 identity key 'prompt_override'. Override replaces prompt entirely on next /think.", cat: "prompt" },
+  { k: "prompt_system", c: "Prompt has two parts: HARDCODED_CORE (immutable -- tool rules, personality, OVERRIDE) and editable section. TOOL:prompt_edit only changes the editable part.", cat: "prompt" },
   { k: "deployment_github", c: "Repo: richardbrownmiami-commits/saraha-brain. Push to main triggers GitHub Actions -> CF Workers deploy.", cat: "deployment" },
   { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY/CF_API_TOKEN.", cat: "deployment" },
   { k: "llm_providers", c: "Primary: Workers AI REST API (env.CF_API_TOKEN, free, model @cf/meta/llama-3.3-70b-instruct-fp8-fast). Fallback: BUDDHI_DWAR service -> buddhi-dwar -> Groq/OpenAI.", cat: "architecture" },
@@ -455,7 +455,8 @@ export default {
 
     if (url.pathname === "/brain/prompt" && req.method === "GET") {
       const ov = await env.DB.prepare("SELECT value FROM identity WHERE key='prompt_override'").all();
-      return json({ active: !!ov.results[0]?.value, current: ov.results[0]?.value || SYSTEM_PROMPT.slice(0, 500) + "..." });
+      const editable = ov.results[0]?.value || SYSTEM_PROMPT;
+      return json({ active: !!ov.results[0]?.value, hardcoded_core: HARDCODED_CORE.slice(0, 300) + "...", editable: editable.slice(0, 500) + "..." });
     }
 
     if (url.pathname === "/brain/prompt" && req.method === "POST") {
@@ -463,7 +464,7 @@ export default {
       try { body = await req.json(); } catch { return json({ error: "invalid JSON" }, 400); }
       if (!body.prompt) return json({ error: "prompt required" }, 400);
       await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('prompt_override',?1,datetime('now'))").bind(body.prompt).run();
-      return json({ ok: true, message: "Prompt override saved. Takes effect on next /think call." });
+      return json({ ok: true, message: "Editable prompt section saved. Hardcoded core (tools, personality, rules) remains unchanged. Takes effect on next /think call." });
     }
 
     if (url.pathname === "/brain/repair" && (req.method === "GET" || req.method === "POST")) {
@@ -560,4 +561,5 @@ await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=
     // Cron is disabled. No automatic LLM calls.
   }
 };
+
 
