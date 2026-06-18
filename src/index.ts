@@ -551,7 +551,8 @@ export default {
 
         const sessionId = "skytron-" + (url.searchParams.get("c") || "default");
 
-        const system = prompt + "\n\n" + mood + conversationContext + knowledgeContext;
+        const toolReminder = who === "Dev" ? "\n\nIMPORTANT: To query the database, output TOOL:db_query(SELECT ...) on its own line and STOP." : "";
+        const system = prompt + "\n\n" + mood + conversationContext + knowledgeContext + toolReminder;
 
         const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096 };
         const resp = await callLLM(env, body, sessionId);
