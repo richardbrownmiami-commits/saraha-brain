@@ -216,18 +216,7 @@ async function runTool(env, tool, input) {
       return { ok: true, data: JSON.stringify(r.results || []) };
     } catch (e) { return { ok: false, error: e.message }; }
   }
-  if (tool === "ask_dev") {
-    try {
-      const devBody = { messages: [{ role: "system", content: DEV_PROMPT }, { role: "user", content: input }], temperature: 0.5, max_tokens: 1024 };
-      const devResp = await callLLM(env, devBody);
-      if (devResp.ok) {
-        const devData = await devResp.json();
-        return { ok: true, data: devData.choices?.[0]?.message?.content || "(no response)" };
-      }
-      return { ok: false, error: "Dev LLM error" };
-    } catch (e) { return { ok: false, error: e.message }; }
-  }
-  return { ok: false, error: "Unknown tool: " + tool };
+    return { ok: false, error: "Unknown tool: " + tool };
 }
 
 const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913f3a2576a358054eba9a58a9573949" };
@@ -239,7 +228,7 @@ TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 Then STOP. The system runs the query and returns results. Then answer using the results.
 
-Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt), ASK_DEV:question, TOOL:ask_dev(question);
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt);
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
@@ -323,7 +312,7 @@ TOOL:web_search(query)  --  search the internet. Use for current data, news, fac
 TOOL:web_fetch(url)  --  fetch a web page content.
 TOOL:prompt_edit(new_prompt)  --  permanently override your system prompt (master only).
 TOOL:db_query(sql)  --  run a read-only SELECT on your D1 tables.
-TOOL:ask_dev(question)  --  ask Dev a technical question.
+
 
 ## Prompt System
 Your system prompt is defined in the code as SYSTEM_PROMPT constant. However, you can override it dynamically:
@@ -525,6 +514,7 @@ export default {
         try { const body = await req.json(); input = body.input; from = body.from; } catch { return json({ error: "invalid JSON body" }, 400); }
         if (!input || typeof input !== "string") return json({ error: "input required" }, 400);
 
+        if (/^ask\s+dev\s+/i.test(input)) { from = "Dev"; input = input.replace(/^ask\s+dev\s+/i, ""); }
         const mentionMatch = input.match(/^@(dev|creator)\s+(.+)/i);
         if (mentionMatch) {
           from = mentionMatch[1];
