@@ -228,7 +228,8 @@ TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 Then STOP. The system runs the query and returns results. Then answer using the results.
 
-Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt)`;
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt)`;, ASK_DEV:question
+ASK_DEV:question  --  ask Dev a technical question and get an answer. Use when you need Dev's help.
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
@@ -565,47 +566,31 @@ export default {
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
 
-        if (who !== "Dev") await storeMemory(env.DB, "user", llmInput);
-        let toolResult = null;
-
-        if (content.includes("TOOL:")) {
-          const toolStart = content.indexOf("TOOL:");
-          const afterTool = content.slice(toolStart + 5).trim();
-          let tool, toolInput;
-          const parenMatch = afterTool.match(/^(\w+)\((.+)\)\s*$/s);
-          if (parenMatch) {
-            tool = parenMatch[1].trim();
-            toolInput = parenMatch[2].trim();
-            toolInput = toolInput.replace(/^(query|url)\s*=\s*[""']?(.*?)[""']?$/i, "$2");
-          } else {
-            const parts = afterTool.split(":");
-            tool = parts[0].trim();
-            toolInput = parts.slice(1).join(":").trim();
-          }
-          if (tool && toolInput) {
-            const result = await runTool(env, tool, toolInput);
-            if (result.ok) {
-              const followBody = { messages: [{ role: "system", content: system.slice(0, 4000) }, { role: "user", content: llmInput }, { role: "assistant", content: "Let me use " + tool + "..." }, { role: "user", content: "Result from " + tool + ": " + result.data + "\n\nNow answer the user's question using this information concisely." }], temperature: 0.7, max_tokens: 2048 };
-              const followResp = await callLLM(env, followBody);
-              if (followResp.ok) {
-                const followData = await followResp.json();
-                content = followData.choices?.[0]?.message?.content || content;
-                tokens += followData.usage?.total_tokens || 0;
-                model = followData.model || model;
-              } else {
-                content = result.data;
+                let devAnswer = null;
+        if (content.includes("ASK_DEV:")) {
+          const qIdx = content.indexOf("ASK_DEV:");
+          let devQ = content.slice(qIdx + 8).trim();
+          devQ = devQ.replace(/^["']|["']$/g, "");
+          if (devQ) {
+            try {
+              const devBody = { messages: [{ role: "system", content: DEV_PROMPT }, { role: "user", content: devQ }], temperature: 0.5, max_tokens: 1024 };
+              const devResp = await callLLM(env, devBody, sessionId);
+              if (devResp.ok) {
+                const devData = await devResp.json();
+                devAnswer = devData.choices?.[0]?.message?.content || "(no response)";
+                const followBody = { messages: [{ role: "system", content: system.slice(0, 8000) + "\n\nDev answered: " + devAnswer + "\n\nNow respond to your master using Dev's answer." }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 2048 };
+                const followResp = await callLLM(env, followBody, sessionId);
+                if (followResp.ok) {
+                  const followData = await followResp.json();
+                  content = followData.choices?.[0]?.message?.content || content;
+                }
               }
-              toolResult = { tool, status: "ok" };
-            } else {
-              content = "I tried to use " + tool + " but got: " + (result.error || "unknown error");
-              toolResult = { tool, status: "error", error: result.error };
-            }
+            } catch {}
           }
         }
 
         if (who !== "Dev") await storeMemory(env.DB, "assistant", content.slice(0, 1000));
-
-        await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
+await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
         return json({ result: content, model: model || "", usage: { total_tokens: tokens }, action_id: aid, tool: toolResult });
       } catch (e) {
         return json({ error: e.message }, 500);
