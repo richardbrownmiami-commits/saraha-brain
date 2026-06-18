@@ -228,7 +228,7 @@ TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 Then STOP. The system runs the query and returns results. Then answer using the results.
 
-Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt)`;, ASK_DEV:question
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt) ASK_DEV:question`;
 ASK_DEV:question  --  ask Dev a technical question and get an answer. Use when you need Dev's help.
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
@@ -313,6 +313,7 @@ TOOL:web_search(query)  --  search the internet. Use for current data, news, fac
 TOOL:web_fetch(url)  --  fetch a web page content.
 TOOL:prompt_edit(new_prompt)  --  permanently override your system prompt (master only).
 TOOL:db_query(sql)  --  run a read-only SELECT on your D1 tables.
+ASK_DEV:question  --  ask Dev a technical question and get an answer.
 
 ## Prompt System
 Your system prompt is defined in the code as SYSTEM_PROMPT constant. However, you can override it dynamically:
