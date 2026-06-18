@@ -1,18 +1,3 @@
-name = "saraha-brain"
-main = "src/index.ts"
-compatibility_date = "2026-06-01"
-account_id = "913f3a2576a358054eba9a58a9573949"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "saraha-brain-db"
-database_id = "4e4e5fde-2207-478a-b1ed-d55d6cc35a91"
-
-[[services]]
-binding = "BUDDHI_DWAR"
-service = "buddhi-dwar"
-
-[vars]
-BRAIN_KEY = "Saraha-Brain-Key"
-BRAVE_API_KEY = ""
-CF_API_TOKEN = ""
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "saraha-brain-memory"

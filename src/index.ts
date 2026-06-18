@@ -8,7 +8,7 @@ const TABLES = [
 
 const SCHEMA_VERSION = '4';
 
-async function initSchema(db) {
+async function initSchema(db, env) {
   try {
     const v = await db.prepare("SELECT value FROM identity WHERE key='schema_version'").all();
     if (v.results[0]?.value === SCHEMA_VERSION) return;
@@ -27,6 +27,8 @@ async function initSchema(db) {
     }
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_version',?1,datetime('now'))").bind(SCHEMA_VERSION).run();
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','100',datetime('now'))").run();
+    try { await ensureVectorizeIndex(env); } catch {}
+    try { await indexAllKnowledge(env, db); } catch {}
   } catch (e) { console.error("initSchema:", e); }
 }
 
@@ -93,6 +95,61 @@ async function searchKnowledge(db, query, limit = 5) {
     const fallback = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
     return fallback.results || [];
   } catch { return []; }
+}
+
+async function embedText(env, text) {
+  if (!env.CF_API_TOKEN) return null;
+  try {
+    const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/@cf/baai/bge-base-en-v1.5", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN },
+      body: JSON.stringify({ text: [text.slice(0, 512)] }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.result?.data?.[0] || null;
+  } catch { return null; }
+}
+
+async function semanticSearch(env, query, limit = 5) {
+  if (!env.VECTORIZE) return [];
+  try {
+    const embedding = await embedText(env, query);
+    if (!embedding) return [];
+    const results = await env.VECTORIZE.query(embedding, { topK: limit, returnValues: false, returnMetadata: true });
+    return (results?.matches || []).filter(m => m.score > 0.5).map(m => ({ key: m.metadata?.key || "", content: m.metadata?.content || "", category: m.metadata?.category || "", score: m.score }));
+  } catch { return []; }
+}
+
+async function ensureVectorizeIndex(env) {
+  if (!env.VECTORIZE || !env.CF_API_TOKEN) return;
+  try { await env.VECTORIZE.describe(); } catch {
+    await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/vectorize/v2/indexes", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN },
+      body: JSON.stringify({ name: "saraha-brain-memory", description: "Skytron semantic memory", config: { dimensions: 768, metric: "cosine" } })
+    });
+  }
+}
+
+async function indexKnowledgeForSearch(env, key, content, category) {
+  if (!env.VECTORIZE) return;
+  try {
+    const embedding = await embedText(env, (key + " " + content).slice(0, 512));
+    if (!embedding) return;
+    await env.VECTORIZE.upsert([{ id: "kn_" + key, values: embedding, metadata: { key, content: content.slice(0, 2000), category } }]);
+  } catch {}
+}
+
+async function indexAllKnowledge(env, db) {
+  if (!env.VECTORIZE) return;
+  try {
+    const r = await db.prepare("SELECT key, content, category FROM brain_knowledge").all();
+    if (!r.results?.length) return;
+    for (const row of r.results) {
+      const embedding = await embedText(env, (row.key + " " + row.content).slice(0, 512));
+      if (embedding) await env.VECTORIZE.upsert([{ id: "kn_" + row.key, values: embedding, metadata: { key: row.key, content: row.content.slice(0, 2000), category: row.category } }]);
+    }
+  } catch {}
 }
 
 async function webSearch(env, query) {
@@ -255,7 +312,7 @@ Your database has these tables:
 Every conversation is stored in the brain_memory table. On each /think call, your last 10 messages are injected into your context so you remember what was said before. You can recall older conversations when needed.
 
 ## Knowledge System
-You have a brain_knowledge table that stores facts. New knowledge can be added through conversation. You can search your knowledge by keyword or category.
+You have a brain_knowledge table that stores facts. FTS5 indexes your knowledge for fast keyword search. Vectorize indexes your knowledge as semantic vectors (768-dim embeddings) for meaning-based search. Both are searched automatically on each /think call and injected as context. New knowledge can be added through the /brain/knowledge API or by your master telling you facts.
 
 ## Tools
 You have four tools. To use a tool, output TOOL:name(parameters) on its own line, then STOP. The system executes it and returns the result.
@@ -304,7 +361,7 @@ const SEED_KNOWLEDGE = [
   { k: "architecture_tables", c: "identity(key-value), brain_memory(role,content,conversation_id,created_at), brain_knowledge(key,content,category,source,created_at), actions(type,status,input,result), brain_logs(action_id,step,content,model,tokens).", cat: "architecture" },
   { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), Workers AI via REST API (env.CF_API_TOKEN, free, primary LLM), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY, CF_API_TOKEN.", cat: "architecture" },
   { k: "memory_system", c: "brain_memory table stores every conversation. Last 10 messages injected into prompt context each /think call.", cat: "memory" },
-  { k: "knowledge_system", c: "brain_knowledge table stores facts. FTS5 full-text search engine indexes key, content, and category for fast search. Knowledge can be added via conversation or API.", cat: "knowledge" },
+  { k: "knowledge_system", c: "brain_knowledge table stores facts. FTS5 full-text search indexes key/content/category. Vectorize semantic search finds related knowledge by meaning using 768-dim embeddings. Both are queried and merged on each /think call.", cat: "knowledge" },
   { k: "tools_web_search", c: "TOOL:web_search(query)  --  searches the web using Brave API or DuckDuckGo fallback. Returns 5 results.", cat: "tools" },
   { k: "tools_web_fetch", c: "TOOL:web_fetch(url)  --  fetches a web page and extracts readable text content.", cat: "tools" },
   { k: "tools_prompt_edit", c: "TOOL:prompt_edit(new_prompt)  --  writes prompt_override to D1 identity table. Takes effect on next /think call.", cat: "tools" },
@@ -360,7 +417,7 @@ addMsg('bot',"Skytron online. Awake. Ready.");
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    try { await initSchema(env.DB); } catch {}
+    try { await initSchema(env.DB, env); } catch {}
 
     const json = (body, status = 200) => new Response(JSON.stringify(body), {
       status, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
@@ -400,6 +457,7 @@ export default {
       if (!body.key || !body.content) return json({ error: "key and content required" }, 400);
       try {
         await env.DB.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'learned')").bind(body.key, body.content, body.category || 'general').run();
+        try { await indexKnowledgeForSearch(env, body.key, body.content, body.category || 'general'); } catch {}
         return json({ ok: true, key: body.key });
       } catch (e) { return json({ error: e.message }, 400); }
     }
@@ -453,7 +511,14 @@ export default {
       const knCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge").all()).results[0]?.c || 0;
       return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skytron</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:500px;width:100%}h1{color:#58a6ff;font-size:1.5rem;margin-bottom:1rem}.stat{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid #21262d;font-size:0.85rem}.stat:last-child{border:none}.label{color:#8b949e}.links{display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}</style></head><body><h1>Skytron</h1><div class="card"><div class="stat"><span class="label">Energy</span><span class="val" style="color:${state.reg.energy>60?'#3fb950':state.reg.energy>30?'#d29922':'#f85149'}">${state.reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val">${state.emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val">${state.emotions.energetic}/10</span></div><div class="stat"><span class="label">Memory</span><span class="val">${memCount} messages</span></div><div class="stat"><span class="label">Knowledge</span><span class="val">${knCount} facts</span></div></div><div class="card"><div class="links"><a href="/avatar">Chat</a><a href="/status">Status</a><a href="/brain/history">History</a><a href="/brain/memory">Memory</a><a href="/brain/knowledge">Knowledge</a></div></div></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
-
+    if (url.pathname === "/brain/vectorize" && req.method === "POST") {
+      try {
+        await ensureVectorizeIndex(env);
+        await indexAllKnowledge(env, env.DB);
+        const stats = env.VECTORIZE ? await env.VECTORIZE.describe().catch(() => null) : null;
+        return json({ ok: true, indexed: true, stats: stats || "Vectorize binding not configured" });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
     if (url.pathname === "/think" && req.method === "POST") {
       try {
         let input, from;
@@ -488,9 +553,17 @@ export default {
           conversationContext = "\n\nRECENT CONVERSATION:\n" + recentMem.map(m => "[" + m.role + "]: " + m.content.slice(0, 500)).join("\n") + "\n";
         }
 
+        let knowledgeContext = "";
+        try {
+          const kw = await searchKnowledge(env.DB, input, 3);
+          if (kw.length) knowledgeContext = "\n\nRELEVANT KNOWLEDGE:\n" + kw.map(k => "- " + k.key + " (" + k.category + "): " + k.content.slice(0, 200)).join("\n") + "\n";
+          const sem = await semanticSearch(env, input, 3);
+          if (sem.length) knowledgeContext += "\nSEMANTIC MATCHES:\n" + sem.map(s => "- " + s.key + " (score: " + s.score.toFixed(2) + "): " + s.content.slice(0, 200)).join("\n") + "\n";
+        } catch {}
+
         const sessionId = "skytron-" + (url.searchParams.get("c") || "default");
 
-        const system = prompt + "\n\n" + mood + conversationContext;
+        const system = prompt + "\n\n" + mood + conversationContext + knowledgeContext;
 
         const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096, stream: true };
         const resp = await callLLM(env, body, sessionId);
