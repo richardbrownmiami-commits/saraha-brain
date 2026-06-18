@@ -497,6 +497,17 @@ export default {
         return json({ ok: true, indexed: true, stats: stats || "Vectorize binding not configured" });
       } catch (e) { return json({ error: e.message }, 500); }
     }
+    if (url.pathname === "/debug/ai" && req.method === "POST") {
+      try {
+        if (!env.CF_API_TOKEN) return json({ error: "no token" });
+        const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/" + CF_AI.model, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN },
+          body: JSON.stringify({ messages: [{ role: "user", content: "say hello" }], max_tokens: 50 }),
+          signal: AbortSignal.timeout(15000)
+        });
+        return json({ status: resp.status, ok: resp.ok, body: await resp.json() });
+      } catch (e) { return json({ error: e.message }, 500); }
+    }
     if (url.pathname === "/think" && req.method === "POST") {
       try {
         let input, from;
