@@ -27,6 +27,8 @@ async function initSchema(db, env) {
     }
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_version',?1,datetime('now'))").bind(SCHEMA_VERSION).run();
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','100',datetime('now'))").run();
+    try { await db.prepare("DELETE FROM identity WHERE key='prompt_override' AND value='null'").run(); } catch {}
+    try { await db.prepare("DELETE FROM identity WHERE key='prompt_override' AND (value='' OR value IS NULL)").run(); } catch {}
     try { await ensureVectorizeIndex(env); } catch {}
     try { await indexAllKnowledge(env, db); } catch {}
   } catch (e) { console.error("initSchema:", e); }
