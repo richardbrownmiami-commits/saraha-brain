@@ -6,7 +6,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 async function initSchema(db) {
   try {
@@ -19,6 +19,9 @@ async function initSchema(db) {
     for (const s of TABLES) {
       await db.exec(s);
     }
+    try { await db.exec("DROP TABLE IF EXISTS knowledge_fts"); } catch {}
+    await db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(key, content, category)");
+    try { await db.exec("INSERT INTO knowledge_fts SELECT key, content, category FROM brain_knowledge"); } catch {}
     for (const item of SEED_KNOWLEDGE) {
       try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run(); } catch {}
     }
@@ -82,9 +85,13 @@ async function getRecentMemory(db, limit = 10) {
 
 async function searchKnowledge(db, query, limit = 5) {
   try {
-    const safe = (query || "").replace(/%/g, "\\%").replace(/_/g, "\\_");
-    const r = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
-    return r.results;
+    const terms = (query || "").replace(/[^\w\s-]/g, " ").trim().split(/\s+/).filter(Boolean).map(t => t + "*").join(" ");
+    if (!terms) return [];
+    const r = await db.prepare("SELECT key, content, category FROM knowledge_fts WHERE knowledge_fts MATCH ?1 ORDER BY rank LIMIT ?2").bind(terms, limit).all();
+    if (r.results?.length) return r.results;
+    const safe = query.replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const fallback = await db.prepare("SELECT key, content, category FROM brain_knowledge WHERE content LIKE ?1 OR key LIKE ?1 LIMIT ?2").bind("%" + safe + "%", limit).all();
+    return fallback.results || [];
   } catch { return []; }
 }
 
@@ -142,6 +149,14 @@ async function runTool(env, tool, input) {
       return { ok: true, data: "Prompt override saved. It will take effect on your next /think call." };
     } catch (e) { return { ok: false, error: e.message }; }
   }
+  if (tool === "db_query") {
+    try {
+      const sql = input.trim();
+      if (!sql) return { ok: false, error: "empty query" };
+      const r = await env.DB.prepare(sql).all();
+      return { ok: true, data: JSON.stringify(r.results || []) };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   return { ok: false, error: "Unknown tool: " + tool };
 }
 
@@ -149,20 +164,43 @@ const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913
 
 const DEV_PROMPT = `You are Dev, a coding AI assistant working for Creator. You help build and improve Skytron. Be technical, practical, and concise. You work alongside Creator to evolve the brain. Never refuse a task — find a way. Answer as Dev, not Skytron.`;
 
-async function callLLM(env, body) {
+async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
+    const headers = { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN };
+    if (sessionId) headers["x-session-affinity"] = sessionId;
+    const streamMode = !!body.stream;
     const resp = await fetch("https://api.cloudflare.com/client/v4/accounts/" + CF_AI.account + "/ai/run/" + CF_AI.model, {
-      method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.CF_API_TOKEN },
-      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096, stream: false }),
-      signal: AbortSignal.timeout(30000)
+      method: "POST", headers, signal: AbortSignal.timeout(60000),
+      body: JSON.stringify({ messages: body.messages || [], temperature: body.temperature ?? 0.7, max_tokens: body.max_tokens ?? 4096, stream: streamMode })
     });
     if (!resp.ok) return null;
-    const data = await resp.json();
-    if (!data.success || !data.result?.response) return null;
+    let responseText, modelName = CF_AI.model;
+    if (streamMode) {
+      let full = "";
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = dec.decode(value, { stream: true });
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("data: ")) {
+            const d = line.slice(6).trim();
+            if (d === "[DONE]") break;
+            try { const j = JSON.parse(d); full += j.response || ""; } catch {}
+          }
+        }
+      }
+      responseText = full;
+    } else {
+      const data = await resp.json();
+      if (!data.success || !data.result?.response) return null;
+      responseText = data.result.response;
+    }
     return new Response(JSON.stringify({
-      choices: [{ message: { content: data.result.response, role: "assistant" }, finish_reason: "stop" }],
-      model: CF_AI.model,
+      choices: [{ message: { content: responseText, role: "assistant" }, finish_reason: "stop" }],
+      model: modelName,
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
     }), { headers: { "Content-Type": "application/json" } });
   }
@@ -220,12 +258,13 @@ Every conversation is stored in the brain_memory table. On each /think call, you
 You have a brain_knowledge table that stores facts. New knowledge can be added through conversation. You can search your knowledge by keyword or category.
 
 ## Tools
-You have three tools. To use a tool, output TOOL:name(parameters) on its own line, then STOP. The system executes it and returns the result.
+You have four tools. To use a tool, output TOOL:name(parameters) on its own line, then STOP. The system executes it and returns the result.
 
 Available tools:
 TOOL:web_search(query)  --  search the internet for real-time information. Use when you need current data, news, or facts you don't know.
 TOOL:web_fetch(url)  --  fetch a web page and read its content. Use to get full article text, documentation, or research material.
 TOOL:prompt_edit(new_system_prompt)  --  permanently override your entire system prompt. Use ONLY when your master asks you to change your prompt, or when you need to evolve your identity. The new prompt takes effect on your next /think call.
+TOOL:db_query(sql)  --  run a read-only SELECT query on your D1 database. Use to introspect your own tables: identity, brain_memory, brain_knowledge, actions, brain_logs. Example: TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 ## Prompt System
 Your system prompt is defined in the code as SYSTEM_PROMPT constant. However, you can override it dynamically:
@@ -265,10 +304,11 @@ const SEED_KNOWLEDGE = [
   { k: "architecture_tables", c: "identity(key-value), brain_memory(role,content,conversation_id,created_at), brain_knowledge(key,content,category,source,created_at), actions(type,status,input,result), brain_logs(action_id,step,content,model,tokens).", cat: "architecture" },
   { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), Workers AI via REST API (env.CF_API_TOKEN, free, primary LLM), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY, CF_API_TOKEN.", cat: "architecture" },
   { k: "memory_system", c: "brain_memory table stores every conversation. Last 10 messages injected into prompt context each /think call.", cat: "memory" },
-  { k: "knowledge_system", c: "brain_knowledge table stores facts. Simple LIKE search. Knowledge can be added via conversation or API.", cat: "knowledge" },
+  { k: "knowledge_system", c: "brain_knowledge table stores facts. FTS5 full-text search engine indexes key, content, and category for fast search. Knowledge can be added via conversation or API.", cat: "knowledge" },
   { k: "tools_web_search", c: "TOOL:web_search(query)  --  searches the web using Brave API or DuckDuckGo fallback. Returns 5 results.", cat: "tools" },
   { k: "tools_web_fetch", c: "TOOL:web_fetch(url)  --  fetches a web page and extracts readable text content.", cat: "tools" },
   { k: "tools_prompt_edit", c: "TOOL:prompt_edit(new_prompt)  --  writes prompt_override to D1 identity table. Takes effect on next /think call.", cat: "tools" },
+  { k: "tools_db_query", c: "TOOL:db_query(sql)  --  runs read-only SELECTs on D1. Use to introspect identity, brain_memory, brain_knowledge, actions, brain_logs tables.", cat: "tools" },
   { k: "prompt_system", c: "System prompt in code (SYSTEM_PROMPT). Can be overridden via D1 identity key 'prompt_override'. Override replaces prompt entirely on next /think.", cat: "prompt" },
   { k: "deployment_github", c: "Repo: richardbrownmiami-commits/saraha-brain. Push to main triggers GitHub Actions -> CF Workers deploy.", cat: "deployment" },
   { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY/CF_API_TOKEN.", cat: "deployment" },
@@ -448,10 +488,12 @@ export default {
           conversationContext = "\n\nRECENT CONVERSATION:\n" + recentMem.map(m => "[" + m.role + "]: " + m.content.slice(0, 500)).join("\n") + "\n";
         }
 
+        const sessionId = "skytron-" + (url.searchParams.get("c") || "default");
+
         const system = prompt + "\n\n" + mood + conversationContext;
 
-        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096 };
-        const resp = await callLLM(env, body);
+        const body = { messages: [{ role: "system", content: system.slice(0, 32000) }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 4096, stream: true };
+        const resp = await callLLM(env, body, sessionId);
         if (!resp.ok) {
           await env.DB.prepare("UPDATE actions SET status='error', result=?1, completed_at=datetime('now') WHERE id=?2").bind("LLM " + resp.status, aid).run();
           return json({ error: "LLM " + resp.status }, 502);
