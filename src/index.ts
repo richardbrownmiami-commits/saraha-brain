@@ -216,6 +216,17 @@ async function runTool(env, tool, input) {
       return { ok: true, data: JSON.stringify(r.results || []) };
     } catch (e) { return { ok: false, error: e.message }; }
   }
+  if (tool === "ask_dev") {
+    try {
+      const devBody = { messages: [{ role: "system", content: DEV_PROMPT }, { role: "user", content: input }], temperature: 0.5, max_tokens: 1024 };
+      const devResp = await callLLM(env, devBody);
+      if (devResp.ok) {
+        const devData = await devResp.json();
+        return { ok: true, data: devData.choices?.[0]?.message?.content || "(no response)" };
+      }
+      return { ok: false, error: "Dev LLM error" };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
   return { ok: false, error: "Unknown tool: " + tool };
 }
 
@@ -228,7 +239,7 @@ TOOL:db_query(SELECT * FROM brain_knowledge LIMIT 5)
 
 Then STOP. The system runs the query and returns results. Then answer using the results.
 
-Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt), ASK_DEV:question;
+Available: TOOL:db_query(sql), TOOL:web_search(query), TOOL:web_fetch(url), TOOL:prompt_edit(new_prompt), ASK_DEV:question, TOOL:ask_dev(question);
 async function callLLM(env, body, sessionId) {
   async function tryCF() {
     if (!env.CF_API_TOKEN) return null;
@@ -312,7 +323,7 @@ TOOL:web_search(query)  --  search the internet. Use for current data, news, fac
 TOOL:web_fetch(url)  --  fetch a web page content.
 TOOL:prompt_edit(new_prompt)  --  permanently override your system prompt (master only).
 TOOL:db_query(sql)  --  run a read-only SELECT on your D1 tables.
-ASK_DEV:question  --  ask Dev a technical question and get an answer.
+TOOL:ask_dev(question)  --  ask Dev a technical question.
 
 ## Prompt System
 Your system prompt is defined in the code as SYSTEM_PROMPT constant. However, you can override it dynamically:
@@ -566,29 +577,7 @@ export default {
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
 
-                let devAnswer = null;
-        if (content.includes("ASK_DEV:")) {
-          const qIdx = content.indexOf("ASK_DEV:");
-          let devQ = content.slice(qIdx + 8).trim();
-          devQ = devQ.replace(/^["']|["']$/g, "");
-          if (devQ) {
-            try {
-              const devBody = { messages: [{ role: "system", content: DEV_PROMPT }, { role: "user", content: devQ }], temperature: 0.5, max_tokens: 1024 };
-              const devResp = await callLLM(env, devBody, sessionId);
-              if (devResp.ok) {
-                const devData = await devResp.json();
-                devAnswer = devData.choices?.[0]?.message?.content || "(no response)";
-                const followBody = { messages: [{ role: "system", content: system.slice(0, 8000) + "\n\nDev answered: " + devAnswer + "\n\nNow respond to your master using Dev's answer." }, { role: "user", content: llmInput }], temperature: 0.7, max_tokens: 2048 };
-                const followResp = await callLLM(env, followBody, sessionId);
-                if (followResp.ok) {
-                  const followData = await followResp.json();
-                  content = followData.choices?.[0]?.message?.content || content;
-                }
-              }
-            } catch {}
-          }
-        }
-
+        
         if (who !== "Dev") await storeMemory(env.DB, "assistant", content.slice(0, 1000));
 await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
         return json({ result: content, model: model || "", usage: { total_tokens: tokens }, action_id: aid, tool: toolResult });
