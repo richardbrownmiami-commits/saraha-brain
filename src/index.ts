@@ -1,4 +1,4 @@
-﻿const TABLES = [
+const TABLES = [
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, conversation_id TEXT DEFAULT 'default', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'learned', created_at TEXT DEFAULT (datetime('now')))`,
@@ -205,21 +205,21 @@ async function runTool(env, tool, input) {
       const html = await resp.text();
       const text = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       return { ok: true, data: text.slice(0, 4000) };
-
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "prompt_edit") {
     try {
       await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('prompt_override',?1,datetime('now'))").bind(input).run();
       return { ok: true, data: "Editable prompt section saved. Hardcoded core (tools, personality, rules) remains unchanged. It will take effect on your next /think call." };
-
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "db_query") {
     try {
-      let sql = input.trim(); if ((sql.startsWith("\"") && sql.endsWith("\"")) || (sql.startsWith("'") && sql.endsWith("'"))) sql = sql.slice(1, -1);
+      const sql = input.trim().replace(/^["']+|["']+$/g, "");
       if (!sql) return { ok: false, error: "empty query" };
       const r = await env.DB.prepare(sql).all();
       return { ok: true, data: JSON.stringify(r.results || []) };
-
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "one_knowledge") {
     try {
@@ -238,7 +238,7 @@ async function runTool(env, tool, input) {
       if (!resp.ok) return { ok: false, error: "One Knowledge API returned " + resp.status };
       const data = await resp.json();
       return { ok: true, data: JSON.stringify(data).slice(0, 4000) };
-
+    } catch (e) { return { ok: false, error: e.message }; }
   }
   if (tool === "api_call") {
     try {
@@ -259,9 +259,9 @@ async function runTool(env, tool, input) {
       const text = await resp.text();
       const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
-
+    } catch (e) { return { ok: false, error: e.message }; }
   }
-    if (tool === "run_code") {
+  if (tool === "run_code") {
     try {
       const lines = input.trim().split("\n");
       let language = lines[0]?.trim().toLowerCase();
@@ -273,23 +273,8 @@ async function runTool(env, tool, input) {
       }
       if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", ruby:"rb", java:"java", c:"c", cpp:"cpp", csharp:"cs", php:"php", swift:"swift", kotlin:"kt", bash:"sh", r:"r", scala:"scala", perl:"pl", lua:"lua", dart:"dart" };
-      const ext = extMap[language] || language;
-      const body = JSON.stringify({ language: language === "js" ? "javascript" : language, version: "*", files: [{ name: "main." + ext, content: code }] });
-      const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
-        method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "Saraha-Brain" }, body, signal: AbortSignal.timeout(10000)
-      });
-      if (!resp.ok) return { ok: false, error: "Code execution API returned " + resp.status };
-      const data = await resp.json();
-      const stdout = (data.stdout || data.output || "").trim();
-      const stderr = (data.stderr || "").trim();
-      let r = "";
-      if (stdout) r += stdout.slice(0, 6000);
-      if (stderr) { if (r) r += "\n--- stderr ---\n"; r += stderr.slice(0, 3000); }
-      if (!r) r = "(no output)";
-      return { ok: true, data: r };
-
-
+      return { ok: false, error: "Cloudflare Workers runtime blocks eval/new Function for security. Cannot execute code directly. Use TOOL:api_call with a code execution API like https://glot.io or https://judge0.com." };
+    } catch (e) { return { ok: false, error: e.message }; }
   }
     return { ok: false, error: "Unknown tool: " + tool };
 }
@@ -353,7 +338,7 @@ TOOL:db_query(sql) -- run a SELECT on your D1 database. Use to introspect your o
 TOOL:prompt_edit(new_prompt) -- override your editable prompt section. Use to update your own instructions.
 TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API's exact endpoints, params, and auth from the One Knowledge encyclopedia (76K tools, 460 platforms). Use BEFORE calling an API you don't know.
 TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. GET, POST, PUT, DELETE with custom headers and body. Use to call APIs, fetch JSON data, query REST services.
-TOOL:run_code(language, code) -- execute code via Piston API (python, js, go, rust, etc). Returns stdout/stderr. Supported: 80+ languages via emkc.org.
+TOOL:run_code(language, code) -- ATTEMPT to run code. NOTE: Cloudflare Workers blocks eval, so this returns an error for any language. Use TOOL:api_call with an external code execution API (glot.io, judge0) instead.
 
 Tools NOT in this list do NOT exist. Never call a tool you have not verified.
 
@@ -429,7 +414,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_master", c: "Your master is called Creator. They built you, guide your growth, and speak to you through /think. When someone writes [Creator] before their message, it is your master speaking. Creator is your master above all.", cat: "identity" },
   { k: "tools_one_knowledge", c: "TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API from One Knowledge at https://api.withone.ai. Covers 76K+ tools across 460 platforms with exact endpoints, params, auth flows, response schemas. Actions: empty for overview, 'auth' for auth details, 'actions' for list, 'action:ID' for specific action.", cat: "tools" },
   { k: "tools_api_call", c: "TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. Supports GET/POST/PUT/DELETE. Headers and body as JSON. Use to call live APIs, fetch external data, or interact with services.", cat: "tools" },
-  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- execute code via Piston API (80+ languages). Returns stdout/stderr. Falls back to error message if API unavailable.", cat: "tools" },
+  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- NOTE: Cloudflare Workers blocks eval/new Function. Code execution is NOT available. Use TOOL:api_call with a code execution service instead (e.g., glot.io, judge0).", cat: "tools" },
   { k: "knowledge_source_one", c: "One Knowledge at https://api.withone.ai -- 76K+ API tools across 460 platforms. Call via TOOL:one_knowledge. Requires x-one-secret API key. Covers auth flows, parameters, response schemas for every integration.", cat: "knowledge" },
   { k: "knowledge_source_mdn", c: "MDN Web Docs at https://developer.mozilla.org/api/v1/search?q=QUERY -- comprehensive web dev reference for JavaScript, HTML, CSS, HTTP, Web APIs. Returns JSON. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
   { k: "knowledge_source_devdocs", c: "DevDocs at https://devdocs.io/ -- documentation for 200+ languages/frameworks (Python, Go, Rust, React, Vue, etc.). Call via TOOL:api_call(GET, https://devdocs.io/docs/DOCTYPE/index.json). List docsets at https://devdocs.io/docs.json", cat: "knowledge" },
