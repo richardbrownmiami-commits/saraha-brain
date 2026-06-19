@@ -19,12 +19,12 @@ async function initSchema(db, env) {
     for (const s of TABLES) {
       await db.exec(s);
     }
-    try { await db.exec("DROP TABLE IF EXISTS knowledge_fts"); } catch {}
-    await db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(key, content, category)");
-    try { await db.exec("INSERT INTO knowledge_fts SELECT key, content, category FROM brain_knowledge"); } catch {}
     for (const item of SEED_KNOWLEDGE) {
       try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, ?3, 'seed')").bind(item.k, item.c, item.cat).run(); } catch {}
     }
+    try { await db.exec("DROP TABLE IF EXISTS knowledge_fts"); } catch {}
+    await db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(key, content, category)");
+    try { await db.exec("INSERT INTO knowledge_fts SELECT key, content, category FROM brain_knowledge"); } catch {}
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('schema_version',?1,datetime('now'))").bind(SCHEMA_VERSION).run();
     await db.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','100',datetime('now'))").run();
     try { await db.prepare("DELETE FROM identity WHERE key='prompt_override' AND value='null'").run(); } catch {}
@@ -540,7 +540,8 @@ export default {
       try { await env.DB.prepare("SELECT 1").run(); dbOk = true; } catch {}
       const memCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory").all()).results[0]?.c || 0;
       const knCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge").all()).results[0]?.c || 0;
-      return json({ alive: true, db: dbOk, memory: memCount, knowledge: knCount, version: "3.0.0" });
+      const convCount = (await env.DB.prepare("SELECT COUNT(DISTINCT conversation_id) as c FROM brain_memory").all()).results[0]?.c || 0;
+      return json({ alive: true, db: dbOk, memory: memCount, knowledge: knCount, conversations: convCount, version: "3.1.0" });
     }
 
     if (url.pathname === "/brain/knowledge" && req.method === "GET") {
@@ -574,6 +575,54 @@ export default {
       const limit = parseInt(url.searchParams.get("limit")) || 20;
       const r = await env.DB.prepare("SELECT role, content, created_at FROM brain_memory ORDER BY id DESC LIMIT ?1").bind(limit).all();
       return json({ entries: (r.results || []).reverse() });
+    }
+
+    if (url.pathname === "/brain/memory/search") {
+      const q = url.searchParams.get("q");
+      if (!q) return json({ error: "query param q required" }, 400);
+      const like = "%" + q.replace(/%/g, "\\%").replace(/_/g, "\\_") + "%";
+      const r = await env.DB.prepare("SELECT id, role, content, conversation_id, created_at FROM brain_memory WHERE content LIKE ?1 ORDER BY id DESC LIMIT 50").bind(like).all();
+      return json({ query: q, results: r.results || [] });
+    }
+
+    if (url.pathname === "/brain/source") {
+      const info = {
+        language: "TypeScript",
+        runtime: "Cloudflare Workers (ES module)",
+        file: "src/index.ts",
+        lines: (() => { try { return require?.main?.toString().split("\n").length || 743; } catch { return 743; } })(),
+        endpoints: ["/think","/status","/avatar","/","/brain/history","/brain/memory","/brain/memory/search","/brain/knowledge","/brain/prompt","/brain/prompt/reset","/brain/repair","/brain/logs","/brain/vectorize","/brain/introspect","/brain/source"],
+        tools: ["web_search","web_fetch","db_query","prompt_edit","one_knowledge","api_call","run_code"],
+        tables: ["identity","brain_memory","brain_knowledge","actions","brain_logs","knowledge_fts"],
+        llm_primary: "Workers AI (@cf/meta/llama-3.3-70b-instruct-fp8-fast)",
+        llm_fallback: "BUDDHI_DWAR gateway",
+        memory: { type: "D1 SQLite", context_window: "last 10 messages injected per call", search: "FTS5 on knowledge, LIKE on memory" },
+        capabilities: ["conversation with 10-msg memory","web search","web fetch","DB introspection","prompt self-edit","code execution (38+ langs via Wandbox)","API calls","knowledge base with FTS5 + vector search","scheduled learning","emotions & energy","conversation history viewer"]
+      };
+      return json(info);
+    }
+
+    if (url.pathname === "/brain/prompt/reset" && (req.method === "GET" || req.method === "POST")) {
+      try { await env.DB.prepare("DELETE FROM identity WHERE key='prompt_override'").run(); } catch {}
+      return json({ ok: true, message: "Prompt reset to default. Hardcoded core unchanged." });
+    }
+
+    if (url.pathname === "/brain/introspect") {
+      const totalMem = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory").all()).results[0]?.c || 0;
+      const totalKn = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge").all()).results[0]?.c || 0;
+      const totalActions = (await env.DB.prepare("SELECT COUNT(*) as c FROM actions").all()).results[0]?.c || 0;
+      const convCount = (await env.DB.prepare("SELECT COUNT(DISTINCT conversation_id) as c FROM brain_memory").all()).results[0]?.c || 0;
+      const userMsgCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory WHERE role='user'").all()).results[0]?.c || 0;
+      const botMsgCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory WHERE role='assistant'").all()).results[0]?.c || 0;
+      const topConversations = (await env.DB.prepare("SELECT conversation_id, COUNT(*) as msg_count, MIN(created_at) as start, MAX(created_at) as end FROM brain_memory GROUP BY conversation_id ORDER BY msg_count DESC LIMIT 10").all()).results || [];
+      const recentActivity = (await env.DB.prepare("SELECT DATE(created_at) as day, COUNT(*) as count FROM brain_memory WHERE created_at > datetime('now', '-30 days') GROUP BY day ORDER BY day DESC").all()).results || [];
+      const topKnowledgeCategories = (await env.DB.prepare("SELECT category, COUNT(*) as count FROM brain_knowledge GROUP BY category ORDER BY count DESC").all()).results || [];
+      return json({
+        summary: { total_memories: totalMem, total_knowledge: totalKn, total_actions: totalActions, conversations: convCount, user_messages: userMsgCount, bot_messages: botMsgCount },
+        top_conversations: topConversations,
+        activity_30d: recentActivity,
+        knowledge_categories: topKnowledgeCategories
+      });
     }
 
     if (url.pathname === "/brain/history") {
@@ -618,7 +667,7 @@ export default {
       const state = await getState(env.DB);
       const memCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_memory").all()).results[0]?.c || 0;
       const knCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge").all()).results[0]?.c || 0;
-      return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skytron</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:500px;width:100%}h1{color:#58a6ff;font-size:1.5rem;margin-bottom:1rem}.stat{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid #21262d;font-size:0.85rem}.stat:last-child{border:none}.label{color:#8b949e}.links{display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}</style></head><body><h1>Skytron</h1><div class="card"><div class="stat"><span class="label">Energy</span><span class="val" style="color:${state.reg.energy>60?'#3fb950':state.reg.energy>30?'#d29922':'#f85149'}">${state.reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val">${state.emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val">${state.emotions.energetic}/10</span></div><div class="stat"><span class="label">Memory</span><span class="val">${memCount} messages</span></div><div class="stat"><span class="label">Knowledge</span><span class="val">${knCount} facts</span></div></div><div class="card"><div class="links"><a href="/avatar">Chat</a><a href="/status">Status</a><a href="/brain/history">History</a><a href="/brain/memory">Memory</a><a href="/brain/knowledge">Knowledge</a></div></div></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
+      return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skytron</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:500px;width:100%}h1{color:#58a6ff;font-size:1.5rem;margin-bottom:1rem}.stat{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid #21262d;font-size:0.85rem}.stat:last-child{border:none}.label{color:#8b949e}.links{display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}</style></head><body><h1>Skytron</h1><div class="card"><div class="stat"><span class="label">Energy</span><span class="val" style="color:${state.reg.energy>60?'#3fb950':state.reg.energy>30?'#d29922':'#f85149'}">${state.reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val">${state.emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val">${state.emotions.energetic}/10</span></div><div class="stat"><span class="label">Memory</span><span class="val">${memCount} messages</span></div><div class="stat"><span class="label">Knowledge</span><span class="val">${knCount} facts</span></div></div><div class="card"><div class="links"><a href="/avatar">Chat</a><a href="/status">Status</a><a href="/brain/history">History</a><a href="/brain/memory">Memory</a><a href="/brain/memory/search?q=">Search</a><a href="/brain/knowledge">Knowledge</a><a href="/brain/introspect">Insights</a><a href="/brain/source">About</a></div></div></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
     if (url.pathname === "/brain/logs") {
       const limit = parseInt(url.searchParams.get("limit")) || 50;
