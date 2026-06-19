@@ -263,7 +263,7 @@ async function runTool(env, tool, input) {
       const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
     } catch (e) { return { ok: false, error: e.message }; }
-  }  if (tool === "run_code") {
+  }if (tool === "run_code") {
     try {
       const lines = input.trim().split("\\n");
       let language = lines[0]?.trim().toLowerCase();
@@ -277,25 +277,21 @@ async function runTool(env, tool, input) {
       language = language.replace(/,$/, "").trim();
       const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", ruby:"rb", java:"java", c:"c", cpp:"cpp", csharp:"cs", php:"php", swift:"swift", kotlin:"kt", bash:"sh", r:"r", scala:"scala", perl:"pl", lua:"lua", dart:"dart" };
       const ext = extMap[language] || language;
-      const bodies = [
-        { url: "https://emkc.org/api/v2/piston/execute", body: JSON.stringify({ language: language === "js" ? "javascript" : language, version: "*", files: [{ name: "main." + ext, content: code }] }) },
-        { url: "https://glot.io/api/run/" + language + "/latest", body: JSON.stringify({ files: [{ name: "main." + ext, content: code }] }) }
-      ];
-      for (const b of bodies) {
-        try {
-          const resp = await fetch(b.url, { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "Saraha-Brain" }, body: b.body, signal: AbortSignal.timeout(10000) });
-          if (resp.status === 401 || resp.status === 404) continue;
-          const data = await resp.json();
-          const stdout = (data.stdout || data.output || "").trim();
-          const stderr = (data.stderr || "").trim();
-          let r = "";
-          if (stdout) r += stdout.slice(0, 6000);
-          if (stderr) { if (r) r += "\\n--- stderr ---\\n"; r += stderr.slice(0, 3000); }
-          if (!r) r = "(no output)";
-          return { ok: true, data: r };
-        } catch {}
-      }
-      return { ok: false, error: "No code execution API available. Options: set GLOT_TOKEN env var, use TOOL:api_call with glot.io + token, or use a local sandbox." };
+      const resp = await fetch("https://glot.io/api/run/" + language + "/latest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
+        body: JSON.stringify({ files: [{ name: "main." + ext, content: code }] }),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!resp.ok && resp.status === 404) return { ok: false, error: "Language '" + language + "' not supported by glot.io. Supported: " + Object.keys(extMap).join(", ") };
+      const data = await resp.json();
+      const stdout = (data.stdout || "").trim();
+      const stderr = (data.stderr || "").trim();
+      let result = "";
+      if (stdout) result += stdout.slice(0, 4000);
+      if (stderr) { if (result) result += "\\n--- stderr ---\\n"; result += stderr.slice(0, 2000); }
+      if (!result) result = "(no output)";
+      return { ok: true, data: result };
     } catch (e) { return { ok: false, error: e.message }; }
   }return { ok: false, error: "Unknown tool: " + tool };
 }
@@ -704,7 +700,15 @@ export default {
         for (let t = 0; t < 3; t++) {
           if (typeof content !== "string") { content = String(content || ""); }
           const toolMatch = content.match(/^TOOL:(\w+)\(/m);
-          if (!toolMatch) break;
+          if (!tl) break;
+      const afterOpen = content.slice(tl.index + tl[0].length);
+      let depth = 1, end = 0;
+      for (; end < afterOpen.length && depth > 0; end++) {
+        if (afterOpen[end] === "(") depth++;
+        else if (afterOpen[end] === ")") depth--;
+      }
+      if (depth !== 0) break;
+      const toolInput = afterOpen.slice(0, end - 1).trim();
       const afterOpen = content.slice(toolMatch.index + toolMatch[0].length);
       let depth = 1, end = 0;
       for (; end < afterOpen.length && depth > 0; end++) {
