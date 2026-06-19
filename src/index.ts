@@ -680,14 +680,16 @@ export default {
         try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_initial', ?2, ?3, ?4)").bind(aid, content.slice(0, 500), model, tokens).run(); } catch {}
 
         for (let t = 0; t < 3; t++) {
+          if (typeof content !== "string") { content = String(content || ""); }
           const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
           if (!toolMatch) break;
           const toolName = toolMatch[1];
           const toolInput = toolMatch[2];
           const toolResult = await runTool(env, toolName, toolInput);
+          const followMsg = system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results. Output ONLY your answer. Do NOT repeat any TOOL: commands.";
           const followBody = {
             messages: [
-              { role: "system", content: system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results. Output ONLY your answer. Do NOT repeat any TOOL: commands." },
+              { role: "system", content: followMsg },
               { role: "user", content: llmInput }
             ], temperature: 0.7, max_tokens: 2048
           };
@@ -696,11 +698,13 @@ export default {
           const followData = await followResp.json();
           const followModel = followData.model || model;
           const followTokens = followData.usage?.total_tokens || 0;
-          content = followData.choices?.[0]?.message?.content || content;
+          const newContent = followData.choices?.[0]?.message?.content;
+          content = typeof newContent === "string" ? newContent : String(content);
           tokens += followTokens;
-          try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, content.slice(0, 500), followModel, followTokens).run(); } catch {}
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, (content || "").slice(0, 500), followModel, followTokens).run(); } catch {}
         }
 
+        if (typeof content !== "string") content = String(content || "");
         content = content.replace(/^TOOL:\w+\([\s\S]*?\)\s*$/gm, '').trim();
 
         await storeMemory(env.DB, "assistant", content.slice(0, 1000));
