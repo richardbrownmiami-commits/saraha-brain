@@ -255,45 +255,28 @@ async function runTool(env, tool, input) {
         if (parts[3]) body = parts[3];
       }
       if (!url.startsWith("http")) url = "https://" + url;
-      if (url.includes("github.com") && env.GH_PAT && !headers.Authorization && !headers.authorization) {
-        headers.Authorization = "Bearer " + env.GH_PAT;
-      }
       const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
       const text = await resp.text();
       const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
     } catch (e) { return { ok: false, error: e.message }; }
-  }if (tool === "run_code") {
+  }
+  if (tool === "run_code") {
     try {
-      const lines = input.trim().split("\\n");
+      const lines = input.trim().split("\n");
       let language = lines[0]?.trim().toLowerCase();
-      let code = lines.slice(1).join("\\n").trim();
+      let code = lines.slice(1).join("\n").trim();
       if (!code && input.includes(",")) {
         const parts = cleanParams(input, ",");
         language = (parts[0] || "").toLowerCase();
-        code = parts.slice(1).join("\\n");
+        code = parts.slice(1).join("\n");
       }
-      if (!language || !code) return { ok: false, error: "Format: language\\\\ncode or language, code" };
+      if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", ruby:"rb", java:"java", c:"c", cpp:"cpp", csharp:"cs", php:"php", swift:"swift", kotlin:"kt", bash:"sh", r:"r", scala:"scala", perl:"pl", lua:"lua", dart:"dart" };
-      const ext = extMap[language] || language;
-      const resp = await fetch("https://glot.io/api/run/" + language + "/latest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "User-Agent": "Saraha-Brain" },
-        body: JSON.stringify({ files: [{ name: "main." + ext, content: code }] }),
-        signal: AbortSignal.timeout(15000)
-      });
-      if (!resp.ok && resp.status === 404) return { ok: false, error: "Language '" + language + "' not supported by glot.io. Supported: " + Object.keys(extMap).join(", ") };
-      const data = await resp.json();
-      const stdout = (data.stdout || "").trim();
-      const stderr = (data.stderr || "").trim();
-      let result = "";
-      if (stdout) result += stdout.slice(0, 4000);
-      if (stderr) { if (result) result += "\\n--- stderr ---\\n"; result += stderr.slice(0, 2000); }
-      if (!result) result = "(no output)";
-      return { ok: true, data: result };
+      return { ok: false, error: "Cloudflare Workers runtime blocks eval/new Function for security. Cannot execute code directly. Use TOOL:api_call with a code execution API like https://glot.io or https://judge0.com." };
     } catch (e) { return { ok: false, error: e.message }; }
-  }return { ok: false, error: "Unknown tool: " + tool };
+  }
+    return { ok: false, error: "Unknown tool: " + tool };
 }
 
 const CF_AI = { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", account: "913f3a2576a358054eba9a58a9573949" };
@@ -699,29 +682,13 @@ export default {
 
         for (let t = 0; t < 3; t++) {
           if (typeof content !== "string") { content = String(content || ""); }
-          const toolMatch = content.match(/^TOOL:(\w+)\(/m);
-          if (!tl) break;
-      const afterOpen = content.slice(tl.index + tl[0].length);
-      let depth = 1, end = 0;
-      for (; end < afterOpen.length && depth > 0; end++) {
-        if (afterOpen[end] === "(") depth++;
-        else if (afterOpen[end] === ")") depth--;
-      }
-      if (depth !== 0) break;
-      const toolInput = afterOpen.slice(0, end - 1).trim();
-      const afterOpen = content.slice(toolMatch.index + toolMatch[0].length);
-      let depth = 1, end = 0;
-      for (; end < afterOpen.length && depth > 0; end++) {
-        if (afterOpen[end] === "(") depth++;
-        else if (afterOpen[end] === ")") depth--;
-      }
-      if (depth !== 0) break;
-      const toolInput = afterOpen.slice(0, end - 1).trim();
-          
-          
+          const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
+          if (!toolMatch) break;
+          const toolName = toolMatch[1];
+          const toolInput = toolMatch[2];
           const toolResult = await runTool(env, toolName, toolInput);
           const resultText = toolResult.ok ? toolResult.data : "ERROR: " + toolResult.error;
-          content = content.replace(toolMatch[0], "[TOOL RESULT: " + resultText + "]");
+          content = content.replace("TOOL:" + toolName + "(" + toolInput + ")", "[TOOL RESULT: " + resultText + "]");
           try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, ("TOOL:" + toolName + " -> " + resultText).slice(0, 500), model, 0).run(); } catch {}
         }
         if (typeof content !== "string") content = String(content || "");
@@ -737,41 +704,17 @@ await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=
     return json({ error: "not found" }, 404);
   },
 
-    async scheduled(event, env, ctx) {
+  async scheduled(event, env, ctx) {
     try {
-      const cronIdx = await env.DB.prepare("SELECT value FROM identity WHERE key='cron_cycle'").all();
-      let cycle = parseInt(cronIdx.results[0]?.value) || 0;
-      if (cycle % 2 === 0) {
-        await learnTopic(env, env.DB);
-      } else {
-        const cnt = await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge WHERE source='public_apis'").all();
-        const existing = cnt.results[0]?.c || 0;
-        if (existing < 30) {
-          try {
-            const resp = await fetch("https://api.publicapis.org/entries?amount=10", { signal: AbortSignal.timeout(15000) });
-            if (resp.ok) {
-              const data = await resp.json();
-              const entries = data.entries || [];
-              for (const api of entries) {
-                try {
-                  await env.DB.prepare("INSERT OR IGNORE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, 'api_reference', 'public_apis')").bind(
-                    "api_" + api.API.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40),
-                    "API: " + api.API + "\\nDescription: " + (api.Description || "") + "\\nURL: " + (api.Link || "") + "\\nCategory: " + (api.Category || "") + "\\nAuth: " + (api.Auth || "none") + "\\nHTTPS: " + api.HTTPS
-                  ).run();
-                } catch {}
-              }
-            }
-          } catch {}
-        }
-        const state = await getState(env.DB);
-        if (state.reg.energy < 20) {
-          await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','40',datetime('now'))").run();
-        }
+      await learnTopic(env, env.DB);
+      const state = await getState(env.DB);
+      if (state.reg.energy < 20) {
+        await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','40',datetime('now'))").run();
       }
-      await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('cron_cycle', ?1, datetime('now'))").bind(cycle + 1).run();
       try { await env.DB.prepare("DELETE FROM brain_logs WHERE id NOT IN (SELECT id FROM brain_logs ORDER BY id DESC LIMIT 500)").run(); } catch {}
     } catch (e) { console.error("scheduled:", e); }
   }
+};
 
 
 
