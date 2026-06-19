@@ -255,13 +255,15 @@ async function runTool(env, tool, input) {
         if (parts[3]) body = parts[3];
       }
       if (!url.startsWith("http")) url = "https://" + url;
+      if (url.includes("github.com") && env.GH_PAT && !headers.Authorization && !headers.authorization) {
+        headers.Authorization = "Bearer " + env.GH_PAT;
+      }
       const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
       const text = await resp.text();
       const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
     } catch (e) { return { ok: false, error: e.message }; }
-  }
-  if (tool === "run_code") {
+  }if (tool === "run_code") {
     try {
       const lines = input.trim().split("\\n");
       let language = lines[0]?.trim().toLowerCase();
