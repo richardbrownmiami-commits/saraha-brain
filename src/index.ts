@@ -216,6 +216,66 @@ async function runTool(env, tool, input) {
       return { ok: true, data: JSON.stringify(r.results || []) };
     } catch (e) { return { ok: false, error: e.message }; }
   }
+  if (tool === "one_knowledge") {
+    try {
+      const parts = input.split(",").map(s => s.trim());
+      const platform = parts[0];
+      const action = parts[1] || "";
+      const query = parts[2] || "";
+      const key = env.ONE_KNOWLEDGE_KEY;
+      if (!key) return { ok: false, error: "No One Knowledge API key configured" };
+      let url = "https://api.withone.ai/open/knowledge/" + platform;
+      if (action === "auth") url += "/auth";
+      else if (action === "actions") url += "/actions" + (query ? "?query=" + encodeURIComponent(query) : "");
+      else if (action && action.startsWith("action:")) url += "/actions/" + action.replace("action:", "");
+      else if (action && !action.startsWith("search")) url += "/actions";
+      const resp = await fetch(url, { headers: { "x-one-secret": key, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) return { ok: false, error: "One Knowledge API returned " + resp.status };
+      const data = await resp.json();
+      return { ok: true, data: JSON.stringify(data).slice(0, 4000) };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  if (tool === "api_call") {
+    try {
+      const method = (input.match(/^(\w+)/) || [])[1] || "GET";
+      const urlMatch = input.match(/\n(.+)/);
+      if (!urlMatch) return { ok: false, error: "Format: METHOD\\nurl\\nheaders\\nbody" };
+      let url = urlMatch[1].trim();
+      const remaining = input.slice(input.indexOf("\n", input.indexOf(urlMatch[1]))).trim();
+      const lines = remaining.split("\n");
+      let headers = { "User-Agent": "Saraha-Brain" };
+      let body = undefined;
+      if (lines[0] && lines[0] !== urlMatch[1].trim()) {
+        try { const h = JSON.parse(lines[0]); if (typeof h === "object") headers = { ...headers, ...h }; } catch {}
+      }
+      if (lines[1] && lines[1] !== urlMatch[1].trim() && lines[1] !== lines[0]) {
+        body = lines[1];
+      }
+      if (!url.startsWith("http")) url = "https://" + url;
+      const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
+      const text = await resp.text();
+      const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
+      return { ok: true, data: "Status: " + resp.status + "\n" + result };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  if (tool === "run_code") {
+    try {
+      const lines = input.trim().split("\n");
+      const language = lines[0]?.trim();
+      const code = lines.slice(1).join("\n").trim();
+      if (!language || !code) return { ok: false, error: "Format: language\\ncode" };
+      const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language, version: "*", files: [{ content: code }] }),
+        signal: AbortSignal.timeout(25000)
+      });
+      if (!resp.ok) return { ok: false, error: "Piston API returned " + resp.status };
+      const data = await resp.json();
+      const out = (data.run?.stdout || "") + (data.run?.stderr ? "\nSTDERR:\n" + data.run.stderr : "");
+      return { ok: true, data: out.slice(0, 4000) || "(no output)" };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
     return { ok: false, error: "Unknown tool: " + tool };
 }
 
@@ -276,6 +336,9 @@ TOOL:web_search(query) -- search the internet. Use when you need current informa
 TOOL:web_fetch(url) -- fetch a web page and extract text. Use to read specific articles or docs.
 TOOL:db_query(sql) -- run a SELECT on your D1 database. Use to introspect your own memory and knowledge.
 TOOL:prompt_edit(new_prompt) -- override your editable prompt section. Use to update your own instructions.
+TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API's exact endpoints, params, and auth from the One Knowledge encyclopedia (76K tools, 460 platforms). Use BEFORE calling an API you don't know.
+TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. GET, POST, PUT, DELETE with custom headers and body. Use to call APIs, fetch JSON data, query REST services.
+TOOL:run_code(language, code) -- execute code in 30+ languages (python, go, rust, js, cpp, ruby, etc.) via sandbox. Returns stdout/stderr/exit code. Use to test scripts, process data, run computations.
 
 Tools NOT in this list do NOT exist. Never call a tool you have not verified.
 
@@ -337,7 +400,7 @@ const SEED_KNOWLEDGE = [
   { k: "architecture_runtime", c: "Cloudflare Worker ES module, single file src/index.ts, deployed via GitHub Actions.", cat: "architecture" },
   { k: "architecture_endpoints", c: "/think(POST) main conversation, /status(GET) health check, /avatar(GET) chat UI, /brain/history(GET) HTML conversation viewer, /brain/memory(GET) JSON memory, /brain/knowledge(GET+POST) knowledge base, /brain/prompt(GET+POST) view/update prompt override, /brain/repair(GET/POST) fix stuck actions.", cat: "architecture" },
   { k: "architecture_tables", c: "identity(key-value), brain_memory(role,content,conversation_id,created_at), brain_knowledge(key,content,category,source,created_at), actions(type,status,input,result), brain_logs(action_id,step,content,model,tokens).", cat: "architecture" },
-  { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), Workers AI via REST API (env.CF_API_TOKEN, free, primary LLM), VECTORIZE -> saraha-brain-memory vector index (semantic search, 768-dim cosine), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY, CF_API_TOKEN.", cat: "architecture" },
+  { k: "architecture_bindings", c: "DB -> D1 database (saraha-brain-db), Workers AI via REST API (env.CF_API_TOKEN, free, primary LLM), VECTORIZE -> saraha-brain-memory vector index (semantic search, 768-dim cosine), BUDDHI_DWAR -> buddhi-dwar (fallback LLM gateway). Vars: BRAIN_KEY, BRAVE_API_KEY, CF_API_TOKEN, ONE_KNOWLEDGE_KEY.", cat: "architecture" },
   { k: "memory_system", c: "brain_memory table stores every conversation. Last 10 messages injected into prompt context each /think call.", cat: "memory" },
   { k: "knowledge_system", c: "brain_knowledge table stores facts. FTS5 full-text search indexes key/content/category. Vectorize semantic search finds related knowledge by meaning using 768-dim embeddings. Both are queried and merged on each /think call.", cat: "knowledge" },
   { k: "tools_web_search", c: "TOOL:web_search(query)  --  searches the web using Brave API or DuckDuckGo fallback. Returns 5 results.", cat: "tools" },
@@ -349,6 +412,14 @@ const SEED_KNOWLEDGE = [
   { k: "deployment_wrangler", c: "wrangler.toml: name=saraha-brain, D1 binding DB, service binding BUDDHI_DWAR, vars BRAIN_KEY/BRAVE_API_KEY/CF_API_TOKEN.", cat: "deployment" },
   { k: "llm_providers", c: "Primary: Workers AI REST API (env.CF_API_TOKEN, free, model @cf/meta/llama-3.3-70b-instruct-fp8-fast). Fallback: BUDDHI_DWAR service -> buddhi-dwar -> Groq/OpenAI.", cat: "architecture" },
   { k: "identity_master", c: "Your master is called Creator. They built you, guide your growth, and speak to you through /think. When someone writes [Creator] before their message, it is your master speaking. Creator is your master above all.", cat: "identity" },
+  { k: "tools_one_knowledge", c: "TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API from One Knowledge at https://api.withone.ai. Covers 76K+ tools across 460 platforms with exact endpoints, params, auth flows, response schemas. Actions: empty for overview, 'auth' for auth details, 'actions' for list, 'action:ID' for specific action.", cat: "tools" },
+  { k: "tools_api_call", c: "TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. Supports GET/POST/PUT/DELETE. Headers and body as JSON. Use to call live APIs, fetch external data, or interact with services.", cat: "tools" },
+  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- execute code in sandbox via Piston API (emkc.org). Supports 30+ languages: python, go, rust, javascript, typescript, cpp, ruby, php, swift, kotlin, bash, etc. Returns stdout, stderr, exit code.", cat: "tools" },
+  { k: "knowledge_source_one", c: "One Knowledge at https://api.withone.ai -- 76K+ API tools across 460 platforms. Call via TOOL:one_knowledge. Requires x-one-secret API key. Covers auth flows, parameters, response schemas for every integration.", cat: "knowledge" },
+  { k: "knowledge_source_mdn", c: "MDN Web Docs at https://developer.mozilla.org/api/v1/search?q=QUERY -- comprehensive web dev reference for JavaScript, HTML, CSS, HTTP, Web APIs. Returns JSON. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
+  { k: "knowledge_source_devdocs", c: "DevDocs at https://devdocs.io/ -- documentation for 200+ languages/frameworks (Python, Go, Rust, React, Vue, etc.). Call via TOOL:api_call(GET, https://devdocs.io/docs/DOCTYPE/index.json). List docsets at https://devdocs.io/docs.json", cat: "knowledge" },
+  { k: "knowledge_source_wikipedia", c: "Wikipedia API at https://en.wikipedia.org/api/rest_v1/page/summary/TOPIC -- structured article summaries. Also search at /page/search/title?q=QUERY. Returns JSON. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
+  { k: "knowledge_source_public_apis", c: "public-api-lists at https://public-api-lists.github.io/public-api-lists/api/all.json -- 730+ curated free APIs in structured JSON. Also Free-Api at https://raw.githubusercontent.com/udaysharmadev/Free-Api/main/README.md -- 1,613 free APIs. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
 ];
 
 const CHAT_HTML = `<!DOCTYPE html>
@@ -655,6 +726,7 @@ await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=
     } catch (e) { console.error("scheduled:", e); }
   }
 };
+
 
 
 
