@@ -21,8 +21,7 @@ crons = ["*/5 * * * *"]
 
 [vars]
 BRAIN_KEY = "Saraha-Brain-Key"
-BRAVE_API_KEY = "
-# GH_PAT passed via --var in deploy.yml
+BRAVE_API_KEY = ""
 CF_API_TOKEN = ""
 ONE_KNOWLEDGE_KEY = "sk_live_BGYjiPPHXP_PNDnVHWntCDoIHniug8oslKyBAWvP7XQ"
 GH_PAT = ""
