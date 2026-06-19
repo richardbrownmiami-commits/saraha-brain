@@ -273,16 +273,7 @@ async function runTool(env, tool, input) {
       }
       if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      if (language === "javascript" || language === "js" || language === "node") {
-        let output = "";
-        const fakeConsole = { log: (...args) => { output += args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ") + "\n"; }, error: (...args) => { output += "ERROR: " + args.map(a => String(a)).join(" ") + "\n"; }, warn: (...args) => { output += "WARN: " + args.map(a => String(a)).join(" ") + "\n"; } };
-        try {
-          const result = new Function("console", code)(fakeConsole);
-          if (output.trim()) return { ok: true, data: output.trim() };
-          return { ok: true, data: String(result ?? "(undefined)") };
-        } catch (e) { return { ok: false, error: output + e.message }; }
-      }
-      return { ok: false, error: "Language '" + language + "' not supported. Use JavaScript or call an external API with TOOL:api_call." };
+      return { ok: false, error: "Cloudflare Workers runtime blocks eval/new Function for security. Cannot execute code directly. Use TOOL:api_call with a code execution API like https://glot.io or https://judge0.com." };
     } catch (e) { return { ok: false, error: e.message }; }
   }
     return { ok: false, error: "Unknown tool: " + tool };
@@ -696,27 +687,11 @@ export default {
           const toolName = toolMatch[1];
           const toolInput = toolMatch[2];
           const toolResult = await runTool(env, toolName, toolInput);
-          const actualResult = toolResult.ok ? toolResult.data : "Error: " + toolResult.error;
-          const followMsg = "You used TOOL:" + toolName + " and the ACTUAL raw result is:\n---\n" + actualResult + "\n---\n\nCRITICAL RULE: You MUST report the exact result above. Do NOT invent, modify, or simulate any data. If the result is JSON, show it as-is. If there is an error, state it truthfully. Never make up a result that was not returned. Never say 'the output is X' unless X is literally in the result above.";
-          const followBody = {
-            messages: [
-              { role: "system", content: followMsg },
-              { role: "user", content: llmInput }
-            ], temperature: 0.7, max_tokens: 2048
-          };
-          const followResp = await callLLM(env, followBody, sessionId);
-          if (!followResp.ok) break;
-          const followData = await followResp.json();
-          const followModel = followData.model || model;
-          const followTokens = followData.usage?.total_tokens || 0;
-          const newContent = followData.choices?.[0]?.message?.content;
-          content = typeof newContent === "string" ? newContent : String(content);
-          tokens += followTokens;
-          try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, (content || "").slice(0, 500), followModel, followTokens).run(); } catch {}
+          const resultText = toolResult.ok ? toolResult.data : "ERROR: " + toolResult.error;
+          content = content.replace(toolMatch[0], "[TOOL RESULT: " + resultText + "]");
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, ("TOOL:" + toolName + " -> " + resultText).slice(0, 500), model, 0).run(); } catch {}
         }
-
         if (typeof content !== "string") content = String(content || "");
-        content = content.replace(/^TOOL:\w+\([\s\S]*?\)\s*$/gm, '').trim();
 
         await storeMemory(env.DB, "assistant", content.slice(0, 1000));
 await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
