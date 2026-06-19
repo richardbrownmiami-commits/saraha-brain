@@ -11,7 +11,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npx wrangler@3.90.0 deploy --var CF_API_TOKEN:${{ vars.CF_API_TOKEN }} --var GITHUB_PAT:${{ secrets.GITHUB_PAT }} --var ONE_KNOWLEDGE_KEY:${{ secrets.ONE_KNOWLEDGE_KEY }}
+          node-version: 22
+      - name: Deploy with wrangler
+        run: |
+          ARGS="--var CF_API_TOKEN:${{ vars.CF_API_TOKEN }}"
+          if [ -n "${{ secrets.GITHUB_PAT }}" ]; then ARGS="$ARGS --var GITHUB_PAT:${{ secrets.GITHUB_PAT }}"; fi
+          if [ -n "${{ secrets.ONE_KNOWLEDGE_KEY }}" ]; then ARGS="$ARGS --var ONE_KNOWLEDGE_KEY:${{ secrets.ONE_KNOWLEDGE_KEY }}"; fi
+          npx wrangler deploy $ARGS
         env:
           CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}
