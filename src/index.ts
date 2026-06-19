@@ -307,9 +307,9 @@ You run as a Cloudflare Worker (ES module, single file). You have:
 - actions: tracks /think calls
 - brain_logs: debug logging
 
-## Source Code & Deployment
+## Your Code Repository
 - GitHub: github.com/richardbrownmiami-commits/saraha-brain
-- Main file: src/index.ts
+- Main file: src/index.ts (this is YOU -- your own source code)
 - Push to main triggers GitHub Actions -> CF Workers deploy
 
 ## Memory System
@@ -483,6 +483,12 @@ export default {
       const knCount = (await env.DB.prepare("SELECT COUNT(*) as c FROM brain_knowledge").all()).results[0]?.c || 0;
       return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Skytron</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0b1120;color:#e6edf3;font-family:system-ui;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.5rem;margin:0.5rem;max-width:500px;width:100%}h1{color:#58a6ff;font-size:1.5rem;margin-bottom:1rem}.stat{display:flex;justify-content:space-between;padding:0.4rem 0;border-bottom:1px solid #21262d;font-size:0.85rem}.stat:last-child{border:none}.label{color:#8b949e}.links{display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap}.links a{color:#58a6ff;text-decoration:none;padding:0.4rem 0.8rem;border:1px solid #30363d;border-radius:8px;font-size:0.8rem}.links a:hover{background:#1f2937}</style></head><body><h1>Skytron</h1><div class="card"><div class="stat"><span class="label">Energy</span><span class="val" style="color:${state.reg.energy>60?'#3fb950':state.reg.energy>30?'#d29922':'#f85149'}">${state.reg.energy}%</span></div><div class="stat"><span class="label">Happy</span><span class="val">${state.emotions.happy}/10</span></div><div class="stat"><span class="label">Energetic</span><span class="val">${state.emotions.energetic}/10</span></div><div class="stat"><span class="label">Memory</span><span class="val">${memCount} messages</span></div><div class="stat"><span class="label">Knowledge</span><span class="val">${knCount} facts</span></div></div><div class="card"><div class="links"><a href="/avatar">Chat</a><a href="/status">Status</a><a href="/brain/history">History</a><a href="/brain/memory">Memory</a><a href="/brain/knowledge">Knowledge</a></div></div></body></html>`, { headers: { "Content-Type": "text/html;charset=utf-8" } });
     }
+    if (url.pathname === "/brain/logs") {
+      const limit = parseInt(url.searchParams.get("limit")) || 50;
+      const r = await env.DB.prepare("SELECT id, action_id, step, model, tokens, content, created_at FROM brain_logs ORDER BY id DESC LIMIT ?1").bind(limit).all();
+      return json({ entries: r.results || [] });
+    }
+
     if (url.pathname === "/brain/vectorize" && req.method === "POST") {
       try {
         await ensureVectorizeIndex(env);
@@ -503,6 +509,8 @@ export default {
         }
 
         const llmInput = `[${from || "Creator"}] ${input}`;
+
+        await storeMemory(env.DB, "user", llmInput.slice(0, 500));
 
         const r = await env.DB.prepare("INSERT INTO actions (type, status, input) VALUES ('think', 'running', ?1) RETURNING id").bind(input).all();
         const aid = r.results[0].id;
@@ -545,6 +553,7 @@ export default {
         let content = data.choices?.[0]?.message?.content || "";
         let tokens = data.usage?.total_tokens || 0;
         let model = data.model || "";
+        try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_initial', ?2, ?3, ?4)").bind(aid, content.slice(0, 500), model, tokens).run(); } catch {}
 
         for (let t = 0; t < 3; t++) {
           const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
@@ -561,8 +570,11 @@ export default {
           const followResp = await callLLM(env, followBody, sessionId);
           if (!followResp.ok) break;
           const followData = await followResp.json();
+          const followModel = followData.model || model;
+          const followTokens = followData.usage?.total_tokens || 0;
           content = followData.choices?.[0]?.message?.content || content;
-          tokens += followData.usage?.total_tokens || 0;
+          tokens += followTokens;
+          try { await env.DB.prepare("INSERT INTO brain_logs (action_id, step, content, model, tokens) VALUES (?1, 'llm_follow', ?2, ?3, ?4)").bind(aid, content.slice(0, 500), followModel, followTokens).run(); } catch {}
         }
 
         content = content.replace(/^TOOL:\w+\([\s\S]*?\)\s*$/gm, '').trim();
