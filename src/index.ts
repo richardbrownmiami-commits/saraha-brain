@@ -261,19 +261,19 @@ async function runTool(env, tool, input) {
   if (tool === "run_code") {
     try {
       const lines = input.trim().split("\n");
-      const language = lines[0]?.trim();
+      const language = lines[0]?.trim().toLowerCase();
       const code = lines.slice(1).join("\n").trim();
       if (!language || !code) return { ok: false, error: "Format: language\\ncode" };
-      const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language, version: "*", files: [{ content: code }] }),
-        signal: AbortSignal.timeout(25000)
-      });
-      if (!resp.ok) return { ok: false, error: "Piston API returned " + resp.status };
-      const data = await resp.json();
-      const out = (data.run?.stdout || "") + (data.run?.stderr ? "\nSTDERR:\n" + data.run.stderr : "");
-      return { ok: true, data: out.slice(0, 4000) || "(no output)" };
+      if (language === "javascript" || language === "js" || language === "node") {
+        let output = "";
+        const fakeConsole = { log: (...args) => { output += args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ") + "\n"; }, error: (...args) => { output += "ERROR: " + args.map(a => String(a)).join(" ") + "\n"; }, warn: (...args) => { output += "WARN: " + args.map(a => String(a)).join(" ") + "\n"; } };
+        try {
+          const result = new Function("console", code)(fakeConsole);
+          if (output.trim()) return { ok: true, data: output.trim() };
+          return { ok: true, data: String(result ?? "(undefined)") };
+        } catch (e) { return { ok: false, error: output + e.message }; }
+      }
+      return { ok: false, error: "Language '" + language + "' not supported. Use JavaScript or call an external API with TOOL:api_call." };
     } catch (e) { return { ok: false, error: e.message }; }
   }
     return { ok: false, error: "Unknown tool: " + tool };
