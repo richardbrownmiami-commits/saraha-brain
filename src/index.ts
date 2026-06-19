@@ -188,6 +188,11 @@ async function webSearch(env, query) {
   return "No results for: " + query;
 }
 
+function cleanParams(s, splitBy) {
+  const raw = splitBy === "newline" ? [s] : (s || "").split(splitBy || /[,;\n]+/);
+  return raw.map(p => p.trim().replace(/^[\w-]+=/, '').replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+}
+
 async function runTool(env, tool, input) {
   if (tool === "web_search") {
     const data = await webSearch(env, input);
@@ -218,8 +223,8 @@ async function runTool(env, tool, input) {
   }
   if (tool === "one_knowledge") {
     try {
-      const parts = input.split(",").map(s => s.trim().replace(/^\w+=/, ""));
-      const platform = parts[0];
+      const parts = cleanParams(input);
+      const platform = parts[0] || input.trim().replace(/^[\w-]+=/, '').replace(/^["']|["']$/g, '').trim();
       const action = parts[1] || "";
       const query = parts[2] || "";
       const key = env.ONE_KNOWLEDGE_KEY;
@@ -237,18 +242,17 @@ async function runTool(env, tool, input) {
   }
   if (tool === "api_call") {
     try {
-      const parts = input.split(",").map(s => s.trim().replace(/^\w+=/, "").replace(/^{?\n?/, "").replace(/\n?}?$/, ""));
+      let parts = cleanParams(input);
       let method = "GET", url = parts[0] || "", headers = { "User-Agent": "Saraha-Brain" }, body = undefined;
-      if (/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s/i.test(parts[0])) {
-        method = parts[0].match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i)[1].toUpperCase();
-        url = (parts[0].replace(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*/i, "") || parts[1] || "").trim();
-        if (parts[2]) { try { headers = { ...headers, ...JSON.parse(parts[2].replace(/^\{?/, "{").replace(/\}?$/, "}") ) }; } catch {} }
-        if (parts[3]) { body = parts[3]; }
-      }
-      if (parts.length > 1 && parts[1] && !url.includes("://") && url.length < 30) {
-        method = parts[0]; url = parts[1];
-        if (parts[2]) { try { headers = { ...headers, ...JSON.parse(parts[2].replace(/^\{?/, "{").replace(/\}?$/, "}") ) }; } catch {} }
-        if (parts[3]) { body = parts[3]; }
+      const httpMatch = (url || "").match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/i);
+      if (httpMatch) {
+        method = httpMatch[1].toUpperCase();
+        url = url.replace(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/i, "").trim();
+      } else if (parts.length >= 2) {
+        method = parts[0];
+        url = parts[1];
+        if (parts[2]) { try { const h = JSON.parse(parts[2]); if (typeof h === "object") headers = { ...headers, ...h }; } catch {} }
+        if (parts[3]) body = parts[3];
       }
       if (!url.startsWith("http")) url = "https://" + url;
       const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
@@ -260,9 +264,15 @@ async function runTool(env, tool, input) {
   if (tool === "run_code") {
     try {
       const lines = input.trim().split("\n");
-      const language = lines[0]?.trim().toLowerCase();
-      const code = lines.slice(1).join("\n").trim();
-      if (!language || !code) return { ok: false, error: "Format: language\\ncode" };
+      let language = lines[0]?.trim().toLowerCase();
+      let code = lines.slice(1).join("\n").trim();
+      if (!code && input.includes(",")) {
+        const parts = cleanParams(input, ",");
+        language = (parts[0] || "").toLowerCase();
+        code = parts.slice(1).join("\n");
+      }
+      if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
+      language = language.replace(/,$/, "").trim();
       if (language === "javascript" || language === "js" || language === "node") {
         let output = "";
         const fakeConsole = { log: (...args) => { output += args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ") + "\n"; }, error: (...args) => { output += "ERROR: " + args.map(a => String(a)).join(" ") + "\n"; }, warn: (...args) => { output += "WARN: " + args.map(a => String(a)).join(" ") + "\n"; } };
