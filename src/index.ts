@@ -6,7 +6,7 @@ const TABLES = [
   `CREATE TABLE IF NOT EXISTS brain_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER, step TEXT NOT NULL, content TEXT, model TEXT, tokens INTEGER, created_at TEXT DEFAULT (datetime('now')))`,
 ];
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 async function initSchema(db, env) {
   try {
