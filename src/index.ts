@@ -310,10 +310,10 @@ async function callLLM(env, body, sessionId) {
     return resp;
   }
 
-  const cfResp = await tryCF().catch(() => null);
-  if (cfResp) return cfResp;
   const dwarResp = await tryDwar().catch(() => null);
   if (dwarResp) return dwarResp;
+  const cfResp = await tryCF().catch(() => null);
+  if (cfResp) return cfResp;
   return new Response(JSON.stringify({ error: "all LLM providers failed" }), { status: 502 });
 }
 
