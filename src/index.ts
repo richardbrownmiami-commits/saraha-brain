@@ -215,7 +215,7 @@ async function runTool(env, tool, input) {
   }
   if (tool === "db_query") {
     try {
-      const sql = input.trim().replace(/^["']+|["']+$/g, "");
+      let sql = input.trim(); if ((sql.startsWith("\"") && sql.endsWith("\"")) || (sql.startsWith("'") && sql.endsWith("'"))) sql = sql.slice(1, -1);
       if (!sql) return { ok: false, error: "empty query" };
       const r = await env.DB.prepare(sql).all();
       return { ok: true, data: JSON.stringify(r.results || []) };
@@ -261,7 +261,7 @@ async function runTool(env, tool, input) {
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
     } catch (e) { return { ok: false, error: e.message }; }
   }
-  if (tool === "run_code") {
+    if (tool === "run_code") {
     try {
       const lines = input.trim().split("\n");
       let language = lines[0]?.trim().toLowerCase();
@@ -273,8 +273,23 @@ async function runTool(env, tool, input) {
       }
       if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      return { ok: false, error: "Cloudflare Workers runtime blocks eval/new Function for security. Cannot execute code directly. Use TOOL:api_call with a code execution API like https://glot.io or https://judge0.com." };
+      const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", ruby:"rb", java:"java", c:"c", cpp:"cpp", csharp:"cs", php:"php", swift:"swift", kotlin:"kt", bash:"sh", r:"r", scala:"scala", perl:"pl", lua:"lua", dart:"dart" };
+      const ext = extMap[language] || language;
+      const body = JSON.stringify({ language: language === "js" ? "javascript" : language, version: "*", files: [{ name: "main." + ext, content: code }] });
+      const resp = await fetch("https://emkc.org/api/v2/piston/execute", {
+        method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "Saraha-Brain" }, body, signal: AbortSignal.timeout(10000)
+      });
+      if (!resp.ok) return { ok: false, error: "Code execution API returned " + resp.status };
+      const data = await resp.json();
+      const stdout = (data.stdout || data.output || "").trim();
+      const stderr = (data.stderr || "").trim();
+      let r = "";
+      if (stdout) r += stdout.slice(0, 6000);
+      if (stderr) { if (r) r += "\n--- stderr ---\n"; r += stderr.slice(0, 3000); }
+      if (!r) r = "(no output)";
+      return { ok: true, data: r };
     } catch (e) { return { ok: false, error: e.message }; }
+  }} catch (e) { return { ok: false, error: e.message }; }
   }
     return { ok: false, error: "Unknown tool: " + tool };
 }
