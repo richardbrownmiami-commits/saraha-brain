@@ -15,7 +15,7 @@ jobs:
       - name: Deploy with wrangler
         run: |
           ARGS="--var CF_API_TOKEN:${{ vars.CF_API_TOKEN }}"
-          if [ -n "${{ vars.GITHUB_PAT }}" ]; then ARGS="$ARGS --var GITHUB_PAT:${{ vars.GITHUB_PAT }}"; fi
+          if [ -n "${{ vars.GH_PAT }}" ]; then ARGS="$ARGS --var GH_PAT:${{ vars.GH_PAT }}"; fi
           if [ -n "${{ vars.ONE_KNOWLEDGE_KEY }}" ]; then ARGS="$ARGS --var ONE_KNOWLEDGE_KEY:${{ vars.ONE_KNOWLEDGE_KEY }}"; fi
           npx wrangler deploy $ARGS
         env:
