@@ -263,8 +263,7 @@ async function runTool(env, tool, input) {
   }
   if (tool === "run_code") {
     try {
-      const lines = input.trim().split("\n");
-      let language = lines[0]?.trim().toLowerCase();
+      const lines = input.trim().replace(/\\n/g, "\n").split("\n");    let language = lines[0]?.trim().toLowerCase();
       let code = lines.slice(1).join("\n").trim();
       if (!code && input.includes(",")) {
         const parts = cleanParams(input, ",");
