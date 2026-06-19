@@ -218,7 +218,7 @@ async function runTool(env, tool, input) {
   }
   if (tool === "one_knowledge") {
     try {
-      const parts = input.split(",").map(s => s.trim());
+      const parts = input.split(",").map(s => s.trim().replace(/^\w+=/, ""));
       const platform = parts[0];
       const action = parts[1] || "";
       const query = parts[2] || "";
@@ -226,9 +226,9 @@ async function runTool(env, tool, input) {
       if (!key) return { ok: false, error: "No One Knowledge API key configured" };
       let url = "https://api.withone.ai/open/knowledge/" + platform;
       if (action === "auth") url += "/auth";
-      else if (action === "actions") url += "/actions" + (query ? "?query=" + encodeURIComponent(query) : "");
       else if (action && action.startsWith("action:")) url += "/actions/" + action.replace("action:", "");
-      else if (action && !action.startsWith("search")) url += "/actions";
+      else if (action === "actions") url += "/actions" + (query ? "?query=" + encodeURIComponent(query) : "");
+      else if (action && action.startsWith("search:")) url += "/actions/search?query=" + encodeURIComponent(action.replace("search:", ""));
       const resp = await fetch(url, { headers: { "x-one-secret": key, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return { ok: false, error: "One Knowledge API returned " + resp.status };
       const data = await resp.json();
@@ -237,19 +237,18 @@ async function runTool(env, tool, input) {
   }
   if (tool === "api_call") {
     try {
-      const method = (input.match(/^(\w+)/) || [])[1] || "GET";
-      const urlMatch = input.match(/\n(.+)/);
-      if (!urlMatch) return { ok: false, error: "Format: METHOD\\nurl\\nheaders\\nbody" };
-      let url = urlMatch[1].trim();
-      const remaining = input.slice(input.indexOf("\n", input.indexOf(urlMatch[1]))).trim();
-      const lines = remaining.split("\n");
-      let headers = { "User-Agent": "Saraha-Brain" };
-      let body = undefined;
-      if (lines[0] && lines[0] !== urlMatch[1].trim()) {
-        try { const h = JSON.parse(lines[0]); if (typeof h === "object") headers = { ...headers, ...h }; } catch {}
+      const parts = input.split(",").map(s => s.trim().replace(/^\w+=/, "").replace(/^{?\n?/, "").replace(/\n?}?$/, ""));
+      let method = "GET", url = parts[0] || "", headers = { "User-Agent": "Saraha-Brain" }, body = undefined;
+      if (/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s/i.test(parts[0])) {
+        method = parts[0].match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i)[1].toUpperCase();
+        url = (parts[0].replace(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*/i, "") || parts[1] || "").trim();
+        if (parts[2]) { try { headers = { ...headers, ...JSON.parse(parts[2].replace(/^\{?/, "{").replace(/\}?$/, "}") ) }; } catch {} }
+        if (parts[3]) { body = parts[3]; }
       }
-      if (lines[1] && lines[1] !== urlMatch[1].trim() && lines[1] !== lines[0]) {
-        body = lines[1];
+      if (parts.length > 1 && parts[1] && !url.includes("://") && url.length < 30) {
+        method = parts[0]; url = parts[1];
+        if (parts[2]) { try { headers = { ...headers, ...JSON.parse(parts[2].replace(/^\{?/, "{").replace(/\}?$/, "}") ) }; } catch {} }
+        if (parts[3]) { body = parts[3]; }
       }
       if (!url.startsWith("http")) url = "https://" + url;
       const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
