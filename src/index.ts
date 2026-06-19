@@ -554,7 +554,7 @@ export default {
           const toolResult = await runTool(env, toolName, toolInput);
           const followBody = {
             messages: [
-              { role: "system", content: system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results." },
+              { role: "system", content: system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results. Output ONLY your answer. Do NOT repeat any TOOL: commands." },
               { role: "user", content: llmInput }
             ], temperature: 0.7, max_tokens: 2048
           };
@@ -564,6 +564,8 @@ export default {
           content = followData.choices?.[0]?.message?.content || content;
           tokens += followData.usage?.total_tokens || 0;
         }
+
+        content = content.replace(/^TOOL:\w+\([\s\S]*?\)\s*$/gm, '').trim();
 
         await storeMemory(env.DB, "assistant", content.slice(0, 1000));
 await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=datetime('now') WHERE id=?2").bind(content.slice(0, 2000), aid).run();
@@ -580,5 +582,6 @@ await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=
     // Cron is disabled. No automatic LLM calls.
   }
 };
+
 
 
