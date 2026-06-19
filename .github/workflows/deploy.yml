@@ -15,8 +15,8 @@ jobs:
       - name: Deploy with wrangler
         run: |
           ARGS="--var CF_API_TOKEN:${{ vars.CF_API_TOKEN }}"
-          if [ -n "${{ secrets.GITHUB_PAT }}" ]; then ARGS="$ARGS --var GITHUB_PAT:${{ secrets.GITHUB_PAT }}"; fi
-          if [ -n "${{ secrets.ONE_KNOWLEDGE_KEY }}" ]; then ARGS="$ARGS --var ONE_KNOWLEDGE_KEY:${{ secrets.ONE_KNOWLEDGE_KEY }}"; fi
+          if [ -n "${{ vars.GITHUB_PAT }}" ]; then ARGS="$ARGS --var GITHUB_PAT:${{ vars.GITHUB_PAT }}"; fi
+          if [ -n "${{ vars.ONE_KNOWLEDGE_KEY }}" ]; then ARGS="$ARGS --var ONE_KNOWLEDGE_KEY:${{ vars.ONE_KNOWLEDGE_KEY }}"; fi
           npx wrangler deploy $ARGS
         env:
           CLOUDFLARE_API_TOKEN: ${{ vars.CF_API_TOKEN }}
