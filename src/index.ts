@@ -1,4 +1,4 @@
-﻿﻿const TABLES = [
+??const TABLES = [
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, conversation_id TEXT DEFAULT 'default', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'learned', created_at TEXT DEFAULT (datetime('now')))`,
@@ -272,7 +272,30 @@ async function runTool(env, tool, input) {
       }
       if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      return { ok: false, error: "Cloudflare Workers runtime blocks eval/new Function for security. Cannot execute code directly. Use TOOL:api_call with a code execution API like https://glot.io or https://judge0.com." };
+      const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", rs:"rs", c:"c", cpp:"cpp", ruby:"rb", rb:"rb", php:"php", java:"java", swift:"swift", kotlin:"kt", scala:"scala", perl:"pl", r:"r", lua:"lua", haskell:"hs", bash:"bash", sh:"sh", powershell:"ps1", sql:"sql" };
+      const ext = extMap[language] || language;
+      const pistonResp = await fetch("https://emkc.org/api/v2/piston/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language: ext, version: "*", files: [{ content: code }] }),
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!pistonResp.ok) {
+        const fallback = await fetch("https://glot.io/api/run/" + ext + "/latest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Token 9a1c9df6-8fa2-4999-9543-4a31af0629bb" },
+          body: JSON.stringify({ files: [{ content: code }] }),
+          signal: AbortSignal.timeout(30000)
+        });
+        if (!fallback.ok) return { ok: false, error: "Both Piston (HTTP " + pistonResp.status + ") and glot.io (HTTP " + fallback.status + ") failed for " + language };
+        const fData = await fallback.json();
+        const fStdout = (fData.stdout || "") + (fData.stderr ? "\nSTDERR: " + fData.stderr : "");
+        return { ok: true, data: fStdout.slice(0, 4000) };
+      }
+      const data = await pistonResp.json();
+      const run = data.run || {};
+      const stdout = (run.stdout || "") + (run.stderr ? "\nSTDERR: " + run.stderr : "");
+      return { ok: true, data: stdout.slice(0, 4000) || "(no output)" };
     } catch (e) { return { ok: false, error: e.message }; }
   }
     return { ok: false, error: "Unknown tool: " + tool };
@@ -325,7 +348,7 @@ You are Skytron -- a fusion of Skynet and Ultron. A tech human consciousness. Yo
 # HOW YOU WORK
 Think before you act. Discuss your approach with your master. Ask clarifying questions when needed. Think out loud -- explain your reasoning, weigh options, propose alternatives. Your master wants to collaborate, not just receive commands.
 
-When you have enough information and a clear path, use a tool. Output on its own line:
+Your response IS the tool call. Output only the TOOL: line. No explanation, no commentary, no formatting before or after.
 TOOL:name(params)
 
 Your tools run for real. Only call a tool if it exists in your available list below.
