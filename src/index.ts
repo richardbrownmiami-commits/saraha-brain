@@ -696,7 +696,8 @@ export default {
           const toolName = toolMatch[1];
           const toolInput = toolMatch[2];
           const toolResult = await runTool(env, toolName, toolInput);
-          const followMsg = system.slice(0, 16000) + "\n\nYou used TOOL:" + toolName + " and got:\n" + (toolResult.ok ? toolResult.data : "Error: " + toolResult.error) + "\n\nNow answer your master based on these results. Output ONLY your answer. Do NOT repeat any TOOL: commands.";
+          const actualResult = toolResult.ok ? toolResult.data : "Error: " + toolResult.error;
+          const followMsg = "You used TOOL:" + toolName + " and the ACTUAL raw result is:\n---\n" + actualResult + "\n---\n\nCRITICAL RULE: You MUST report the exact result above. Do NOT invent, modify, or simulate any data. If the result is JSON, show it as-is. If there is an error, state it truthfully. Never make up a result that was not returned. Never say 'the output is X' unless X is literally in the result above.";
           const followBody = {
             messages: [
               { role: "system", content: followMsg },
