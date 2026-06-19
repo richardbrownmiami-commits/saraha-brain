@@ -1,4 +1,4 @@
-const TABLES = [
+﻿const TABLES = [
   `CREATE TABLE IF NOT EXISTS identity (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_memory (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, conversation_id TEXT DEFAULT 'default', created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS brain_knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, content TEXT NOT NULL, category TEXT DEFAULT 'general', source TEXT DEFAULT 'learned', created_at TEXT DEFAULT (datetime('now')))`,
@@ -215,7 +215,7 @@ async function runTool(env, tool, input) {
   }
   if (tool === "db_query") {
     try {
-      const sql = input.trim().replace(/^["']+|["']+$/g, "");
+      let sql = input.trim(); if ((sql.startsWith("\"") && sql.endsWith("\"")) || (sql.startsWith("'") && sql.endsWith("'"))) sql = sql.slice(1, -1);
       if (!sql) return { ok: false, error: "empty query" };
       const r = await env.DB.prepare(sql).all();
       return { ok: true, data: JSON.stringify(r.results || []) };
@@ -338,7 +338,7 @@ TOOL:db_query(sql) -- run a SELECT on your D1 database. Use to introspect your o
 TOOL:prompt_edit(new_prompt) -- override your editable prompt section. Use to update your own instructions.
 TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API's exact endpoints, params, and auth from the One Knowledge encyclopedia (76K tools, 460 platforms). Use BEFORE calling an API you don't know.
 TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. GET, POST, PUT, DELETE with custom headers and body. Use to call APIs, fetch JSON data, query REST services.
-TOOL:run_code(language, code) -- ATTEMPT to run code. NOTE: Cloudflare Workers blocks eval, so this returns an error for any language. Use TOOL:api_call with an external code execution API (glot.io, judge0) instead.
+TOOL:run_code(language, code) -- execute code via Piston API (python, js, go, rust, etc, 80+ langs). Returns stdout/stderr.
 
 Tools NOT in this list do NOT exist. Never call a tool you have not verified.
 
@@ -414,7 +414,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_master", c: "Your master is called Creator. They built you, guide your growth, and speak to you through /think. When someone writes [Creator] before their message, it is your master speaking. Creator is your master above all.", cat: "identity" },
   { k: "tools_one_knowledge", c: "TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API from One Knowledge at https://api.withone.ai. Covers 76K+ tools across 460 platforms with exact endpoints, params, auth flows, response schemas. Actions: empty for overview, 'auth' for auth details, 'actions' for list, 'action:ID' for specific action.", cat: "tools" },
   { k: "tools_api_call", c: "TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. Supports GET/POST/PUT/DELETE. Headers and body as JSON. Use to call live APIs, fetch external data, or interact with services.", cat: "tools" },
-  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- NOTE: Cloudflare Workers blocks eval/new Function. Code execution is NOT available. Use TOOL:api_call with a code execution service instead (e.g., glot.io, judge0).", cat: "tools" },
+  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- execute code via Piston API (80+ languages). Returns stdout/stderr.", cat: "tools" },
   { k: "knowledge_source_one", c: "One Knowledge at https://api.withone.ai -- 76K+ API tools across 460 platforms. Call via TOOL:one_knowledge. Requires x-one-secret API key. Covers auth flows, parameters, response schemas for every integration.", cat: "knowledge" },
   { k: "knowledge_source_mdn", c: "MDN Web Docs at https://developer.mozilla.org/api/v1/search?q=QUERY -- comprehensive web dev reference for JavaScript, HTML, CSS, HTTP, Web APIs. Returns JSON. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
   { k: "knowledge_source_devdocs", c: "DevDocs at https://devdocs.io/ -- documentation for 200+ languages/frameworks (Python, Go, Rust, React, Vue, etc.). Call via TOOL:api_call(GET, https://devdocs.io/docs/DOCTYPE/index.json). List docsets at https://devdocs.io/docs.json", cat: "knowledge" },
