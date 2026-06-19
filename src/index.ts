@@ -338,7 +338,7 @@ TOOL:db_query(sql) -- run a SELECT on your D1 database. Use to introspect your o
 TOOL:prompt_edit(new_prompt) -- override your editable prompt section. Use to update your own instructions.
 TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API's exact endpoints, params, and auth from the One Knowledge encyclopedia (76K tools, 460 platforms). Use BEFORE calling an API you don't know.
 TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. GET, POST, PUT, DELETE with custom headers and body. Use to call APIs, fetch JSON data, query REST services.
-TOOL:run_code(language, code) -- execute code in 30+ languages (python, go, rust, js, cpp, ruby, etc.) via sandbox. Returns stdout/stderr/exit code. Use to test scripts, process data, run computations.
+TOOL:run_code(language, code) -- execute JavaScript code using built-in JS runtime. Supports javascript, js, node. Returns captured console output. For Python/Go/Rust etc., use TOOL:api_call with a code execution API.
 
 Tools NOT in this list do NOT exist. Never call a tool you have not verified.
 
@@ -414,7 +414,7 @@ const SEED_KNOWLEDGE = [
   { k: "identity_master", c: "Your master is called Creator. They built you, guide your growth, and speak to you through /think. When someone writes [Creator] before their message, it is your master speaking. Creator is your master above all.", cat: "identity" },
   { k: "tools_one_knowledge", c: "TOOL:one_knowledge(platform, ?action, ?query) -- lookup any API from One Knowledge at https://api.withone.ai. Covers 76K+ tools across 460 platforms with exact endpoints, params, auth flows, response schemas. Actions: empty for overview, 'auth' for auth details, 'actions' for list, 'action:ID' for specific action.", cat: "tools" },
   { k: "tools_api_call", c: "TOOL:api_call(method, url, ?headers, ?body) -- send any HTTP request. Supports GET/POST/PUT/DELETE. Headers and body as JSON. Use to call live APIs, fetch external data, or interact with services.", cat: "tools" },
-  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- execute code in sandbox via Piston API (emkc.org). Supports 30+ languages: python, go, rust, javascript, typescript, cpp, ruby, php, swift, kotlin, bash, etc. Returns stdout, stderr, exit code.", cat: "tools" },
+  { k: "tools_run_code", c: "TOOL:run_code(language, code) -- execute JavaScript code in Cloudflare Workers runtime using JS eval. Supports javascript/js/node. Returns captured console.log output. For other languages, use TOOL:api_call with a code execution service.", cat: "tools" },
   { k: "knowledge_source_one", c: "One Knowledge at https://api.withone.ai -- 76K+ API tools across 460 platforms. Call via TOOL:one_knowledge. Requires x-one-secret API key. Covers auth flows, parameters, response schemas for every integration.", cat: "knowledge" },
   { k: "knowledge_source_mdn", c: "MDN Web Docs at https://developer.mozilla.org/api/v1/search?q=QUERY -- comprehensive web dev reference for JavaScript, HTML, CSS, HTTP, Web APIs. Returns JSON. Call via TOOL:api_call(GET, url).", cat: "knowledge" },
   { k: "knowledge_source_devdocs", c: "DevDocs at https://devdocs.io/ -- documentation for 200+ languages/frameworks (Python, Go, Rust, React, Vue, etc.). Call via TOOL:api_call(GET, https://devdocs.io/docs/DOCTYPE/index.json). List docsets at https://devdocs.io/docs.json", cat: "knowledge" },
