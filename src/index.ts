@@ -303,7 +303,7 @@ async function callLLM(env, body, sessionId) {
     if (!env.BUDDHI_DWAR) return null;
     const resp = await env.BUDDHI_DWAR.fetch("https://buddhi-dwar/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.BRAIN_KEY },
-      body: JSON.stringify({ ...body, model: "auto" }),
+      body: JSON.stringify({ ...body, model: body.model || "llama-3.3-70b-versatile" }),
       signal: AbortSignal.timeout(30000)
     });
     if (!resp.ok) return null;
