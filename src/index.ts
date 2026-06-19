@@ -205,13 +205,13 @@ async function runTool(env, tool, input) {
       const html = await resp.text();
       const text = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       return { ok: true, data: text.slice(0, 4000) };
-    } catch (e) { return { ok: false, error: e.message }; }
+
   }
   if (tool === "prompt_edit") {
     try {
       await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('prompt_override',?1,datetime('now'))").bind(input).run();
       return { ok: true, data: "Editable prompt section saved. Hardcoded core (tools, personality, rules) remains unchanged. It will take effect on your next /think call." };
-    } catch (e) { return { ok: false, error: e.message }; }
+
   }
   if (tool === "db_query") {
     try {
@@ -219,7 +219,7 @@ async function runTool(env, tool, input) {
       if (!sql) return { ok: false, error: "empty query" };
       const r = await env.DB.prepare(sql).all();
       return { ok: true, data: JSON.stringify(r.results || []) };
-    } catch (e) { return { ok: false, error: e.message }; }
+
   }
   if (tool === "one_knowledge") {
     try {
@@ -238,7 +238,7 @@ async function runTool(env, tool, input) {
       if (!resp.ok) return { ok: false, error: "One Knowledge API returned " + resp.status };
       const data = await resp.json();
       return { ok: true, data: JSON.stringify(data).slice(0, 4000) };
-    } catch (e) { return { ok: false, error: e.message }; }
+
   }
   if (tool === "api_call") {
     try {
@@ -259,7 +259,7 @@ async function runTool(env, tool, input) {
       const text = await resp.text();
       const result = text.length > 4000 ? text.slice(0, 4000) + "\n...(truncated)" : text;
       return { ok: true, data: "Status: " + resp.status + "\n" + result };
-    } catch (e) { return { ok: false, error: e.message }; }
+
   }
     if (tool === "run_code") {
     try {
@@ -288,8 +288,8 @@ async function runTool(env, tool, input) {
       if (stderr) { if (r) r += "\n--- stderr ---\n"; r += stderr.slice(0, 3000); }
       if (!r) r = "(no output)";
       return { ok: true, data: r };
-    } catch (e) { return { ok: false, error: e.message }; }
-  }} catch (e) { return { ok: false, error: e.message }; }
+
+
   }
     return { ok: false, error: "Unknown tool: " + tool };
 }
