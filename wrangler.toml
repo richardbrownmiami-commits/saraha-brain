@@ -23,3 +23,4 @@ crons = ["*/5 * * * *"]
 BRAIN_KEY = "Saraha-Brain-Key"
 BRAVE_API_KEY = ""
 CF_API_TOKEN = ""
+ONE_KNOWLEDGE_KEY = "sk_live_BGYjiPPHXP_PNDnVHWntCDoIHniug8oslKyBAWvP7XQ"
