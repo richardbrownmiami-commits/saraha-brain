@@ -603,8 +603,14 @@ export default {
     }
 
     if (url.pathname === "/brain/prompt/reset" && (req.method === "GET" || req.method === "POST")) {
+      const confirm = url.searchParams.get("confirm");
+      if (confirm !== "yes") return json({ error: "Add ?confirm=yes to reset. This will delete all prompt_override history." }, 400);
+      const current = await env.DB.prepare("SELECT value FROM identity WHERE key='prompt_override'").all();
+      if (current.results?.[0]?.value) {
+        try { await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, 'prompt_backup', 'backup')").bind("prompt_backup_" + Date.now(), current.results[0].value).run(); } catch {}
+      }
       try { await env.DB.prepare("DELETE FROM identity WHERE key='prompt_override'").run(); } catch {}
-      return json({ ok: true, message: "Prompt reset to default. Hardcoded core unchanged." });
+      return json({ ok: true, message: "Prompt reset to default. Previous version saved to knowledge as prompt_backup_*." });
     }
 
     if (url.pathname === "/brain/introspect") {
