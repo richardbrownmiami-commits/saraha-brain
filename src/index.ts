@@ -215,7 +215,7 @@ async function runTool(env, tool, input) {
   }
   if (tool === "db_query") {
     try {
-      const sql = input.trim();
+      const sql = input.trim().replace(/^["']+|["']+$/g, "");
       if (!sql) return { ok: false, error: "empty query" };
       const r = await env.DB.prepare(sql).all();
       return { ok: true, data: JSON.stringify(r.results || []) };
@@ -699,10 +699,18 @@ export default {
 
         for (let t = 0; t < 3; t++) {
           if (typeof content !== "string") { content = String(content || ""); }
-          const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
+          const toolMatch = content.match(/^TOOL:(\w+)\(/m);
           if (!toolMatch) break;
-          const toolName = toolMatch[1];
-          const toolInput = toolMatch[2];
+      const afterOpen = content.slice(toolMatch.index + toolMatch[0].length);
+      let depth = 1, end = 0;
+      for (; end < afterOpen.length && depth > 0; end++) {
+        if (afterOpen[end] === "(") depth++;
+        else if (afterOpen[end] === ")") depth--;
+      }
+      if (depth !== 0) break;
+      const toolInput = afterOpen.slice(0, end - 1).trim();
+          
+          
           const toolResult = await runTool(env, toolName, toolInput);
           const resultText = toolResult.ok ? toolResult.data : "ERROR: " + toolResult.error;
           content = content.replace(toolMatch[0], "[TOOL RESULT: " + resultText + "]");
