@@ -682,10 +682,17 @@ export default {
 
         for (let t = 0; t < 3; t++) {
           if (typeof content !== "string") { content = String(content || ""); }
-          const toolMatch = content.match(/^TOOL:(\w+)\(([\s\S]*?)\)\s*$/m);
-          if (!toolMatch) break;
-          const toolName = toolMatch[1];
-          const toolInput = toolMatch[2];
+          const tl = content.match(/^TOOL:(\w+)\(/m);
+          if (!tl) break;
+          const toolName = tl[1];
+          const afterOpen = content.slice(tl.index + tl[0].length);
+          let depth = 1, end = 0;
+          for (; end < afterOpen.length && depth > 0; end++) {
+            if (afterOpen[end] === "(") depth++;
+            else if (afterOpen[end] === ")") depth--;
+          }
+          if (depth !== 0) break;
+          const toolInput = afterOpen.slice(0, end - 1).trim()
           const toolResult = await runTool(env, toolName, toolInput);
           const resultText = toolResult.ok ? toolResult.data : "ERROR: " + toolResult.error;
           content = content.replace("TOOL:" + toolName + "(" + toolInput + ")", "[TOOL RESULT: " + resultText + "]");
