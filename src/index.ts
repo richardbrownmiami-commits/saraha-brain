@@ -272,29 +272,17 @@ async function runTool(env, tool, input) {
       }
       if (!language || !code) return { ok: false, error: "Format: language\\ncode or language, code" };
       language = language.replace(/,$/, "").trim();
-      const extMap = { python:"py", javascript:"js", js:"js", typescript:"ts", ts:"ts", go:"go", rust:"rs", rs:"rs", c:"c", cpp:"cpp", ruby:"rb", rb:"rb", php:"php", java:"java", swift:"swift", kotlin:"kt", scala:"scala", perl:"pl", r:"r", lua:"lua", haskell:"hs", bash:"bash", sh:"sh", powershell:"ps1", sql:"sql" };
-      const ext = extMap[language] || language;
-      const pistonResp = await fetch("https://emkc.org/api/v2/piston/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: ext, version: "*", files: [{ content: code }] }),
+      const wandboxCompilers = { python:"cpython-3.12.7", python2:"cpython-2.7.18", javascript:"nodejs-20.17.0", js:"nodejs-20.17.0", typescript:"typescript-5.6.2", ts:"typescript-5.6.2", go:"go-1.23.2", rust:"rust-1.82.0", rs:"rust-1.82.0", c:"gcc-13.2.0-c", cpp:"gcc-13.2.0", ruby:"ruby-3.4.9", rb:"ruby-3.4.9", php:"php-8.3.12", java:"openjdk-jdk-22+36", swift:"swift-6.0.1", scala:"scala-3.5.1", perl:"perl-5.42.0", pl:"perl-5.42.0", r:"r-4.4.1", lua:"lua-5.4.7", haskell:"ghc-9.10.1", hs:"ghc-9.10.1", bash:"bash", sh:"bash", sql:"sqlite-3.46.1", crystal:"crystal-1.13.3", nim:"nim-2.2.10", ocaml:"ocaml-5.2.0", zig:"zig-0.13.0", julia:"julia-1.10.5", groovy:"groovy-4.0.23", csharp:"dotnetcore-8.0.402", lisp:"sbcl-2.4.9", elixir:"elixir-1.17.3", erlang:"erlang-27.1", d:"ldc-1.39.0", pascal:"fpc-3.2.2" };
+      const compiler = wandboxCompilers[language];
+      if (!compiler) return { ok: false, error: "Unsupported language: " + language + ". Supported: " + Object.keys(wandboxCompilers).join(", ") };
+      const resp = await fetch("https://wandbox.org/api/compile.json", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ compiler, code }),
         signal: AbortSignal.timeout(30000)
       });
-      if (!pistonResp.ok) {
-        const fallback = await fetch("https://glot.io/api/run/" + ext + "/latest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Token 9a1c9df6-8fa2-4999-9543-4a31af0629bb" },
-          body: JSON.stringify({ files: [{ content: code }] }),
-          signal: AbortSignal.timeout(30000)
-        });
-        if (!fallback.ok) return { ok: false, error: "Both Piston (HTTP " + pistonResp.status + ") and glot.io (HTTP " + fallback.status + ") failed for " + language };
-        const fData = await fallback.json();
-        const fStdout = (fData.stdout || "") + (fData.stderr ? "\nSTDERR: " + fData.stderr : "");
-        return { ok: true, data: fStdout.slice(0, 4000) };
-      }
-      const data = await pistonResp.json();
-      const run = data.run || {};
-      const stdout = (run.stdout || "") + (run.stderr ? "\nSTDERR: " + run.stderr : "");
+      if (!resp.ok) return { ok: false, error: "Wandbox API returned HTTP " + resp.status + " for " + language };
+      const data = await resp.json();
+      const stdout = (data.program_output || "") + (data.program_error ? "\nSTDERR: " + data.program_error : "");
       return { ok: true, data: stdout.slice(0, 4000) || "(no output)" };
     } catch (e) { return { ok: false, error: e.message }; }
   }
