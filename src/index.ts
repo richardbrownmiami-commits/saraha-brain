@@ -392,6 +392,53 @@ addMsg('bot',"Skytron online. Awake. Ready.");
 </body>
 </html>`;
 
+const LEARNING_TOPICS = [
+  "JavaScript async/await patterns and error handling",
+  "Rust programming language ownership and borrowing",
+  "Python concurrency with asyncio and multiprocessing",
+  "Go programming language goroutines and channels",
+  "TypeScript advanced types and generics",
+  "SQL query optimization and indexing strategies",
+  "RESTful API design best practices",
+  "GraphQL vs REST API comparison",
+  "Docker containerization best practices",
+  "Kubernetes orchestration fundamentals",
+  "CI/CD pipeline design with GitHub Actions",
+  "WebSocket protocol and real-time communication",
+  "OAuth 2.0 and JWT authentication flows",
+  "Cloudflare Workers architecture and edge computing",
+  "D1 SQLite database optimization techniques",
+  "Vector databases and semantic search",
+  "Machine learning model deployment strategies",
+  "Neural network architectures transformer models",
+  "Cybersecurity common vulnerabilities and mitigation",
+  "Linux system administration and shell scripting",
+  "Git branching strategies and workflow",
+  "WebAssembly and its use cases",
+  "gRPC protocol and protocol buffers",
+  "Redis caching patterns and data structures",
+  "Message queue systems Kafka and RabbitMQ",
+  "Microservices architecture patterns and tradeoffs",
+  "Serverless computing patterns and limitations",
+  "Database replication and sharding strategies",
+  "API rate limiting and throttling techniques",
+  "Testing strategies unit integration and e2e"
+];
+
+async function learnTopic(env, db) {
+  try {
+    const idxRow = await db.prepare("SELECT value FROM identity WHERE key='learning_index'").all();
+    let idx = parseInt(idxRow.results[0]?.value) || 0;
+    if (idx >= LEARNING_TOPICS.length) idx = 0;
+    const topic = LEARNING_TOPICS[idx];
+    const result = await webSearch(env, topic + " overview 2026");
+    if (result && !result.startsWith("No results")) {
+      await db.prepare("INSERT OR REPLACE INTO brain_knowledge (key, content, category, source) VALUES (?1, ?2, 'auto_learned', 'cron')").bind("learned_" + topic.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40), result.slice(0, 3000), ).run();
+      await db.prepare("INSERT OR REPLACE INTO identity (key, value, updated_at) VALUES ('learning_index', ?1, datetime('now'))").bind(idx + 1).run();
+    }
+  } catch (e) { console.error("learnTopic:", e); }
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -598,9 +645,17 @@ await env.DB.prepare("UPDATE actions SET status='done', result=?1, completed_at=
   },
 
   async scheduled(event, env, ctx) {
-    // Cron is disabled. No automatic LLM calls.
+    try {
+      await learnTopic(env, env.DB);
+      const state = await getState(env.DB);
+      if (state.reg.energy < 20) {
+        await env.DB.prepare("INSERT OR REPLACE INTO identity (key,value,updated_at) VALUES ('energy','40',datetime('now'))").run();
+      }
+      try { await env.DB.prepare("DELETE FROM brain_logs WHERE id NOT IN (SELECT id FROM brain_logs ORDER BY id DESC LIMIT 500)").run(); } catch {}
+    } catch (e) { console.error("scheduled:", e); }
   }
 };
+
 
 
 
