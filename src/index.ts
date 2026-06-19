@@ -189,7 +189,7 @@ async function webSearch(env, query) {
 }
 
 function cleanParams(s, splitBy) {
-  const raw = splitBy === "newline" ? [s] : (s || "").split(splitBy || /[,;\n]+/);
+  const raw = splitBy === "newline" ? [s] : (s || "").split(splitBy || /[,;\n|]+/);
   return raw.map(p => p.trim().replace(/^[\w-]+=/, '').replace(/^["']|["']$/g, '').trim()).filter(Boolean);
 }
 
