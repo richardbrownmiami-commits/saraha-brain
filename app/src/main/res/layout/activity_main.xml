@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="16dp">
+    <TextView android:id="@+id/status" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:text="Offline-first • ARMv7a"/>
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1">
+        <TextView android:id="@+id/chat" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:textSize="16sp"/>
+    </ScrollView>
+    <EditText android:id="@+id/input" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:hint="Ask something..."/>
+    <Button android:id="@+id/send" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:text="Send"/>
+</LinearLayout>
