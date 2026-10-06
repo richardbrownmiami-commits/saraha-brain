@@ -31,7 +31,7 @@ class DatasetStore(private val context: Context) {
     fun exists() = file.exists()
 
     private fun tokens(s: String): Set<String> =
-        s.lowercase(Locale.ROOT).split(Regex("[^\p{L}\p{N}]+"))
+        s.lowercase(Locale.ROOT).split(Regex("""[^\p{L}\p{N}]+"""))
             .filter { it.length > 1 }.toSet()
 
     private fun jaccard(a: Set<String>, b: Set<String>): Double {
