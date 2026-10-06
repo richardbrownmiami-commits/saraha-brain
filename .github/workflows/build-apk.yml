@@ -1,0 +1,44 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.2'
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify APK ABI and SDK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "native-code: 'armeabi-v7a'" /tmp/badging.txt
+          grep -q "sdkVersion:'30'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'30'" /tmp/badging.txt
+          echo "Verified: armeabi-v7a, minSdk 30, targetSdk 30"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SarahaBrain-armv7a-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
