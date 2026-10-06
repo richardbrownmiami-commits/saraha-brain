@@ -1,24 +1,53 @@
 # Saraha Brain
 
-Offline-first chatbot for Android 11 on ARMv7a (32-bit) with a 2 GB RAM target.
+Offline-first chatbot foundation for Android 11 on ARMv7a (32-bit), targeting devices with 2 GB RAM.
 
-## Design
-1. Dataset-first answers from a local JSONL dataset.
-2. Local RAG using lightweight lexical retrieval.
-3. Internet fallback only when the dataset has no sufficiently confident answer.
-4. Deterministic tools: time, weather, news, calculator, and installed-app launcher.
-5. Hugging Face dataset/model download support.
-6. Persistent memory/preferences without retraining the base model.
-7. Native ARMv7-compatible app structure.
+## Current pipeline
 
-The project deliberately does not assume an ARM64-only runtime. The generative model is loaded as an optional TensorFlow Lite artifact supplied by the user/Hugging Face. The app remains useful without the model by using dataset/tool responses.
+```
+user query
+   ↓
+local dataset retrieval
+   ↓ miss
+deterministic local/live tools
+   ↓ miss
+internet fallback
+```
 
-## Dataset format
-One JSON object per line:
-{"question":"What is Saraha Brain?","answer":"...","tags":["about"]}
+Dataset answers always win when their retrieval score passes the confidence threshold.
 
-## Model format
-Place or download a TensorFlow Lite encoder/decoder model as configured in `app/src/main/assets/model.json`. The runtime adapter is isolated so a model-specific tokenizer/generation implementation can be added without changing routing.
+## Implemented
+
+- Android application module
+- `armeabi-v7a` ABI restriction
+- Android 11 minimum/target
+- Unicode-aware local JSONL retrieval
+- Hugging Face dataset/model download hooks
+- Time tool
+- Weather tool using Open-Meteo
+- News tool using GDELT
+- Installed-app launcher
+- Web fallback
+- Persistent lightweight interaction memory
+- No Python, Ollama, or cloud LLM is required for dataset/tool operation
+
+## Dataset
+
+Create `dataset.jsonl`, one JSON object per line:
+
+{"question":"What is Saraha Brain?","answer":"An offline-first Android assistant.","tags":["about"]}
+
+Put it in the app's private files directory as `dataset.jsonl`, or configure the downloader with a Hugging Face resolve URL.
+
+## Model
+
+The repository intentionally does not bundle an unverified model. A generative model must be both architecture-compatible and small enough for ARMv7a/2 GB RAM. The model layer should therefore be added only after selecting a concrete TFLite artifact and tokenizer.
+
+## Important Android limitation
+
+A normal Android application cannot freely execute arbitrary background work after the user force-stops it. For operation while the UI is closed, use an Android-supported mechanism such as a foreground service, notification action, widget, or shortcut. This repository currently focuses on the core assistant path rather than pretending force-stop bypass is possible.
 
 ## Build
-Use Android Studio with an Android 11-compatible SDK/NDK. Build only `armeabi-v7a`.
+
+Open the project in Android Studio and build the `armeabi-v7a` variant. The repository does not commit a Gradle wrapper binary; Android Studio can sync the Gradle project directly.
+
