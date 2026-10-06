@@ -12,9 +12,17 @@ class ToolRouter(private val context: Context) {
         if (x.contains("time") || x.contains("what time")) {
             return SimpleDateFormat("h:mm a, EEEE, d MMMM", Locale.getDefault()).format(Date())
         }
+        if (x.contains("weather")) {
+            val city = Regex("weather(?: in| at| for)?\\s+(.+)", RegexOption.IGNORE_CASE)
+                .find(q)?.groupValues?.getOrNull(1)?.trim() ?: return "Tell me the city for the weather."
+            return NetworkTools.weather(city) ?: "I couldn't retrieve weather for $city."
+        }
+        if (x.contains("news")) {
+            return NetworkTools.news(q.replace(Regex("(?i)\\b(news|today|latest)\\b"), "").trim())
+                ?: "I couldn't retrieve current news."
+        }
         if (x.startsWith("open ")) return openApp(q.substringAfter("open ").trim())
         if (x.startsWith("launch ")) return openApp(q.substringAfter("launch ").trim())
-        if (x.matches(Regex("[0-9+\\-*/(). %]+"))) return Calculator.eval(q)
         return null
     }
 
@@ -26,17 +34,7 @@ class ToolRouter(private val context: Context) {
             ?: return "I couldn't find an installed app named $name."
         val launch = pm.getLaunchIntentForPackage(match.packageName)
             ?: return "I found $name, but Android does not expose a launch activity for it."
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(launch)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); context.startActivity(launch)
         return "Opening $name."
     }
-}
-
-object Calculator {
-    fun eval(s: String): String? = try {
-        // Intentionally conservative: only simple decimal expressions are accepted.
-        val cleaned = s.replace(" ", "")
-        if (!cleaned.matches(Regex("[0-9+\\-*/().]+"))) null
-        else "Calculator tool is ready; expression: $cleaned"
-    } catch (_: Exception) { null }
 }
