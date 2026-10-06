@@ -24,7 +24,9 @@ jobs:
           gradle-version: '8.2'
 
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace --info :app:assembleDebug 2>&1 | tee build.log
 
       - name: Verify APK ABI and SDK
         run: |
@@ -35,6 +37,14 @@ jobs:
           grep -q "sdkVersion:'30'" /tmp/badging.txt
           grep -q "targetSdkVersion:'30'" /tmp/badging.txt
           echo "Verified: armeabi-v7a, minSdk 30, targetSdk 30"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SarahaBrain-build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
