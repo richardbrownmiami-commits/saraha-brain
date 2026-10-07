@@ -1,5 +1,6 @@
 package com.saraha.brain
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -14,8 +15,10 @@ class MainActivity : AppCompatActivity() {
         val chat = findViewById<TextView>(R.id.chat)
         val status = findViewById<TextView>(R.id.status)
 
-        val hasDataset = DatasetStore(this).exists()
-        status.text = "Offline-first • ARMv7a • dataset " + if (hasDataset) "ready" else "missing"
+        refreshStatus(status)
+        findViewById<Button>(R.id.settings).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
 
         findViewById<Button>(R.id.send).setOnClickListener {
             val q = input.text.toString().trim()
@@ -24,8 +27,21 @@ class MainActivity : AppCompatActivity() {
             input.setText("")
             Thread {
                 val answer = engine.answer(q)
-                runOnUiThread { chat.append("\nSara: $answer") }
+                runOnUiThread { chat.append("\n\nSara: $answer") }
             }.start()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        findViewById<TextView?>(R.id.status)?.let { refreshStatus(it) }
+    }
+
+    private fun refreshStatus(status: TextView) {
+        val store = DatasetStore(this)
+        val settings = AppSettings(this)
+        status.text = "Offline-first • ARMv7a • " +
+            if (store.exists()) "RAG ready" else "add a dataset in ⚙"
+        if (settings.offlineOnly) status.append(" • offline-only")
     }
 }
