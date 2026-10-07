@@ -1,26 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="vertical" android:padding="20dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
             <Button android:id="@+id/back" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="←" />
             <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Brain Settings" android:textSize="26sp" android:textStyle="bold" android:paddingStart="12dp" />
         </LinearLayout>
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Knowledge, RAG and network controls" android:textSize="14sp" android:alpha="0.7" android:paddingBottom="18dp" />
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="KNOWLEDGE" android:textStyle="bold" android:paddingTop="8dp" android:paddingBottom="8dp" />
         <Button android:id="@+id/importDataset" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="＋ Import dataset" />
         <Button android:id="@+id/downloadDataset" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="↓ Download from Hugging Face" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Supported: JSONL, JSON, CSV and plain text" android:alpha="0.65" android:paddingTop="4dp" />
         <LinearLayout android:id="@+id/datasetList" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingTop="8dp" />
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="RAG ENGINE" android:textStyle="bold" android:paddingTop="22dp" android:paddingBottom="4dp" />
         <Switch android:id="@+id/localRag" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Local dataset retrieval" />
         <TextView android:id="@+id/thresholdValue" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Retrieval threshold: 0.55" />
         <SeekBar android:id="@+id/thresholdSeek" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="100" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Higher = stricter matching; lower = broader matching" android:alpha="0.65" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="TOOLS" android:textStyle="bold" android:paddingTop="22dp" android:paddingBottom="4dp" />
+        <Switch android:id="@+id/toolsEnabled" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Time, weather, news and app tools" />
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="NETWORK" android:textStyle="bold" android:paddingTop="22dp" android:paddingBottom="4dp" />
         <Switch android:id="@+id/webFallback" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Internet fallback" />
         <Switch android:id="@+id/offlineOnly" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Offline-only mode" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="MODEL" android:textStyle="bold" android:paddingTop="22dp" android:paddingBottom="4dp" />
+        <Button android:id="@+id/downloadModel" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="↓ Download .tflite model" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Stored locally for the future inference pipeline. The current engine does not claim to use an unverified model." android:alpha="0.65" android:paddingTop="4dp" />
+
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="MEMORY AND STORAGE" android:textStyle="bold" android:paddingTop="22dp" android:paddingBottom="4dp" />
         <TextView android:id="@+id/storage" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="App storage" />
         <Button android:id="@+id/clearMemory" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Clear learned memory" />
