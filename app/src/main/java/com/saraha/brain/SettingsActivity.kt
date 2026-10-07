@@ -3,9 +3,7 @@ package com.saraha.brain
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
 import android.widget.*
-import java.io.File
 
 class SettingsActivity : Activity() {
     private lateinit var manager: DatasetManager
@@ -21,7 +19,8 @@ class SettingsActivity : Activity() {
 
         findViewById<Button>(R.id.back).setOnClickListener { finish() }
         findViewById<Button>(R.id.importDataset).setOnClickListener { openDocument() }
-        findViewById<Button>(R.id.downloadDataset).setOnClickListener { downloadHf() }
+        findViewById<Button>(R.id.downloadDataset).setOnClickListener { downloadHfDataset() }
+        findViewById<Button>(R.id.downloadModel).setOnClickListener { downloadModel() }
         findViewById<Button>(R.id.clearMemory).setOnClickListener {
             BrainEngine(this).clearMemory()
             Toast.makeText(this, "Memory cleared", Toast.LENGTH_SHORT).show()
@@ -39,6 +38,10 @@ class SettingsActivity : Activity() {
             isChecked = settings.offlineOnly
             setOnCheckedChangeListener { _, v -> settings.offlineOnly = v }
         }
+        findViewById<Switch>(R.id.toolsEnabled).apply {
+            isChecked = settings.toolsEnabled
+            setOnCheckedChangeListener { _, v -> settings.toolsEnabled = v }
+        }
 
         threshold = findViewById(R.id.thresholdValue)
         val seek = findViewById<SeekBar>(R.id.thresholdSeek)
@@ -52,8 +55,7 @@ class SettingsActivity : Activity() {
 
         datasetList = findViewById(R.id.datasetList)
         renderDatasets()
-        val storage = findViewById<TextView>(R.id.storage)
-        storage.text = "App storage: ${formatBytes(filesDir.walkTopDown().filter { it.isFile }.sumOf { it.length() })}"
+        refreshStorage()
     }
 
     private fun updateThreshold(progress: Int) {
@@ -74,7 +76,7 @@ class SettingsActivity : Activity() {
             }
             val delete = Button(this).apply {
                 text = "Delete"
-                setOnClickListener { manager.delete(file); renderDatasets() }
+                setOnClickListener { manager.delete(file); renderDatasets(); refreshStorage() }
             }
             row.addView(radio); row.addView(delete); datasetList.addView(row)
         }
@@ -98,37 +100,54 @@ class SettingsActivity : Activity() {
             val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: return
             val file = manager.importText(name, text)
             manager.setActive(file)
-            renderDatasets()
+            renderDatasets(); refreshStorage()
             Toast.makeText(this, "Imported ${file.name}", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun downloadHf() {
-        val input = EditText(this).apply { hint = "Hugging Face direct file URL"; setSingleLine(true) }
-        AlertDialogBuilder(this, input) { url ->
+    private fun downloadHfDataset() {
+        val input = EditText(this).apply { hint = "Hugging Face direct dataset file URL"; setSingleLine(true) }
+        showUrlDialog("Download dataset", "Paste a direct downloadable JSONL/JSON file URL.", input) { url ->
             settings.huggingFaceDatasetUrl = url
             Thread {
                 val ok = HuggingFaceDownloader.downloadDataset(this, url)
                 runOnUiThread {
                     Toast.makeText(this, if (ok) "Dataset downloaded" else "Download failed", Toast.LENGTH_SHORT).show()
-                    renderDatasets()
+                    renderDatasets(); refreshStorage()
                 }
             }.start()
         }
+    }
+
+    private fun downloadModel() {
+        val input = EditText(this).apply { hint = "Direct .tflite model URL"; setSingleLine(true) }
+        showUrlDialog("Download model", "Model download is stored locally; inference is not yet wired into the answer pipeline.", input) { url ->
+            settings.modelUrl = url
+            Thread {
+                val ok = HuggingFaceDownloader.downloadModel(this, url)
+                runOnUiThread {
+                    Toast.makeText(this, if (ok) "Model downloaded" else "Download failed", Toast.LENGTH_SHORT).show()
+                    refreshStorage()
+                }
+            }.start()
+        }
+    }
+
+    private fun showUrlDialog(title: String, message: String, input: EditText, onOk: (String) -> Unit) {
+        android.app.AlertDialog.Builder(this).setTitle(title).setMessage(message).setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Continue") { _, _ -> onOk(input.text.toString().trim()) }.show()
+    }
+
+    private fun refreshStorage() {
+        findViewById<TextView>(R.id.storage).text = "App storage: ${formatBytes(filesDir.walkTopDown().filter { it.isFile }.sumOf { it.length() })}"
     }
 
     private fun formatBytes(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"
         bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024f)
         else -> "%.1f MB".format(bytes / (1024f * 1024f))
-    }
-
-    private fun AlertDialogBuilder(activity: Activity, input: EditText, onOk: (String) -> Unit) {
-        android.app.AlertDialog.Builder(activity).setTitle("Download dataset")
-            .setMessage("Paste a direct downloadable dataset file URL.")
-            .setView(input).setNegativeButton("Cancel", null)
-            .setPositiveButton("Download") { _, _ -> onOk(input.text.toString().trim()) }.show()
     }
 }
