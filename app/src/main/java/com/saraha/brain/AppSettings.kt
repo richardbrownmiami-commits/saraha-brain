@@ -17,6 +17,10 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("offline_only", false)
         set(value) = prefs.edit().putBoolean("offline_only", value).apply()
 
+    var toolsEnabled: Boolean
+        get() = prefs.getBoolean("tools_enabled", true)
+        set(value) = prefs.edit().putBoolean("tools_enabled", value).apply()
+
     var threshold: Float
         get() = prefs.getFloat("threshold", 0.55f)
         set(value) = prefs.edit().putFloat("threshold", value.coerceIn(0.1f, 0.95f)).apply()
@@ -28,4 +32,8 @@ class AppSettings(context: Context) {
     var huggingFaceDatasetUrl: String
         get() = prefs.getString("hf_dataset_url", "") ?: ""
         set(value) = prefs.edit().putString("hf_dataset_url", value).apply()
+
+    var modelUrl: String
+        get() = prefs.getString("model_url", "") ?: ""
+        set(value) = prefs.edit().putString("model_url", value).apply()
 }
