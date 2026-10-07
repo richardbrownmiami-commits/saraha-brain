@@ -2,15 +2,16 @@ package com.saraha.brain
 
 import android.content.Context
 import org.json.JSONObject
-import java.io.File
 import java.util.Locale
 import kotlin.math.max
 
-class DatasetStore(private val context: Context) {
-    private val file = File(context.filesDir, "dataset.jsonl")
+class DatasetStore(context: Context) {
+    private val manager = DatasetManager(context)
+    private val settings = AppSettings(context)
 
     fun best(query: String): String? {
-        if (!file.exists()) return null
+        if (!settings.localRag) return null
+        val file = manager.activeFile() ?: return null
         val q = tokens(query)
         if (q.isEmpty()) return null
         var best = 0.0
@@ -23,12 +24,12 @@ class DatasetStore(private val context: Context) {
                     best = score
                     answer = o.optString("answer").takeIf { it.isNotBlank() }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) { }
         }
-        return if (best >= 0.55) answer else null
+        return if (best >= settings.threshold) answer else null
     }
 
-    fun exists() = file.exists()
+    fun exists(): Boolean = manager.activeFile()?.exists() == true
 
     private fun tokens(s: String): Set<String> =
         s.lowercase(Locale.ROOT).split(Regex("""[^\p{L}\p{N}]+"""))
