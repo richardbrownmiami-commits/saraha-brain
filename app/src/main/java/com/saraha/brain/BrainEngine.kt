@@ -16,9 +16,11 @@ class BrainEngine(context: Context) {
         if (q.isEmpty()) return "Ask me something."
 
         dataset.best(q)?.let { return it }
-        tools.handle(q)?.let {
-            remember(q, it)
-            return it
+        if (settings.toolsEnabled) {
+            tools.handle(q)?.let {
+                remember(q, it)
+                return it
+            }
         }
         if (!settings.offlineOnly && settings.webFallback) {
             web.search(q)?.let {
